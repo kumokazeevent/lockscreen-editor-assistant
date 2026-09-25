@@ -1,0 +1,142 @@
+:root {
+  font-family: "Microsoft YaHei UI", "PingFang SC", system-ui, sans-serif;
+  color: #19251f;
+  background: #f4f6f2;
+}
+
+* { box-sizing: border-box; }
+body { margin: 0; }
+button, input, select { font: inherit; }
+
+.settings-shell {
+  width: min(1100px, calc(100% - 32px));
+  margin: 38px auto 80px;
+}
+
+header {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin-bottom: 24px;
+}
+
+.brand {
+  display: grid;
+  width: 48px;
+  height: 48px;
+  place-items: center;
+  border-radius: 14px;
+  color: white;
+  background: #173d2d;
+  font-size: 21px;
+  font-weight: 800;
+}
+
+h1, h2, p { margin: 0; }
+h1 { font-size: 22px; }
+header p, .section-title p { margin-top: 4px; color: #748078; font-size: 12px; }
+.section-description { margin: -7px 0 16px; color: #66736b; font-size: 12px; line-height: 1.7; }
+.section-description a { color: #317352; }
+
+section {
+  margin-bottom: 16px;
+  padding: 21px;
+  border: 1px solid #d8dfda;
+  border-radius: 16px;
+  background: white;
+  box-shadow: 0 10px 28px rgba(29, 50, 39, .05);
+}
+
+h2 { margin-bottom: 16px; font-size: 15px; }
+.section-title { display: flex; align-items: flex-start; justify-content: space-between; }
+.section-title h2 { margin-bottom: 0; }
+
+.form-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 14px;
+  margin-bottom: 16px;
+}
+
+label { color: #57655d; font-size: 12px; font-weight: 700; }
+input, select {
+  display: block;
+  width: 100%;
+  height: 39px;
+  margin-top: 7px;
+  padding: 0 10px;
+  border: 1px solid #d5ddd7;
+  border-radius: 9px;
+  outline: 0;
+  background: #fbfcfa;
+}
+input:focus, select:focus { border-color: #4a8b6d; box-shadow: 0 0 0 3px rgba(74,139,109,.12); }
+textarea { width: 100%; box-sizing: border-box; margin: 8px 0 14px; padding: 12px; border: 1px solid #d5ddd7; border-radius: 9px; resize: vertical; font: inherit; font-size: 14px; line-height: 1.6; }
+
+button {
+  min-height: 35px;
+  padding: 0 14px;
+  border-radius: 9px;
+  cursor: pointer;
+}
+.primary { border: 1px solid #173d2d; color: white; background: #173d2d; }
+.secondary { border: 1px solid #d4ddd6; color: #375745; background: white; }
+.save-message { margin-left: 10px; color: #3d7459; font-size: 12px; }
+.save-message.error { color: #a13f32; }
+.folder-grid { grid-template-columns: 1fr 1fr; }
+.api-row {
+  display: grid;
+  grid-template-columns: 110px minmax(260px, 1.5fr) minmax(180px, .8fr) minmax(210px, 1fr);
+  align-items: end;
+  gap: 12px;
+  margin-bottom: 14px;
+  padding: 14px;
+  border: 1px solid #e2e8e3;
+  border-radius: 12px;
+  background: #fbfcfa;
+}
+.api-row-title { align-self: center; color: #284f3a; font-size: 13px; font-weight: 800; }
+.api-key-wide { grid-column: span 2; }
+.toggle-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 2px 0 12px;
+  color: #304d3d;
+}
+.toggle-row input { display: inline-block; width: 16px; height: 16px; margin: 0; }
+.connection-save { margin-top: 16px; }
+
+.rule-list { margin-top: 18px; }
+.rule-card {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: center;
+  gap: 12px;
+  padding: 13px 0;
+  border-top: 1px solid #edf0ed;
+}
+.rule-card:first-child { border-top: 0; }
+.rule-host { margin-bottom: 5px; font-size: 13px; font-weight: 800; }
+.rule-detail { color: #7b867f; font-family: ui-monospace, Consolas, monospace; font-size: 10px; line-height: 1.55; }
+.delete-rule { border: 1px solid #efd3c7; color: #994a2b; background: #fff9f6; }
+.empty { padding: 22px 0 8px; color: #7b867f; text-align: center; font-size: 12px; }
+.privacy-note p { color: #647169; font-size: 12px; line-height: 1.75; }
+.save-bar {
+  position: sticky;
+  bottom: 14px;
+  display: flex;
+  align-items: center;
+  min-height: 58px;
+  padding: 11px 14px;
+  border: 1px solid #cad5cd;
+  border-radius: 14px;
+  background: rgba(255, 255, 255, .95);
+  box-shadow: 0 12px 32px rgba(29, 50, 39, .14);
+  backdrop-filter: blur(8px);
+}
+
+@media (max-width: 620px) {
+  .form-grid, .folder-grid, .api-row { grid-template-columns: 1fr; }
+  .api-key-wide { grid-column: auto; }
+}
