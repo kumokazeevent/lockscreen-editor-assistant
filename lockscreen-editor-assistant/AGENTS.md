@@ -8,7 +8,7 @@
 | 用途 | 辅助 `lockscreen-admin.mofeeds.com` 海外锁屏内容审核：从列表读取原稿及正文、生成同语种简介和由简介浓缩的标题、搜索竖屏素材、导出批次并在编辑页填写文案。图片上传及后台最终保存由人操作。 |
 | 技术栈 | Chrome/Edge Manifest V3 扩展；原生 JavaScript、HTML、CSS；模块型 service worker；`chrome.storage`、`chrome.downloads`、内容脚本；Node.js 内置测试工具与 Playwright 浏览器测试。无 npm 构建流程或前端框架。 |
 | 当前状态 | 0.14.2 源码可直接作为“已解压的扩展程序”加载。静态、逻辑、MV3 后台加载和模拟浏览器界面测试通过；真实后台和付费 API 的端到端验收待确认。 |
-| 已知问题或限制 | 页面接口结构和后台 DOM 变化会影响正文捕获、卡片扫描和字段填写；内容缺失时可能退回原简介或原标题，必须核对 `summarySource`；图片元数据过滤不能保证没有正脸、裸露、版权或商标风险；真实 Pexels/Pixabay、各 AI 服务商及离线 Translator 语言包未逐项验证。 |
+| 已知问题或限制 | 页面接口结构和后台 DOM 变化会影响正文捕获、卡片扫描和字段填写；后台可能在同一 ID 内保存互不相符的标题、简介和正文，而当前插件不做语义冲突拦截；内容缺失时可能退回原简介或原标题，必须核对 `summarySource`；图片元数据过滤不能保证没有正脸、裸露、版权或商标风险；真实 Pexels/Pixabay、各 AI 服务商及离线 Translator 语言包未逐项验证。 |
 
 ## 目录结构
 
@@ -53,11 +53,36 @@ lockscreen-editor-assistant/
 - 搜图以 Pexels 为主、Pixabay 为备选；另外手动素材搜索可用 Openverse。所有图源均需竖图筛选；最终图片只下载，用户手动上传和保存。
 - 不要把测试中的模拟接口结果表述为真实后台验收，也不要自动点击后台最终保存。
 
+## 海外内容管理页：只读实站勘察
+
+以下是使用 Chrome DevTools MCP 在已登录页面观察到的**当前页面行为**，并对照网页前端脚本核查；不是服务端接口文档。调查期间没有发送保存、上传或投递请求。后台部署或权限变化后须重新验证。
+
+| 环节 | 已观察到的实现 |
+| --- | --- |
+| 列表路由 | `#/nav/overseasContent?index=5`。页面呈现 Vue/Element 风格组件；卡片包含标题、原图、文章链接、投递状态及“编辑”等按钮。 |
+| 列表查询 | `POST /api/OverseasLockScreen/search/list`。请求体含 `languageCode`、`countryCode`、`auditStatus`、`pageNumber`、`pageSize`、`id`、`isGenerate`、`isUsed` 等筛选字段；一次实测阿语／叙利亚／未投递请求分别为 `ar`、`SY`、`WAITING`，页大小为 30。这些是观察值，不代表所有筛选组合。 |
+| 列表响应 | 外层含 `code`、`message`、`data`；`data` 内含 `pageIndex`、`pageSize`、`pageCount`、`totalCount` 和记录数组 `data`。记录中可读到 `id`、`title`、`summary`、HTML `content` 等字段。`page-bridge.js` 捕获页面已经收到的 JSON；并不直接调用列表接口。 |
+| 编辑路由与详情 | 点击“编辑”进入 `#/nav/overseasDeliver?index=5&type=editEMPTY&id=...`；页面以 `GET /api/OverseasLockScreen/get?id=...` 读取详情。详情含 `id`、`title`、`summary`、`content`、`url`、`languageCode`、`countryCodeList`、`originImage`、`auditStatus`、`updateTime` 等字段。正文在富文本编辑器 iframe 中显示。 |
+| 字段与字数 | 编辑页有标题、简介输入框和图片上传控件；页面明确提示标题最多 12 个词、简介最多 50 个词。其前端保存函数以空白分词计数，和插件的多语种计词器不完全相同；实际服务端边界仍需验证。 |
+| 下拉选项 | 页面还请求 `getLanguageList`、`getCountryList`、`getCpList`、`getChannelList`、`getCategoryList` 等接口。 |
+
+一次正常记录的编辑页标题、简介与按 ID 捕获的列表记录相同；正文去掉空白后也完全一致。另一次在阿语／叙利亚／未投递列表可见的 10 月 14 日记录中，当前页有 26 条该日期记录，26 条都能按 ID 匹配到正文且标题与各自卡片一致，但多条**同一 ID 内**的原标题与简介/正文主题明显不符。抽取其中一条详情接口后，标题、简介和正文都与列表缓存一致，说明该样本的错配已存在于后台记录；造成错配的更早环节待确认。不要把这类情况误判为插件把不同 ID 的正文配错，也不要让“插件处理完成”代替人工审核。
+
+当前插件在正文存在时优先据正文生成简介与新标题，但自动图片关键词仍取自**原标题**；原题错位时可能得到“新文案讲正文、图片却讲错误原题”的结果。当前词数/语言校验不能识别语义冲突，自动初筛通过后仍可能标记完成。下一次迭代应先加入冲突提示、来源展示和人工复核拦截；同页重扫也应比较已保存的原稿与最新后台字段，避免复用旧正文或旧文案。
+
+### 列表页一键批量写回的可行性边界
+
+网页前端脚本显示：编辑页先调用上述详情接口装载完整记录；普通“保存”将完整记录对象提交到 `POST /api/OverseasLockScreen/saveOrUpdate`，成功后返回上一页。前端保存前检查日期、标题/简介词数、CP 来源、文章链接或正文、语言/国家、分类，并设置 `lastEditor`；普通“保存”不主动把审核状态改为 `PENDING`，而“重新投递”走另一种状态与图片检查。**没有实际发送写请求，服务端是否接受插件直接写回、是否允许不上传图片、完整对象会覆盖哪些字段均未验证。**
+
+当前网页可见的批量接口主要是批量复制和批量改日期；未在本次前端脚本中发现标题/简介的专用批量更新接口。另有 Excel 导入接口，但格式及是否覆盖旧记录待确认，不可视为安全的批量编辑方案。理论上可在列表页提供一个按钮，按 ID 对每条先 `GET` 最新详情、只改 `title`/`summary`、再逐条 `POST saveOrUpdate`，但这是**用户一次点击、服务端多次单条更新**，并非单次批量 API。
+
+未经用户针对写入试验的明确批准，不要执行上述 `POST`。若将来实现，必须先做可恢复的单条验证，再提供逐条差异预览与人工勾选、最新记录/`updateTime` 核对、原始详情备份、低并发及暂停重试、逐条保存状态和 `GET` 读回校验；默认排除原稿错配、未复核或缺 ID 的条目，不改变图片、审核状态与投递状态。现有 `assistant.js` 的 `completed` 只表示自动处理完成，不代表已人工审核或已在后台保存。直接新开编辑深链曾回到登录页；当前标签页 `sessionStorage` 有 `user` 键、请求也携带 Cookie，但完整鉴权机制未确认，不得复制会话值到插件或文档。
+
 ## 已集成的外部服务
 
 | 服务 / 地址 | 用途 | 代码位置与说明 |
 | --- | --- | --- |
-| 锁屏后台 `https://lockscreen-admin.mofeeds.com/*` | 唯一注入站点；读取列表和编辑页、观察站点已有 JSON 并填写标题/简介。具体列表 API 路径未硬编码，待现场确认。 | `manifest.json`、`page-bridge.js`、`content.js`、`workflow.js` |
+| 锁屏后台 `https://lockscreen-admin.mofeeds.com/*` | 唯一注入站点；读取列表和编辑页、观察站点已有 JSON 并填写标题/简介。列表与详情 API 路径已在上节实站确认，但插件未硬编码列表接口；保存路径仅从网页前端代码确认，尚未写入验证。 | `manifest.json`、`page-bridge.js`、`content.js`、`workflow.js` |
 | 独立 AI Chat Completions 端点，默认 `https://api.deepseek.com/chat/completions` | 多语文案改写、搜图词、可选标题翻译；用户可填其他兼容端点和模型；可选第二审核 AI 使用独立端点。 | `options.js` 设置默认值；`background.js` 中的 `normalizeAiEndpoint`、`generateBatchItemWithAi`、`reviewAiCandidate`、`generateImageQueryWithAi`、`translateTextWithAi` |
 | Pexels `https://api.pexels.com/v1/search` | 竖屏商用素材主图源；需要用户配置 API Key。 | `options.js`、`background.js` 的 `searchPexels` |
 | Pixabay `https://pixabay.com/api/` | 竖屏图库备选；需要用户配置 API Key。 | `options.js`、`background.js` 的 `searchPixabay` |
@@ -97,8 +122,9 @@ node tests/tab-isolation-ui.mjs
 
 ## 待办事项
 
-1. 在真实锁屏后台核验列表 JSON 的 `content`、内容 ID、标题和编辑页字段仍与适配器匹配；检查错位记录及正文缺失时的来源标记。
+1. 已在当前真实页面抽查列表与详情的 ID、标题、简介和正文匹配；继续做不同日期/语言/分页的回归，并对同一 ID 内标题、简介、正文语义冲突添加显式复核与停用自动选图的保护。
 2. 用用户自己的 AI 端点和模型验证一次完整改写、可选审核、空响应/限流恢复及词数和语言一致性；测试中不要记录 API Key。
 3. 用真实 Pexels/Pixabay 搜图并逐图审查许可、人物姿态、皮肤裸露、商标和 9:16/9:20 比例；自动元数据筛选不能替代人工审核。
 4. 在目标 Chrome/Edge 版本与负责语种下检查离线 Translator 可用性，以及刷新扩展后旧批次导入、下载对账和编辑页填写。
 5. 后续可为页面 JSON 桥、DOM 适配和真实下载流程增加隔离集成测试；若引入依赖，再明确安装、构建与锁文件策略。
+6. 若要做列表页一键批量写回，先取得用户对一条可恢复测试记录的批准并验证 `saveOrUpdate` 的服务端行为，再设计预览、原始备份、并发限制、逐条读回与失败恢复；不得从 `completed` 状态直接推断可自动保存。
