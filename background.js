@@ -125,7 +125,7 @@ async function searchStockImages(source, query, page = 1) {
     }
     const url = new URL("https://api.pexels.com/v1/search");
     url.searchParams.set("query", query.trim());
-    url.searchParams.set("orientation", "landscape");
+    url.searchParams.set("orientation", "portrait");
     url.searchParams.set("locale", /[\u3400-\u9fff]/.test(query) ? "zh-CN" : "en-US");
     url.searchParams.set("per_page", "12");
     url.searchParams.set("page", String(page));
@@ -137,14 +137,16 @@ async function searchStockImages(source, query, page = 1) {
       page: data.page || page,
       total: data.total_results || 0,
       hasNext: Boolean(data.next_page),
-      items: (data.photos || []).map(normalizePexelsImage),
+      items: (data.photos || [])
+        .map(normalizePexelsImage)
+        .filter((item) => item.height > item.width),
     };
   }
 
   const url = new URL("https://api.openverse.org/v1/images/");
   url.searchParams.set("q", query.trim());
   url.searchParams.set("license_type", "commercial");
-  url.searchParams.set("aspect_ratio", "wide");
+  url.searchParams.set("aspect_ratio", "tall");
   url.searchParams.set("mature", "false");
   url.searchParams.set("page_size", "12");
   url.searchParams.set("page", String(page));
@@ -156,7 +158,9 @@ async function searchStockImages(source, query, page = 1) {
     page: data.page || page,
     total: data.result_count || 0,
     hasNext: (data.page || page) < (data.page_count || 1),
-    items: (data.results || []).map(normalizeOpenverseImage),
+    items: (data.results || [])
+      .map(normalizeOpenverseImage)
+      .filter((item) => item.height > item.width),
   };
 }
 

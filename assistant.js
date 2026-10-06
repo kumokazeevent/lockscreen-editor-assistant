@@ -649,7 +649,7 @@
     }
     if (!searchQuery) return setSearchStatus("请先生成英文图片关键词", true);
     state.searchPage = page;
-    renderSearchMessage("正在搜索允许商业使用的图片…", "lsa-loading");
+    renderSearchMessage("正在搜索允许商业使用的竖向图片…", "lsa-loading");
     setSearchStatus("");
     try {
       const response = await chrome.runtime.sendMessage({
@@ -770,7 +770,7 @@
         <section class="lsa-tab-panel" data-panel="images" hidden>
           <div class="lsa-section-card">
             <div class="lsa-section-row"><h2 class="lsa-section-title">搜索可商用素材</h2><button class="lsa-text-action lsa-generate-english" type="button">生成英文关键词</button></div>
-            <p class="lsa-section-hint">从改写前的原标题和原简介总结英文视觉关键词，Pexels 搜索更准确。</p>
+            <p class="lsa-section-hint">从改写前原稿总结英文视觉关键词，并只搜索适合锁屏的竖向图片。</p>
             <div class="lsa-keyword-chips"></div>
             <div class="lsa-search-row">
               <select class="lsa-source-select" aria-label="素材来源"><option value="openverse">Openverse</option><option value="pexels">Pexels</option></select>
