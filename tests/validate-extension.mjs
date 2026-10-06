@@ -88,7 +88,8 @@ const bindSteps = content.match(/const BIND_STEPS = \[([\s\S]*?)\n  \];/)?.[1] |
 assert(bindSteps && !bindSteps.includes("imageUploadSelector"), "字段绑定不应再要求图片上传控件");
 assert(content.includes('"未投递"') && content.includes("isCardMetaText"), "标题扫描未排除卡片投递状态");
 
-const assistant = read("assistant.js");
+const assistantFiles = ["assistant.js", "assistant-engine.js", "assistant-ui.js"];
+const assistant = assistantFiles.map(read).join("\n");
 assert(assistant.includes("batchState"), "批任务未持久化");
 assert(assistant.includes("APPLY_BATCH_RECORD"), "编辑页未接入批次文案填充");
 assert(assistant.includes("填入标题和简介") && !assistant.includes("填入文案并上传图片"),
@@ -107,10 +108,12 @@ assert(!assistant.includes('getBatchItems().length ? " open"')
 assert(assistant.includes("Math.min(4, candidates.length)"), "批量图片下载未提升到最多 4 路并发");
 assert(assistant.includes('item.image?.safetyStatus === "passed"') && assistant.includes("当前没有自动通过的图片"),
   "自动通过图按钮仍错误依赖整条记录状态，或缺少可见反馈");
-assert(assistant.includes('q(".lsa-stock-query").value = item.originalTitle') && assistant.includes('sendRuntime("GENERATE_IMAGE_QUERY", { title: source'),
-  "手动换图没有强制从原标题重新生成关键词");
-assert(background.includes("EXCLUSIVELY from the ORIGINAL TITLE") && background.includes("buildImageQueryMessages(payload.title"),
-  "自动或独立图片搜索未限定为原标题来源");
+assert(assistant.includes('q(".lsa-stock-query").value = item.originalTitle')
+  && assistant.includes("lsa-reset-stock-query")
+  && assistant.includes("manualImageSearchPlan"),
+  "手动换图没有默认原标题，或缺少自定义关键词/恢复原标题入口");
+assert(background.includes("DEFAULT AUTOMATIC IMAGE QUERY") && background.includes("buildImageQueryMessages(payload.title"),
+  "默认自动搜图没有按原标题生成关键词");
 assert(assistant.includes("priorQuerySource !== cleanText(item.originalTitle)") && assistant.includes("reusedExistingCopy"),
   "自动处理仍可能复用旧版或其他来源的图片关键词");
 assert(content.includes("page.originalTitle || page.boundTitle") && !content.includes("nearbyImageText"),
@@ -125,10 +128,18 @@ assert(background.includes("fetchAiJson") && background.includes("buildAiDiagnos
   "AI 错误诊断或分级退避未实现");
 assert(background.includes("aiFallbackModel") && assistant.includes("lsa-retry-type"),
   "备用模型或按错误类型重试界面未实现");
-assert(assistant.includes("请输入英文，或清空恢复按原标题搜索")
-  && assistant.includes("liveInput === targetOriginal")
+assert(assistant.includes("自定义关键词请使用英文")
+  && assistant.includes("shouldStoreGeneratedQuery")
   && (assistant.match(/class=\"lsa-primary-button lsa-search-images\"/g) || []).length === 1,
   "单按钮自适应搜图或人工词不留痕未实现");
+assert(assistant.includes("persistBatch({ item, progressOnly: true })")
+  && (assistant.match(/persistBatch\(\{ item, progressOnly: true \}\)/g) || []).length >= 4,
+  "条目完成时仍可能整批重绘，没有保持运行期局部刷新");
+assert(background.includes("BANGLADESH_RESTRICTED_THEME_TERMS") && background.includes('"love"'),
+  "孟加拉禁忌词表缺少 love");
+assert(background.includes("createWorkLock") && background.includes("sanitizeRelativeFolder")
+  && background.includes("describeEmptyAiResponse") && assistant.includes("manualImageSearchPlan"),
+  "后台或悬浮窗核心职责未接入拆分模块");
 assert(assistant.includes("globalThis.Translator?.availability")
   && assistant.includes("离线翻译不可用")
   && assistant.includes("lsa-ai-translate-title")

@@ -28,5 +28,40 @@
     return sanitizeFileName(`${stem}.${extension}`, fallback);
   }
 
-  global.LSABackgroundDownloads = Object.freeze({ extensionForMime, fileNameForMime });
+  function sanitizeRelativeFolder(value, fallback) {
+    const raw = String(value || fallback || "").trim().replace(/\\/g, "/");
+    if (!raw) return "";
+    if (raw.startsWith("/") || /^[a-z]:/i.test(raw) || raw.split("/").some((part) => part === "..")) {
+      throw new Error("下载目录必须是浏览器“下载”文件夹内的相对子目录，不能使用盘符、绝对路径或 ..");
+    }
+    return raw.split("/").filter((part) => part && part !== ".")
+      .map((part) => sanitizePathSegment(part, "未命名目录")).join("/");
+  }
+
+  function joinDownloadPath(folder, fileName) {
+    return [folder, fileName].filter(Boolean).join("/");
+  }
+
+  function inferImageMime(url, contentType) {
+    const normalized = String(contentType || "").split(";")[0].trim().toLowerCase();
+    if (/^image\//.test(normalized)) return normalized;
+    let pathname = "";
+    try { pathname = new URL(url).pathname.toLowerCase(); } catch {}
+    if (/\.png$/.test(pathname)) return "image/png";
+    if (/\.webp$/.test(pathname)) return "image/webp";
+    if (/\.gif$/.test(pathname)) return "image/gif";
+    if (/\.avif$/.test(pathname)) return "image/avif";
+    return "image/jpeg";
+  }
+
+  function chooseDownloadUrl(image = {}, item = {}) {
+    const aspectLabel = image.aspectLabel || item.aspectLabel || "9:16";
+    return image.selectedUrl || image.uploadUrl || image.downloadUrl || image.originalUrl || image.imageUrl ||
+      image.cropUrls?.[aspectLabel] || item.imageUrl || "";
+  }
+
+  global.LSABackgroundDownloads = Object.freeze({
+    extensionForMime, sanitizePathSegment, sanitizeFileName, fileNameForMime,
+    sanitizeRelativeFolder, joinDownloadPath, inferImageMime, chooseDownloadUrl,
+  });
 })(globalThis);

@@ -108,6 +108,8 @@ assert(evaluate("inspectImageMetadataSafety({title:'butterfly in garden',width:9
   "孟加拉模式应允许蝴蝶候选");
 assert(evaluate("inspectImageMetadataSafety({title:'fish in aquarium',width:900,height:1600},true).safetyStatus") === "passed",
   "孟加拉模式应允许鱼类候选");
+assert(evaluate("inspectImageMetadataSafety({title:'love heart decoration',width:900,height:1600},true).safetyStatus") === "rejected",
+  "孟加拉模式未拒绝完整单词 love");
 const bangladeshQuery = evaluate("buildSafeStockQuery('woman cooking dinner',true)");
 assert(bangladeshQuery.includes("no people") && !bangladeshQuery.includes("side profile"),
   "孟加拉模式人物词没有转向无人对象/场景搜索");
@@ -158,8 +160,8 @@ assert(strictPrompt.includes("at most 12 words"), "提示词缺少标题词数�
 assert(strictPrompt.includes("at most 50 words"), "提示词缺少简介词数限制");
 assert(strictPrompt.includes("PREVIOUS ATTEMPT FAILED"), "重试提示词没有携带上次失败原因");
 assert(strictPrompt.includes("image_query_en"), "提示词丢失英文搜图词要求");
-assert(strictPrompt.includes("EXCLUSIVELY from the ORIGINAL TITLE") && strictPrompt.includes("Ignore the original description"),
-  "批量自动搜图提示词没有严格限定原标题来源");
+assert(strictPrompt.includes("DEFAULT AUTOMATIC IMAGE QUERY") && strictPrompt.includes("Ignore the original description"),
+  "批量自动搜图默认关键词没有按原标题生成");
 const imageQueryMessages = evaluate("buildImageQueryMessages('Почему кошки любят коробки?')");
 assert(imageQueryMessages[1].content.includes("Почему кошки любят коробки?"), "独立搜图请求未传入原标题");
 assert(!imageQueryMessages[1].content.includes("summary") && !imageQueryMessages[1].content.includes("description"),

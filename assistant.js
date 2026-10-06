@@ -719,7 +719,7 @@
         state.batch.fatalError = item.error;
       }
     }
-    if (state.workOwned) await persistBatch();
+    if (state.workOwned) await persistBatch({ item, progressOnly: true });
   }
 
   async function runBatch() {
@@ -1571,15 +1571,12 @@
     const input = q(".lsa-stock-query");
     const originalTitle = manualSearchOriginalTitle();
     const typedValue = cleanText(input?.value || "");
-    const usesOriginalTitle = page > 1 ? null : !typedValue || typedValue === originalTitle;
-    let value = page > 1 ? state.imageQuery : typedValue;
-    if (page > 1 && !value) return setPanelStatus(".lsa-image-status", "当前没有可翻页的搜索结果，请先搜索", true);
-    if (page === 1 && usesOriginalTitle && !originalTitle) {
-      return setPanelStatus(".lsa-image-status", "没有读取到原标题，无法搜索图片", true);
-    }
-    if (page === 1 && !usesOriginalTitle && /[^\x00-\x7f]/.test(typedValue)) {
-      return setPanelStatus(".lsa-image-status", "请输入英文，或清空恢复按原标题搜索", true);
-    }
+    const plan = LSAAssistantEngine.manualImageSearchPlan({
+      page, typedValue, originalTitle, currentQuery: state.imageQuery,
+    });
+    if (plan.error) return setPanelStatus(".lsa-image-status", plan.error, true);
+    const usesOriginalTitle = plan.usesOriginalTitle;
+    let value = plan.query;
     const button = q(".lsa-search-images");
     state.imageBusy = true;
     const revision = ++state.searchRevision;
@@ -1681,7 +1678,7 @@
             target.image = image;
             const liveInput = cleanText(q(".lsa-stock-query")?.value || "");
             const targetOriginal = cleanText(target.originalTitle || state.originalForSearch?.title || "");
-            if (!liveInput || liveInput === targetOriginal) {
+            if (LSAAssistantEngine.shouldStoreGeneratedQuery(liveInput, targetOriginal)) {
               target.imageQueryEn = state.imageQuery;
               target.imageQuerySourceTitle = target.originalTitle;
             }
@@ -1840,8 +1837,8 @@
         <section class="lsa-tab-panel" data-panel="images" hidden>
           <div class="lsa-section-card">
             <div class="lsa-section-row"><h2 class="lsa-section-title">单条竖屏配图</h2><button class="lsa-text-action lsa-read-for-images" type="button">读取原标题</button></div>
-            <p class="lsa-section-hint">输入框为空或等于原标题时，自动按原标题生成英文视觉词；改成英文词则直接搜索、不调用 AI。简介、正文和改写标题不参与搜图。优先 Pexels，必要时回退 Pixabay。</p>
-            <div class="lsa-search-row"><input class="lsa-assistant-input lsa-stock-query" type="search" placeholder="原标题；也可输入英文关键词"><button class="lsa-primary-button lsa-search-images" type="button">搜索图片</button></div>
+            <p class="lsa-section-hint">默认根据原标题生成英文视觉词；结果不准确时，可直接输入你自己的英文关键词搜索且不调用 AI。优先 Pexels，必要时回退 Pixabay。</p>
+            <div class="lsa-search-row"><input class="lsa-assistant-input lsa-stock-query" type="search" placeholder="默认原标题；可改为自定义英文关键词"><button class="lsa-secondary-button lsa-reset-stock-query" type="button">恢复原标题</button><button class="lsa-primary-button lsa-search-images" type="button">搜索图片</button></div>
             <p class="lsa-status-text lsa-image-status">正脸与裸露检测存在局限，无法确定的图片会明确标为“需复核”。</p>
             <div class="lsa-image-pager"><button class="lsa-secondary-button lsa-images-prev" type="button" disabled>上一页</button><span class="lsa-images-page">第 1 页</span><button class="lsa-secondary-button lsa-images-next" type="button" disabled>下一页</button></div>
           </div>
@@ -2042,6 +2039,17 @@
       .catch((error) => setPanelStatus(".lsa-manual-status", error.message, true)));
     q(".lsa-draft-copy")?.addEventListener("input", updateManualCounts);
     q(".lsa-search-images")?.addEventListener("click", () => searchManualImages(1));
+    q(".lsa-reset-stock-query")?.addEventListener("click", () => {
+      const input = q(".lsa-stock-query");
+      if (input) input.value = manualSearchOriginalTitle();
+      state.manualResults = [];
+      state.imageQuery = "";
+      state.imagePage = 1;
+      state.imageHasNext = false;
+      renderManualImages();
+      renderImagePager();
+      setPanelStatus(".lsa-image-status", input?.value ? "已恢复原标题；点击“搜索图片”重新搜索。" : "尚未读取到原标题，请先点击“读取原标题”。", !input?.value);
+    });
     q(".lsa-images-prev")?.addEventListener("click", () => searchManualImages(state.imagePage - 1));
     q(".lsa-images-next")?.addEventListener("click", () => searchManualImages(state.imagePage + 1));
     q(".lsa-stock-query")?.addEventListener("input", () => {

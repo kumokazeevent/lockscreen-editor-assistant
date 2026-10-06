@@ -20,7 +20,7 @@
   ];
   const BANGLADESH_ALLOWED_ANIMAL_TERMS = ["butterfly", "butterflies", "fish", "fishes", "aquarium"];
   const BANGLADESH_ANIMATION_TERMS = ["anime", "cartoon", "illustration", "animated", "3d render"];
-  const BANGLADESH_RESTRICTED_THEME_TERMS = ["pork", "pig", "bacon", "ham", "romance", "romantic", "lover", "couple kissing"];
+  const BANGLADESH_RESTRICTED_THEME_TERMS = ["pork", "pig", "bacon", "ham", "love", "romance", "romantic", "lover", "couple kissing"];
   const containsWholeTerm = (text, term) => new RegExp(`\\b${term.replace(/[-/\\^$*+?.()|[\]{}]/g, "\\$&")}\\b`, "i").test(text);
 
   function inspectImageMetadataSafety(item, bangladeshMode = false) {
@@ -76,6 +76,7 @@
   }
 
   global.LSABackgroundStock = Object.freeze({
-    PERSON_TERMS, containsWholeTerm, inspectImageMetadataSafety, buildSafeStockQuery,
+    PERSON_TERMS, BANGLADESH_RESTRICTED_THEME_TERMS,
+    containsWholeTerm, inspectImageMetadataSafety, buildSafeStockQuery,
   });
 })(globalThis);

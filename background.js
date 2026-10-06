@@ -1,8 +1,19 @@
 const LSAWorkflow = globalThis.LSAWorkflow;
-const { parseRetryAfter, retryDelayMs, classifyAiError } = globalThis.LSABackgroundAi;
+const {
+  parseRetryAfter, retryDelayMs, classifyAiError,
+  supportsThinkingControl, enableMediumThinking, disableThinking, configureThinking,
+  normalizeAiContent, getAiResponseText, describeEmptyAiResponse,
+  isReasoningTruncated, isOutputTruncated,
+} = globalThis.LSABackgroundAi;
 const { PERSON_TERMS, containsWholeTerm, inspectImageMetadataSafety, buildSafeStockQuery } = globalThis.LSABackgroundStock;
-const { extensionForMime, fileNameForMime } = globalThis.LSABackgroundDownloads;
-const queueWorkLock = globalThis.LSABackgroundLocks.serialQueue();
+const {
+  extensionForMime, sanitizePathSegment, sanitizeFileName, fileNameForMime,
+  sanitizeRelativeFolder, joinDownloadPath, inferImageMime, chooseDownloadUrl,
+} = globalThis.LSABackgroundDownloads;
+const workLock = globalThis.LSABackgroundLocks.createWorkLock({
+  storage: chrome.storage.local,
+  getStorageKey: async (tabId) => (await getTabContext(tabId)).keys.workLease,
+});
 const SEARCH_ENGINES = {
   baidu: (query) =>
     `https://image.baidu.com/search/index?tn=baiduimage&word=${encodeURIComponent(query)}`,
@@ -720,38 +731,6 @@ function isBangladeshCountry(value) {
   return /(?:bangladesh|孟加拉|বাংলাদেশ)/iu.test(String(value || "").trim());
 }
 
-function supportsThinkingControl(model, endpoint = "") {
-  const value = String(model || "").trim();
-  let hostname = "";
-  try { hostname = new URL(endpoint).hostname; } catch {}
-  return /(^|\.)api\.deepseek\.com$/i.test(hostname) ||
-    /^glm[-_.\s]?5(?:\D|$)/i.test(value) || /^deepseek-v4(?:[-_.]|$)/i.test(value);
-}
-
-function enableMediumThinking(requestBody, model, endpoint = "") {
-  if (!supportsThinkingControl(model, endpoint)) return requestBody;
-  requestBody.thinking = { type: "enabled" };
-  requestBody.reasoning_effort = "medium";
-  return requestBody;
-}
-
-function disableThinking(requestBody, model, endpoint = "") {
-  if (!supportsThinkingControl(model, endpoint)) return requestBody;
-  requestBody.thinking = { type: "disabled" };
-  delete requestBody.reasoning_effort;
-  return requestBody;
-}
-
-function configureThinking(body, model, endpoint, level = "medium") {
-  if (level === "provider") return body;
-  if (level === "off") return disableThinking(body, model, endpoint);
-  if (supportsThinkingControl(model, endpoint)) {
-    body.thinking = { type: "enabled" };
-    body.reasoning_effort = ["low", "medium", "high", "max"].includes(level) ? level : "medium";
-  }
-  return body;
-}
-
 function aiHeaders(apiKey) {
   return {
     "Content-Type": "application/json",
@@ -817,54 +796,6 @@ function dominantScript(value) {
     ["latin", (text.match(/\p{Script=Latin}/gu) || []).length],
   ].sort((a, b) => b[1] - a[1]);
   return scripts[0][1] ? scripts[0][0] : "other";
-}
-
-function normalizeAiContent(content) {
-  if (typeof content === "string") return content;
-  if (Array.isArray(content)) {
-    return content.map((part) => typeof part === "string" ? part : part?.text || part?.content || "").join("");
-  }
-  return content?.text || "";
-}
-
-function getAiResponseText(data) {
-  const chatContent = data?.choices?.[0]?.message?.content;
-  if (chatContent != null) return normalizeAiContent(chatContent);
-  if (typeof data?.output_text === "string") return data.output_text;
-  if (Array.isArray(data?.output)) {
-    return data.output
-      .flatMap((item) => item?.content || [])
-      .map((part) => part?.text || part?.content || "")
-      .join("");
-  }
-  return "";
-}
-
-function describeEmptyAiResponse(data) {
-  const choice = data?.choices?.[0];
-  const reasoning = normalizeAiContent(choice?.message?.reasoning_content).trim();
-  let reason = "AI 返回内容为空";
-  if (reasoning) reason = "模型只返回了思考内容，没有生成最终正文";
-  else if (choice?.finish_reason === "length") reason = "模型输出达到 token 上限，没有生成最终正文";
-  else if (choice?.finish_reason === "content_filter") reason = "模型输出被内容安全策略过滤";
-  else if (choice?.finish_reason === "insufficient_system_resource") reason = "上游当前推理资源不足";
-  const details = [
-    `model=${String(data?.model || "未返回")}`,
-    `choices=${Array.isArray(data?.choices) ? data.choices.length : "无"}`,
-    `finish_reason=${String(choice?.finish_reason || "无")}`,
-    `reasoning_chars=${Array.from(reasoning).length}`,
-    `top_fields=${Object.keys(data || {}).slice(0, 8).join(",") || "无"}`,
-  ];
-  return `${reason}（${details.join("；")}）`;
-}
-
-function isReasoningTruncated(data) {
-  return data?.choices?.[0]?.finish_reason === "length";
-}
-
-
-function isOutputTruncated(data) {
-  return isReasoningTruncated(data);
 }
 
 function validateAiResult(raw, context) {
@@ -942,7 +873,7 @@ function buildAiMessages(context, correction = "") {
     `SUMMARY: at most ${context.summaryLimit} words. Preserve the original meaning and key information.`,
     "Remove repetition, background details and excessive modifiers. Do not invent any information.",
     languageInstruction,
-    "IMAGE QUERY SOURCE IS STRICT: image_query_en must be 5 to 12 concrete English visual keywords derived EXCLUSIVELY from the ORIGINAL TITLE. Ignore the original description, article text and shortened title for this field.",
+    "DEFAULT AUTOMATIC IMAGE QUERY: image_query_en must be 5 to 12 concrete English visual keywords based on the ORIGINAL TITLE. Ignore the original description, article text and shortened title for this default query. The user may later replace it with a custom English query in the image-search UI.",
     "For people, prefer side profile, back view, silhouette, fully clothed subjects or wide shots. Avoid frontal close-ups, selfies, swimwear, nudity, exposed skin and sexualized poses. Prefer objects or scenery when people are unnecessary.",
     context.bangladeshMode ? "BANGLADESH MODE: avoid religiously sensitive framing, storytelling narration, negative or sad wording, and romantic-love themes. Food content must never mention pork, pig, bacon or ham. Prefer neutral, practical and positive wording." : "",
     "LANGUAGE CODE: language must be the ISO 639-1 two-letter code of the original title: vi, es, en, ru, be, ar, it, zh, fa, ne, si, my, ky, tg, az, bn or id.",
@@ -991,7 +922,7 @@ async function reviewAiCandidate(candidate, context, settings, localSecrets, tim
           `The final summary MUST use the original language and contain at most ${context.summaryLimit} words.`,
           "Preserve the core meaning, important proper nouns and every stated number of methods, steps, tips or items. Do not invent facts.",
           context.bangladeshMode ? "BANGLADESH MODE: remove religiously sensitive framing, storytelling narration, negative/sad wording, romantic-love themes and any pork-related food wording while preserving the factual core." : "",
-          "image_query_en must remain a concrete English stock-photo query based EXCLUSIVELY on original_title. Ignore original_summary and article text for this field.",
+          "For the default automatic search, image_query_en must remain a concrete English stock-photo query based on original_title. Ignore original_summary and article text for this field; the user may later run a separate custom-keyword search.",
           "Count the words in title and summary before replying. Rewrite and recount until both word limits are satisfied.",
           "Review quickly and directly. Do not provide analysis or explanations.",
           "Return exactly one strict JSON object and nothing else:",
@@ -1504,19 +1435,6 @@ function arrayBufferToBase64(arrayBuffer) {
   return btoa(binary);
 }
 
-function inferImageMime(url, contentType) {
-  const normalized = String(contentType || "").split(";")[0].trim().toLowerCase();
-  if (/^image\//.test(normalized)) return normalized;
-  const pathname = (() => {
-    try { return new URL(url).pathname.toLowerCase(); } catch { return ""; }
-  })();
-  if (/\.png$/.test(pathname)) return "image/png";
-  if (/\.webp$/.test(pathname)) return "image/webp";
-  if (/\.gif$/.test(pathname)) return "image/gif";
-  if (/\.avif$/.test(pathname)) return "image/avif";
-  return "image/jpeg";
-}
-
 async function normalizeDownloadedImage(buffer, sourceMime) {
   const mime = String(sourceMime || "").toLowerCase();
   if (["image/jpeg", "image/jpg", "image/png"].includes(mime)) {
@@ -1580,38 +1498,6 @@ async function fetchImageFile(payload = {}) {
   };
 }
 
-function sanitizePathSegment(value, fallback = "未命名") {
-  const cleaned = String(value || "")
-    .replace(/[<>:\"/\\|?*\u0000-\u001f]/g, "-")
-    .replace(/[. ]+$/g, "")
-    .replace(/^\.+/g, "")
-    .replace(/-{2,}/g, "-")
-    .trim();
-  return cleaned || fallback;
-}
-
-function sanitizeFileName(value, fallback = "file.txt") {
-  const raw = String(value || fallback).replace(/\\/g, "/").split("/").pop();
-  return sanitizePathSegment(raw, fallback).slice(0, 190);
-}
-
-function sanitizeRelativeFolder(value, fallback) {
-  const raw = String(value || fallback || "").trim().replace(/\\/g, "/");
-  if (!raw) return "";
-  if (raw.startsWith("/") || /^[a-z]:/i.test(raw) || raw.split("/").some((part) => part === "..")) {
-    throw new Error("下载目录必须是浏览器“下载”文件夹内的相对子目录，不能使用盘符、绝对路径或 ..");
-  }
-  return raw
-    .split("/")
-    .filter((part) => part && part !== ".")
-    .map((part) => sanitizePathSegment(part, "未命名目录"))
-    .join("/");
-}
-
-function joinDownloadPath(folder, fileName) {
-  return [folder, fileName].filter(Boolean).join("/");
-}
-
 function utf8ToBase64(text) {
   return arrayBufferToBase64(new TextEncoder().encode(text).buffer);
 }
@@ -1640,12 +1526,6 @@ async function saveTextFile(payload = {}) {
     saveAs: false,
   });
   return { downloadId, path, fileName, size };
-}
-
-function chooseDownloadUrl(image = {}, item = {}) {
-  const aspectLabel = image.aspectLabel || item.aspectLabel || "9:16";
-  return image.selectedUrl || image.uploadUrl || image.downloadUrl || image.originalUrl || image.imageUrl ||
-    image.cropUrls?.[aspectLabel] || item.imageUrl || "";
 }
 
 function buildFinalImageName(item = {}, image = {}) {
@@ -1997,23 +1877,6 @@ async function reconcileImageDownloads(tabId) {
     }
     await chrome.storage.local.set({ [storageKey]: history });
     return { completed, interrupted, history };
-  });
-}
-
-function workLock(action, token, tabId) {
-  return queueWorkLock(async () => {
-    const storageKey = (await getTabContext(tabId)).keys.workLease;
-    const workLease = (await chrome.storage.local.get(storageKey))[storageKey];
-    const active = workLease && workLease.expiresAt > Date.now();
-    const owns = active && workLease.token === token && workLease.tabId === tabId;
-    if (action === "status") return { active: Boolean(active), owns: Boolean(owns) };
-    if (action === "release") {
-      if (owns) await chrome.storage.local.set({ [storageKey]: null });
-      return { active: false };
-    }
-    if ((action === "renew" && !owns) || (active && !owns)) throw new Error("当前标签页仍有任务正在处理，请稍后重试；其他标签页可以独立运行");
-    await chrome.storage.local.set({ [storageKey]: { token, tabId, expiresAt: Date.now() + 30000 } });
-    return { active: true, owns: true };
   });
 }
 

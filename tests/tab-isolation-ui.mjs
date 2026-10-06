@@ -136,10 +136,12 @@ try {
   await b.getByRole('button',{name:'选为第 1 条配图'}).first().click();
   await b.waitForFunction(()=>document.querySelector('.lsa-image-status')?.textContent.includes('已替换第 1 条'));
   assert.equal(store.local[kb.batchState].items[0].imageQueryEn,persistedQueryBefore,'人工英文词选图不得覆盖持久化搜图词');
+  await b.locator('.lsa-reset-stock-query').click();
+  assert.equal(await b.locator('.lsa-stock-query').inputValue(),'How to care for cats in Room B','恢复原标题按钮应重新填入默认原标题');
   await b.locator('.lsa-stock-query').fill('кот у окна');
   const beforeRejectedSearch=messages.filter((message)=>message.action==='SEARCH_PEXELS_BATCH').length;
   await b.locator('.lsa-search-images').click();
-  await b.waitForFunction(()=>document.querySelector('.lsa-image-status')?.textContent.includes('请输入英文'));
+  await b.waitForFunction(()=>document.querySelector('.lsa-image-status')?.textContent.includes('自定义关键词请使用英文'));
   assert.equal(messages.filter((message)=>message.action==='SEARCH_PEXELS_BATCH').length,beforeRejectedSearch,'非 ASCII 人工词不得发起素材请求');
   await b.locator('[data-tab="batch"]').click();
   const reviewCopy=structuredClone(store.local[kb.batchState]);
