@@ -3,7 +3,6 @@ const DEFAULT_SETTINGS = {
   summaryLimit: 50,
   batchLimit: 30,
   batchConcurrency: 2,
-  pageCount: 1,
   rewriteMode: "ai",
   thinkingLevel: "medium",
   autoSearch: true,
@@ -24,7 +23,6 @@ const DEFAULT_SETTINGS = {
 };
 
 const fields = {
-  pageCount: document.querySelector("#pageCount"),
   rewriteMode: document.querySelector("#rewriteMode"),
   thinkingLevel: document.querySelector("#thinkingLevel"),
   autoSearch: document.querySelector("#autoSearch"),
@@ -83,9 +81,9 @@ async function loadSettings() {
     chrome.storage.local.get(["localSecrets", "rewritePrompt"]),
   ]);
   const settings = { ...DEFAULT_SETTINGS, ...saved, siteRules: saved.siteRules || {} };
-  for (const key of ["pageCount", "rewriteMode", "thinkingLevel"]) fields[key].value = settings[key];
+  for (const key of ["rewriteMode", "thinkingLevel"]) fields[key].value = settings[key];
   for (const key of ["autoSearch", "duplicateCheck"]) fields[key].checked = settings[key];
-  fields.rewritePrompt.value = rewritePrompt || LSAWorkflow.DEFAULT_PROMPT;
+  fields.rewritePrompt.value = LSAWorkflow.wordPrompt(rewritePrompt);
   fields.titleLimit.value = settings.titleLimit;
   fields.summaryLimit.value = settings.summaryLimit;
   fields.batchLimit.value = settings.batchLimit;
@@ -171,7 +169,6 @@ async function saveAllSettings() {
     const settings = {
       ...DEFAULT_SETTINGS,
       ...saved,
-      pageCount: clamp(fields.pageCount.value, 1, 20, 1),
       rewriteMode: fields.rewriteMode.value,
       thinkingLevel: fields.thinkingLevel.value,
       autoSearch: fields.autoSearch.checked,

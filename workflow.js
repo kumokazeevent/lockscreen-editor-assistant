@@ -1,10 +1,26 @@
 (() => {
   "use strict";
-  const count = (value) => Array.from(String(value || "").normalize("NFC")).length;
+  function words(value) {
+    const source = String(value || "").normalize("NFC");
+    const tokens = source.match(/[\p{L}\p{N}][\p{L}\p{M}\p{N}]*(?:['’\-‐‑][\p{L}\p{M}\p{N}]+)*/gu) || [];
+    return tokens.flatMap((token) => {
+      if (/[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Thai}]/u.test(token) && typeof Intl.Segmenter === "function") {
+        return [...new Intl.Segmenter(undefined, { granularity: "word" }).segment(token)].filter((part) => part.isWordLike).map((part) => part.segment);
+      }
+      return [token];
+    });
+  }
+  const count = (value) => words(value).length;
   const clean = (value, max = 12000) => String(value ?? "").normalize("NFC").replace(/\s+/g, " ").trim().slice(0, max);
   const number = (value, min, max, fallback) => Number.isFinite(Number(value))
     ? Math.max(min, Math.min(max, Math.round(Number(value)))) : fallback;
-  const DEFAULT_PROMPT = "Preserve the original language and core meaning. Rewrite naturally within {titleLimit} title characters and {summaryLimit} description characters, counting spaces and punctuation. Keep important proper nouns. Never change a stated number of methods or steps to a different number. Remove repetition and excessive modifiers. Do not invent facts. Check both character counts before answering.";
+  const DEFAULT_PROMPT = "Preserve the original language and core meaning. Rewrite naturally within {titleLimit} words for the title and {summaryLimit} words for the description. Count written words, not letters or characters. Spaces and punctuation are not words. Hyphenated words and contractions count as one word. Preserve an already suitable text if it fits. Keep important proper nouns. Never change a stated number of methods or steps to a different number. Remove repetition and excessive modifiers. Do not invent facts. Check both word counts before answering.";
+  function wordPrompt(value) {
+    return String(value || DEFAULT_PROMPT)
+      .replace(/counting spaces and punctuation/gi, "counting words, excluding standalone punctuation")
+      .replace(/Unicode characters|characters|character counts|character limits/gi, (match) => /counts/i.test(match) ? "word counts" : /limits/i.test(match) ? "word limits" : "words")
+      .replace(/字符/g, "词");
+  }
   function httpUrl(value) {
     try { const url = new URL(String(value)); return /https?:/.test(url.protocol) ? url.href : ""; } catch { return ""; }
   }
@@ -60,7 +76,7 @@
         sourceUrl: httpUrl(raw.sourceUrl), editUrl: editUrl(raw.editUrl, id),
         pageKey: clean(raw.pageKey || "imported", 160), pageLabel: clean(raw.pageLabel || "导入页面", 160),
         sourcePage: httpUrl(raw.sourcePage || data.sourcePage), pageOrder: number(raw.pageOrder, 0, 600, index),
-        articleText: clean(raw.articleText), title: clean(raw.title, 1000), summary: clean(raw.summary, 2000),
+        articleText: clean(raw.articleText), title: clean(raw.title, 12000), summary: clean(raw.summary, 32000),
         imageQueryEn: clean(raw.imageQueryEn || raw.image_query_en, 500), language: clean(raw.language, 20),
         image: safeImage(raw.image), rewriteMode: raw.rewriteMode === "local" ? "local" : "ai",
         reviewWarning: clean(raw.reviewWarning, 1000), error: clean(raw.error, 2000), attempts: 0,
@@ -77,19 +93,17 @@
         item.status = item.image.safetyStatus === "passed" && item.rewriteMode !== "local" ? "completed" : "needs_review";
       } else if (raw.status === "error" || (item.title && !validCopy)) {
         item.status = "error";
-        item.error ||= "导入结果未通过当前字数限制，请重新改写";
+        item.error ||= "导入结果未通过当前词数限制，请重新改写";
       }
       return item;
     }).filter((item) => { const key = recordKey(item); if (seen.has(key)) return false; seen.add(key); return true; });
-    return { version: 3, format: "lockscreen-results", batchId: clean(data.batchId, 100) || `import-${Date.now()}`,
+    return { version: 4, countUnit: "words", format: "lockscreen-results", batchId: clean(data.batchId, 100) || `import-${Date.now()}`,
       sourcePage: httpUrl(data.sourcePage), createdAt: Date.now(), updatedAt: Date.now(), status: "ready", items };
   }
   function localShorten(text, limit) {
     const source = clean(text);
     if (count(source) <= limit) return source;
-    const segments = typeof Intl.Segmenter === "function"
-      ? [...new Intl.Segmenter(undefined, { granularity: "word" }).segment(source)].filter((part) => part.isWordLike).map((part) => part.segment)
-      : source.split(/\s+/);
+    const segments = words(source);
     const stop = /^(?:the|a|an|and|of|to|for|how|can|you|your|this|that|el|la|los|las|de|del|un|una|y|para|как|и|в|на|для|это|ваш|вашего|của|và|là|các|những|một|cách|في|من|على|و)$/iu;
     const candidates = segments.filter((word) => !stop.test(word));
     let best = "";
@@ -102,7 +116,7 @@
       }
       if (count(candidate) > count(best)) best = candidate;
     }
-    if (!best) throw new Error(`原稿没有能放进 ${limit} 字符的完整词语，请增加限制或使用 AI 改写`);
+    if (!best) throw new Error(`原稿没有可用的词语，请检查原稿或使用 AI 改写`);
     return best;
   }
   function localRewrite(item, settings) {
@@ -111,5 +125,5 @@
       summary: localShorten(summary, settings.summaryLimit || 50), imageQueryEn: item.imageQueryEn || "",
       rewriteMode: "local", reviewWarning: "本地词语候选：未做语义理解或翻译，请人工核对原意与专有名词。" };
   }
-  globalThis.LSAWorkflow = { count, clean, number, DEFAULT_PROMPT, httpUrl, editUrl, imageKey, recordKey, safeImage, importBatch, localShorten, localRewrite };
+  globalThis.LSAWorkflow = { words, count, clean, number, DEFAULT_PROMPT, wordPrompt, httpUrl, editUrl, imageKey, recordKey, safeImage, importBatch, localShorten, localRewrite };
 })();

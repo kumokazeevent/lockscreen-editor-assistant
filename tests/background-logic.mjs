@@ -92,7 +92,7 @@ assert(valid.language === "es", "西班牙语结果校验失败");
 let overLimitRejected = false;
 try {
   evaluate(`validateAiResult(
-    {title:'This title is far too long',summary:'Short summary',image_query_en:'green forest trail morning',language:'en'},
+    {title:'This title contains far more than twelve written words and must be rejected now',summary:'Short summary',image_query_en:'green forest trail morning',language:'en'},
     {titleLimit:12,summaryLimit:50,originalTitle:'A useful title',expectedLanguage:'en'}
   )`);
 } catch {
@@ -105,8 +105,8 @@ const strictPrompt = evaluate(`buildAiMessages({
   articleText:'', expectedLanguage:'en', titleLimit:12, summaryLimit:50
 }, 'AI title was 27 characters, exceeding the 12 character limit')[0].content`);
 assert(strictPrompt.includes("MANDATORY FINAL CHECK"), "提示词缺少强制字符复核");
-assert(strictPrompt.includes("at most 12 Unicode characters"), "提示词缺少标题字符限制");
-assert(strictPrompt.includes("at most 50 Unicode characters"), "提示词缺少简介字符限制");
+assert(strictPrompt.includes("at most 12 words"), "提示词缺少标题词数限制");
+assert(strictPrompt.includes("at most 50 words"), "提示词缺少简介词数限制");
 assert(strictPrompt.includes("PREVIOUS ATTEMPT FAILED"), "重试提示词没有携带上次失败原因");
 assert(strictPrompt.includes("image_query_en"), "提示词丢失英文搜图词要求");
 

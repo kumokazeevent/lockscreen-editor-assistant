@@ -94,7 +94,7 @@
     return String(value || "").replace(/\u00a0/g, " ").replace(/\s+/g, " ").trim();
   }
 
-  function characterCount(value) {
+  function wordCount(value) {
     return LSAWorkflow.count(value);
   }
 
@@ -715,17 +715,7 @@
   }
 
   async function applyDraft(title, summary) {
-    const { titleField, summaryField, bindingStatus } = await resolveSiteFields();
-    if (!titleField || !summaryField) {
-      return { ok: false, message: "未找到标题或简介字段，请点击“绑定后台字段”完成设置", bindingStatus };
-    }
-    setFieldValue(titleField, title);
-    setFieldValue(summaryField, summary);
-    for (const field of [titleField, summaryField]) {
-      field.classList.add("lsa-field-flash");
-      setTimeout(() => field.classList.remove("lsa-field-flash"), 1300);
-    }
-    return { ok: true, message: "标题和简介已填写到后台", bindingStatus };
+    return applyBatchRecord({ title, summary });
   }
 
   function actionLabelFor(element) {
@@ -1003,33 +993,6 @@
     return { ...result, sourcePage: location.href, pageLabel: `列表第 ${listPageNumber()} 页` };
   }
 
-  async function nextListPage(limit = 30) {
-    if (!getSiteRoute().isList) throw new Error("当前不是列表页，无法翻页");
-    const next = [...document.querySelectorAll('.el-pagination .btn-next, .ant-pagination-next, .pagination-next, button[aria-label="Next page"], [title="下一页"], [aria-label="下一页"]')]
-      .find((node) => !node.closest(".lsa-assistant") && node.getBoundingClientRect().width > 0);
-    if (!next) throw new Error("未识别到列表下一页按钮，可选择合并已打开的后台标签页");
-    if (next.disabled || next.getAttribute("aria-disabled") === "true" || /disabled/.test(next.className)
-      || next.querySelector("button:disabled")) return { ended: true };
-    const before = await scanPageSnapshot(limit);
-    const fingerprint = (items) => (items || []).map((item) => `${item.id}|${item.originalTitle}`).join("\n");
-    const old = fingerprint(before.items);
-    const hash = location.hash;
-    next.click();
-    const until = Date.now() + 15000;
-    let stable = "", stableAt = 0;
-    while (Date.now() < until) {
-      await new Promise((resolve) => setTimeout(resolve, 350));
-      if (!getSiteRoute().isList || location.hash !== hash) throw new Error("页面路由已切换，已停止连续读取");
-      const snapshot = await scanPageSnapshot(limit);
-      const current = fingerprint(snapshot.items);
-      if (current && current !== old) {
-        if (stable === current && Date.now() - stableAt >= 700) return snapshot;
-        if (stable !== current) { stable = current; stableAt = Date.now(); }
-      } else { stable = ""; }
-    }
-    throw new Error("翻页后列表在 15 秒内未更新，已保留读取的页面；请确认网络或列表加载状态");
-  }
-
   function dataUrlToBlob(dataUrl, fallbackMime = "image/jpeg") {
     const match = String(dataUrl || "").match(/^data:([^;,]+)?(;base64)?,([\s\S]*)$/);
     if (!match) throw new Error("图片数据不是有效的 data URL");
@@ -1087,7 +1050,7 @@
 
   async function fieldApplyStatus(field, value, label, characterLimit) {
     if (!field) return { ok: false, expected: value, actual: "", message: `未找到${label}字段` };
-    const count = characterCount(value);
+    const count = wordCount(value);
     if (!cleanText(value)) {
       return { ok: false, expected: value, actual: readFieldValue(field), message: `${label}为空，未覆盖原内容` };
     }
@@ -1096,8 +1059,8 @@
         ok: false,
         expected: value,
         actual: readFieldValue(field),
-        characterCount: count,
-        message: `${label}为 ${count} 字符，超过 ${characterLimit} 字符限制，未写入`,
+        wordCount: count,
+        message: `${label}为 ${count} 词，超过 ${characterLimit} 词限制，未写入`,
       };
     }
     setFieldValue(field, value);
@@ -1106,7 +1069,7 @@
     const ok = actual === value;
     field.classList.add("lsa-field-flash");
     setTimeout(() => field.classList.remove("lsa-field-flash"), 1300);
-    return { ok, expected: value, actual, characterCount: count, message: ok ? `${label}已填写` : `${label}写入后读回不一致` };
+    return { ok, expected: value, actual, wordCount: count, message: ok ? `${label}已填写` : `${label}写入后读回不一致` };
   }
 
   async function applyBatchRecord(record = {}) {
@@ -1118,10 +1081,14 @@
         diagnostics: { route },
       };
     }
-    const [{ titleField, summaryField, bindingStatus }, { settings = {} }] = await Promise.all([
+    const [{ titleField, summaryField, bindingStatus }, { settings: defaults = {} }, tab] = await Promise.all([
       resolveSiteFields(),
       chrome.storage.sync.get("settings"),
+      chrome.runtime.sendMessage({ action: "GET_TAB_CONTEXT" }),
     ]);
+    if (!tab?.keys?.settings) throw new Error("当前标签页设置未就绪，请刷新页面");
+    const overrides = (await chrome.storage.local.get(tab.keys.settings))[tab.keys.settings] || {};
+    const settings = { ...defaults, ...overrides };
     const title = String(record.title ?? record.rewrittenTitle ?? record.generatedTitle ?? record.newTitle ?? "");
     const summary = String(
       record.summary ?? record.rewrittenSummary ?? record.generatedSummary ?? record.newSummary ?? record.description ?? "",
@@ -1180,7 +1147,6 @@
     getSiteRoute,
     scanListItems,
     scanPageSnapshot,
-    nextListPage,
     getPageContext,
     applyDraft,
     applyBatchRecord,

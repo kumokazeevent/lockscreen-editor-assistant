@@ -33,6 +33,38 @@ const MAX_AI_ARTICLE_CHARS = 6000;
 const MAX_IMAGE_BYTES = 24 * 1024 * 1024;
 const MAX_TEXT_DOWNLOAD_BYTES = 32 * 1024 * 1024;
 
+let epochPromise;
+function tabEpoch() {
+  return epochPromise ||= chrome.storage.local.get("lsaTabEpoch").then(async (saved) => {
+    if (saved.lsaTabEpoch) return saved.lsaTabEpoch;
+    const epoch = crypto.randomUUID();
+    await chrome.storage.local.set({ lsaTabEpoch: epoch });
+    return epoch;
+  });
+}
+chrome.runtime.onStartup?.addListener(() => {
+  const epoch = crypto.randomUUID();
+  epochPromise = chrome.storage.local.set({ lsaTabEpoch: epoch }).then(() => epoch);
+});
+async function getTabContext(tabId) {
+  if (!Number.isInteger(tabId) || tabId < 0) throw new Error("未识别到当前浏览器标签页，请刷新后台后重试");
+  const prefix = `lsaTab:${await tabEpoch()}:${tabId}`;
+  return { tabId, label: `标签页 ${tabId}`, folder: `标签页-${tabId}-${(await tabEpoch()).slice(0, 8)}`,
+    keys: Object.fromEntries(["batchState", "assistantState", "settings", "imageHistory", "workLease"].map((name) => [name, `${prefix}:${name}`])) };
+}
+async function tabOverrides(tabId) {
+  if (!Number.isInteger(tabId)) return {};
+  const { keys } = await getTabContext(tabId);
+  const saved = (await chrome.storage.local.get(keys.settings))[keys.settings] || {};
+  return Object.fromEntries(["titleLimit", "summaryLimit", "rewriteMode", "thinkingLevel", "batchConcurrency"].filter((key) => saved[key] !== undefined).map((key) => [key, saved[key]]));
+}
+async function savedBatches() {
+  const all = await chrome.storage.local.get(null);
+  return { batches: Object.entries(all).filter(([key, batch]) => (key === "batchState" || /^lsaTab:.*:batchState$/.test(key)) && batch?.items?.length)
+    .map(([key, batch]) => ({ key, batchId: batch.batchId, count: batch.items.length, updatedAt: batch.updatedAt || 0 }))
+    .sort((a, b) => b.updatedAt - a.updatedAt) };
+}
+
 chrome.runtime.onInstalled.addListener(() => {
   chrome.contextMenus.removeAll(() => {
     chrome.contextMenus.create({
@@ -577,8 +609,8 @@ function extractJson(text) {
   }
 }
 
-function codePointLength(value) {
-  return Array.from(String(value || "")).length;
+function wordCount(value) {
+  return LSAWorkflow.count(value);
 }
 
 function normalizeLanguageCode(value) {
@@ -751,14 +783,14 @@ function validateAiResult(raw, context) {
       retryable: true,
     });
   }
-  if (codePointLength(title) > context.titleLimit) {
-    throw new RequestError(`AI 标题为 ${codePointLength(title)} 字符，超过 ${context.titleLimit} 字符限制`, {
+  if (wordCount(title) > context.titleLimit) {
+    throw new RequestError(`AI 标题为 ${wordCount(title)} 词，超过 ${context.titleLimit} 词限制`, {
       code: "AI_INVALID",
       retryable: true,
     });
   }
-  if (codePointLength(summary) > context.summaryLimit) {
-    throw new RequestError(`AI 简介为 ${codePointLength(summary)} 字符，超过 ${context.summaryLimit} 字符限制`, {
+  if (wordCount(summary) > context.summaryLimit) {
+    throw new RequestError(`AI 简介为 ${wordCount(summary)} 词，超过 ${context.summaryLimit} 词限制`, {
       code: "AI_INVALID",
       retryable: true,
     });
@@ -800,25 +832,25 @@ function buildAiMessages(context, correction = "") {
     : "Detect the title's original language first. The title and summary MUST stay in that language and MUST NOT default to Chinese or English.";
   const system = [
     "You are a professional lock-screen magazine title and description editor.",
-    (context.rewritePrompt || LSAWorkflow.DEFAULT_PROMPT)
+    LSAWorkflow.wordPrompt(context.rewritePrompt)
       .replaceAll("{titleLimit}", String(context.titleLimit)).replaceAll("{summaryLimit}", String(context.summaryLimit)),
     "Shorten the supplied title and description by rewriting them naturally. Do not merely cut off the text.",
     "KEEP THE ORIGINAL LANGUAGE: use exactly the same language as the input title. Never translate the title or summary.",
-    `TITLE: at most ${context.titleLimit} Unicode characters. Spaces, punctuation, numbers and letters all count as characters.`,
+    `TITLE: at most ${context.titleLimit} words. Count written words, NOT letters or characters. Spaces and punctuation do not count. Hyphenated compounds and contractions are one word; numbers are words.`,
     "Preserve the core topic, meaning and most important keywords. Keep important names, places and technical terms when possible.",
     "If the original title is already within the limit and reads naturally, preserve it unchanged.",
     "Never change a stated number of methods, steps, tips or items into a smaller or different number.",
-    `SUMMARY: at most ${context.summaryLimit} Unicode characters. Preserve the original meaning and key information.`,
+    `SUMMARY: at most ${context.summaryLimit} words. Preserve the original meaning and key information.`,
     "Remove repetition, background details and excessive modifiers. Do not invent any information.",
     languageInstruction,
     "IMAGE QUERY: image_query_en must be 5 to 12 concrete English visual keywords derived directly from the ORIGINAL title, description and article text, never guessed from the shortened title.",
     "For people, prefer side profile, back view, silhouette, fully clothed subjects or wide shots. Avoid frontal close-ups, selfies, swimwear, nudity, exposed skin and sexualized poses. Prefer objects or scenery when people are unnecessary.",
     "LANGUAGE CODE: language must be the ISO 639-1 two-letter code of the original title, such as en, vi, es, ru, be, ar or it.",
-    "MANDATORY FINAL CHECK: count every Unicode character in title and summary before answering.",
+    "MANDATORY FINAL CHECK: count words in the title and summary before answering. For Vietnamese count space-separated written words/syllables; for Chinese and other unspaced writing use natural word segmentation.",
     "Keep internal reasoning concise and reserve enough output budget for the final JSON answer.",
-    `If title exceeds ${context.titleLimit} characters, rewrite it shorter and count again. If summary exceeds ${context.summaryLimit} characters, rewrite it shorter and count again.`,
+    `If title exceeds ${context.titleLimit} words, rewrite it shorter and count again. If summary exceeds ${context.summaryLimit} words, rewrite it shorter and count again.`,
     "Never exceed either limit. Further shortening is always preferable to exceeding a limit.",
-    "Return exactly one strict JSON object with no Markdown, labels, explanations, analysis or character counts:",
+    "Return exactly one strict JSON object with no Markdown, labels, explanations, analysis or word counts:",
     '{"title":"...","summary":"...","image_query_en":"...","language":"..."}',
     correction ? `PREVIOUS ATTEMPT FAILED: ${correction}. Correct this failure before returning the new JSON.` : "",
   ].filter(Boolean).join("\n");
@@ -855,11 +887,11 @@ async function reviewAiCandidate(candidate, context, settings, localSecrets, tim
         content: [
           "You are the final quality reviewer for lock-screen magazine copy.",
           "Compare the candidate with the original title and description. Correct the candidate whenever needed.",
-          `The final title MUST use the original language and contain at most ${context.titleLimit} Unicode characters, including every space and punctuation mark.`,
-          `The final summary MUST use the original language and contain at most ${context.summaryLimit} Unicode characters, including every space and punctuation mark.`,
+          `The final title MUST use the original language and contain at most ${context.titleLimit} words. Count words, not letters. Spaces and punctuation do not count. Contractions and hyphenated words count as one.`,
+          `The final summary MUST use the original language and contain at most ${context.summaryLimit} words.`,
           "Preserve the core meaning, important proper nouns and every stated number of methods, steps, tips or items. Do not invent facts.",
           "image_query_en must remain a concrete English stock-photo query based on the original material.",
-          "Count title and summary character by character before replying. Rewrite and recount until both limits are satisfied.",
+          "Count the words in title and summary before replying. Rewrite and recount until both word limits are satisfied.",
           "Review quickly and directly. Do not provide analysis or explanations.",
           "Return exactly one strict JSON object and nothing else:",
           '{"title":"...","summary":"...","image_query_en":"...","language":"..."}',
@@ -905,13 +937,13 @@ function shouldRetry(error) {
   return true;
 }
 
-async function generateBatchItemWithAi(payload = {}) {
+async function generateBatchItemWithAi(payload = {}, tabId) {
   const item = payload.item || payload;
   const [{ settings: savedSettings = {} }, { localSecrets = {}, rewritePrompt = "" }] = await Promise.all([
     chrome.storage.sync.get("settings"),
     chrome.storage.local.get(["localSecrets", "rewritePrompt"]),
   ]);
-  const settings = { ...DEFAULT_BATCH_SETTINGS, ...savedSettings };
+  const settings = { ...DEFAULT_BATCH_SETTINGS, ...savedSettings, ...await tabOverrides(tabId) };
   if (settings.rewriteMode === "local") {
     const result = LSAWorkflow.localRewrite(item, settings);
     return { configured: true, result, ...result, attempts: 1 };
@@ -1036,11 +1068,12 @@ async function generateBatchItemWithAi(payload = {}) {
   );
 }
 
-async function generateImageQueryWithAi(payload) {
-  const [{ settings = {} }, { localSecrets = {} }] = await Promise.all([
+async function generateImageQueryWithAi(payload, tabId) {
+  const [{ settings: savedSettings = {} }, { localSecrets = {} }] = await Promise.all([
     chrome.storage.sync.get("settings"),
     chrome.storage.local.get("localSecrets"),
   ]);
+  const settings = { ...savedSettings, ...await tabOverrides(tabId) };
   const configuredEndpoint = settings.aiEndpoint?.trim();
   if (settings.rewriteMode === "local") return { configured: false, imageQueryEn: "", local: true };
   const model = String(settings.aiModel || "").trim();
@@ -1318,28 +1351,31 @@ function withImageHistory(task) {
   imageHistoryChain = run.catch(() => {});
   return run;
 }
-async function imageHistory() {
-  return (await chrome.storage.local.get("imageHistory")).imageHistory || {};
+async function imageHistory(storageKey = "imageHistory") {
+  return (await chrome.storage.local.get(storageKey))[storageKey] || {};
 }
-async function markDuplicate(payload) {
+async function markDuplicate(payload, tabId) {
+  const storageKey = Number.isInteger(tabId) ? (await getTabContext(tabId)).keys.imageHistory : "imageHistory";
   return withImageHistory(async () => {
     const key = LSAWorkflow.imageKey(payload.image);
     if (!key) throw new Error("没有可识别的图片地址");
-    const history = await imageHistory();
+    const history = await imageHistory(storageKey);
     history[key] = { ...history[key], manual: Boolean(payload.marked), updatedAt: Date.now() };
-    await chrome.storage.local.set({ imageHistory: history });
+    await chrome.storage.local.set({ [storageKey]: history });
     return { key, entry: history[key] };
   });
 }
 
-async function downloadFinalImage(payload = {}) {
+async function downloadFinalImage(payload = {}, tabId) {
+  const tab = Number.isInteger(tabId) ? await getTabContext(tabId) : null;
+  const storageKey = tab?.keys.imageHistory || "imageHistory";
   const settings = await getBatchSettings();
   const item = payload.item || {};
   const image = payload.image || {};
   const url = chooseDownloadUrl(image, item);
   if (!/^(https?:\/\/|data:image\/)/i.test(url)) throw new Error("成品图片下载地址无效");
   const key = LSAWorkflow.imageKey(image) || url;
-  const history = await imageHistory();
+  const history = await imageHistory(storageKey);
   const isDuplicate = (entry) => entry?.manual || ["queued", "completed"].includes(entry?.status);
   if (settings.duplicateCheck !== false && !payload.force && isDuplicate(history[key])) {
     return { skipped: true, duplicate: true, path: history[key].path || "", reason: history[key].manual ? "你已标记为重复" : "此图已下载或正在下载" };
@@ -1349,12 +1385,12 @@ async function downloadFinalImage(payload = {}) {
   const digest = await crypto.subtle.digest("SHA-256", bytes);
   const hash = Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
   return withImageHistory(async () => {
-  const fresh = await imageHistory();
+  const fresh = await imageHistory(storageKey);
   const duplicate = Object.values(fresh).find((entry) => entry.hash === hash && isDuplicate(entry));
   if (settings.duplicateCheck !== false && !payload.force && (isDuplicate(fresh[key]) || duplicate)) {
     return { skipped: true, duplicate: true, path: (duplicate || fresh[key])?.path || "", reason: "图片已存在（素材或文件内容相同）" };
   }
-  const baseFolder = sanitizeRelativeFolder(payload.folder, settings.imageFolder);
+  const baseFolder = joinDownloadPath(sanitizeRelativeFolder(payload.folder, settings.imageFolder), tab?.folder || "");
   const allocation = await reserveFinalImageFolder(baseFolder);
   const folder = allocation.folder;
   const fileName = sanitizeFileName(payload.fileName || file.fileName, "lockscreen-image.jpg");
@@ -1366,7 +1402,7 @@ async function downloadFinalImage(payload = {}) {
     saveAs: false,
   });
   fresh[key] = { ...fresh[key], hash, path, downloadId, status: "queued", updatedAt: Date.now() };
-  await chrome.storage.local.set({ imageHistory: fresh });
+  await chrome.storage.local.set({ [storageKey]: fresh, [`lsaDownload:${downloadId}`]: { storageKey, key } });
   return { downloadId, path, fileName, url, ...allocation };
   });
 }
@@ -1374,45 +1410,34 @@ async function downloadFinalImage(payload = {}) {
 chrome.downloads.onChanged?.addListener((delta) => {
   if (!delta.state || !["complete", "interrupted"].includes(delta.state.current)) return;
   withImageHistory(async () => {
-    const history = await imageHistory();
+    const record = (await chrome.storage.local.get(`lsaDownload:${delta.id}`))[`lsaDownload:${delta.id}`];
+    if (!record) return;
+    const history = await imageHistory(record.storageKey);
     for (const entry of Object.values(history)) {
       if (entry.downloadId === delta.id) entry.status = delta.state.current === "complete" ? "completed" : "interrupted";
     }
-    await chrome.storage.local.set({ imageHistory: history });
+    await chrome.storage.local.set({ [record.storageKey]: history });
   }).catch(() => {});
 });
 
 let workLockChain = Promise.resolve();
 function workLock(action, token, tabId) {
   const run = workLockChain.then(async () => {
-    const { workLease } = await chrome.storage.local.get("workLease");
+    const storageKey = (await getTabContext(tabId)).keys.workLease;
+    const workLease = (await chrome.storage.local.get(storageKey))[storageKey];
     const active = workLease && workLease.expiresAt > Date.now();
     const owns = active && workLease.token === token && workLease.tabId === tabId;
     if (action === "status") return { active: Boolean(active), owns: Boolean(owns) };
     if (action === "release") {
-      if (owns) await chrome.storage.local.set({ workLease: null });
+      if (owns) await chrome.storage.local.set({ [storageKey]: null });
       return { active: false };
     }
-    if ((action === "renew" && !owns) || (active && !owns)) throw new Error("另一后台标签页正在读取或处理，请等待它完成或暂停");
-    await chrome.storage.local.set({ workLease: { token, tabId, expiresAt: Date.now() + 30000 } });
+    if ((action === "renew" && !owns) || (active && !owns)) throw new Error("当前标签页仍有任务正在处理，请稍后重试；其他标签页可以独立运行");
+    await chrome.storage.local.set({ [storageKey]: { token, tabId, expiresAt: Date.now() + 30000 } });
     return { active: true, owns: true };
   });
   workLockChain = run.catch(() => {});
   return run;
-}
-
-async function scanOpenPages(payload, sender) {
-  const tabs = (await chrome.tabs.query({ url: "https://lockscreen-admin.mofeeds.com/*" }))
-    .filter((tab) => /#\/nav\/(overseasContent|overseasDeliver)\?/.test(tab.url || ""))
-    .sort((a, b) => Number(b.id === sender.tab?.id) - Number(a.id === sender.tab?.id) || a.index - b.index)
-    .slice(0, LSAWorkflow.number(payload.pageCount, 1, 20, 1));
-  const outcomes = await Promise.allSettled(tabs.map(async (tab) => {
-    const result = await chrome.tabs.sendMessage(tab.id, { action: "SCAN_PAGE_SNAPSHOT", limit: payload.limit || 30 });
-    if (!result?.ok) throw new Error(result?.message || "页面未就绪");
-    return { ...result, pageLabel: `${result.pageLabel}（标签 ${tab.index + 1}）` };
-  }));
-  return { pages: outcomes.filter((entry) => entry.status === "fulfilled").map((entry) => entry.value),
-    warnings: outcomes.flatMap((entry, i) => entry.status === "rejected" ? [`标签 ${tabs[i].index + 1}：${entry.reason?.message || "读取失败"}`] : []) };
 }
 
 async function downloadImage(url, fileName) {
@@ -1442,9 +1467,10 @@ function respondAsync(sendResponse, promise, fallbackMessage) {
 
 chrome.runtime.onMessage.addListener((message = {}, _sender, sendResponse) => {
   const action = message.action || message.type;
+  if (action === "GET_TAB_CONTEXT") return respondAsync(sendResponse, getTabContext(_sender.tab?.id), "标签页识别失败");
+  if (action === "LIST_SAVED_BATCHES") return respondAsync(sendResponse, savedBatches(), "读取已存批次失败");
   if (action === "WORK_LOCK") return respondAsync(sendResponse, workLock(message.operation, message.token, _sender.tab?.id), "批次正在使用");
-  if (action === "SCAN_OPEN_PAGES") return respondAsync(sendResponse, scanOpenPages(message, _sender), "多标签页读取失败");
-  if (action === "MARK_IMAGE_DUPLICATE") return respondAsync(sendResponse, markDuplicate(message), "重复标记失败");
+  if (action === "MARK_IMAGE_DUPLICATE") return respondAsync(sendResponse, markDuplicate(message, _sender.tab?.id), "重复标记失败");
 
   if (action === "OPEN_IMAGE_SEARCH") {
     openImageSearch(message.engine, message.query);
@@ -1481,11 +1507,11 @@ chrome.runtime.onMessage.addListener((message = {}, _sender, sendResponse) => {
   }
 
   if (action === "GENERATE_IMAGE_QUERY") {
-    return respondAsync(sendResponse, generateImageQueryWithAi(message), "英文图片关键词生成失败");
+    return respondAsync(sendResponse, generateImageQueryWithAi(message, _sender.tab?.id), "英文图片关键词生成失败");
   }
 
   if (action === "AI_PROCESS_ITEM") {
-    return respondAsync(sendResponse, generateBatchItemWithAi(message), "AI 改写失败");
+    return respondAsync(sendResponse, generateBatchItemWithAi(message, _sender.tab?.id), "AI 改写失败");
   }
 
   if (action === "FETCH_ARTICLE") {
@@ -1497,11 +1523,16 @@ chrome.runtime.onMessage.addListener((message = {}, _sender, sendResponse) => {
   }
 
   if (action === "SAVE_TEXT_FILE") {
-    return respondAsync(sendResponse, saveTextFile(message), "内容文件保存失败");
+    const save = async () => {
+      const tab = await getTabContext(_sender.tab?.id);
+      const settings = await getBatchSettings();
+      return saveTextFile({ ...message, folder: joinDownloadPath(sanitizeRelativeFolder(message.folder, settings.originalFolder), tab.folder) });
+    };
+    return respondAsync(sendResponse, save(), "内容文件保存失败");
   }
 
   if (action === "DOWNLOAD_FINAL_IMAGE") {
-    return respondAsync(sendResponse, downloadFinalImage(message), "成品图片下载失败");
+    return respondAsync(sendResponse, downloadFinalImage(message, _sender.tab?.id), "成品图片下载失败");
   }
 
   return false;

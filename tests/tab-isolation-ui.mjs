@@ -1,0 +1,141 @@
+import fs from 'node:fs';
+import path from 'node:path';
+import vm from 'node:vm';
+import assert from 'node:assert/strict';
+import { webcrypto } from 'node:crypto';
+import { createRequire } from 'node:module';
+import { fileURLToPath } from 'node:url';
+const root = fileURLToPath(new URL('../', import.meta.url));
+const require = createRequire(path.join(process.env.LSA_NODE_MODULES || 'C:/Users/Administrator/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/node_modules','package.json'));
+const { chromium } = require('playwright');
+const browser = await chromium.launch({channel:'chrome',headless:true});
+const store = {local:{localSecrets:{aiApiKey:'test-key',pexelsApiKey:'test-key'}},sync:{settings:{aiEndpoint:'https://api.test/chat/completions',aiModel:'exact-test-model',titleLimit:12,summaryLimit:50,rewriteMode:'ai',autoSearch:false}}};
+const pages = new Map(), messages = [], savedExports = [];
+let handler, startup, activeAi = 0, peakAi = 0;
+const gates = new Map();
+const noop = () => {};
+const event = () => ({addListener:noop});
+const storageArea = (area) => ({
+  get:async(keys) => structuredClone(keys===null ? store[area] : Object.fromEntries((Array.isArray(keys)?keys:[keys]).map((key)=>[key,store[area][key]]))),
+  set:async(patch) => {
+    const changes={};
+    for(const [key,value] of Object.entries(patch)) {changes[key]={oldValue:store[area][key],newValue:structuredClone(value)};store[area][key]=structuredClone(value);}
+    await Promise.all([...pages.keys()].map((page)=>page.evaluate(({changes,area})=>window.storageListeners?.forEach((fn)=>fn(changes,area)),{changes,area}).catch(()=>{})));
+  },
+});
+const chrome={
+  storage:{local:storageArea('local'),sync:storageArea('sync')},
+  runtime:{onMessage:{addListener:(fn)=>handler=fn},onInstalled:event(),onStartup:{addListener:(fn)=>startup=fn}},
+  action:{onClicked:event()},contextMenus:{onClicked:event()},
+  downloads:{onChanged:event(),download:async(data)=>{if(data.url.startsWith('data:application/json'))savedExports.push(JSON.parse(Buffer.from(data.url.split(',')[1],'base64').toString()));return savedExports.length+1;}},
+};
+const sandbox=vm.createContext({chrome,console,crypto:webcrypto,URL,URLSearchParams,TextEncoder,Uint8Array,ArrayBuffer,AbortController,setTimeout,clearTimeout,btoa,atob,importScripts:noop,
+  fetch:async(url,options={})=>{
+    if(String(url).includes('api.test')) {
+      const body=JSON.parse(options.body), tag=body.messages.at(-1).content.includes('Room A')?'A':'B';
+      activeAi++;peakAi=Math.max(peakAi,activeAi);
+      if(gates.has(tag))await gates.get(tag).promise;
+      activeAi--;
+      return new Response(JSON.stringify({choices:[{message:{content:JSON.stringify({title:'A calm guide to caring for cats at home',summary:'Keep cats comfortable and give them a quiet place to rest.',image_query_en:'cat sleeping at home room '+tag,language:'en'})},finish_reason:'stop'}]}),{headers:{'content-type':'application/json'}});
+    }
+    if(String(url).includes('api.pexels.com'))return new Response(JSON.stringify({page:1,total_results:1,photos:[{id:501,width:900,height:1600,alt:'Cat resting at home',src:{original:'https://image.test/cat.jpg',medium:'https://image.test/cat.jpg'}}]}),{headers:{'content-type':'application/json'}});
+    return new Response('image bytes',{headers:{'content-type':'image/jpeg'}});
+  },
+});
+for(const file of ['workflow.js','background.js'])vm.runInContext(fs.readFileSync(path.join(root,file),'utf8'),sandbox);
+const run=(text)=>vm.runInContext(text,sandbox);
+const keys=async(id)=>(await run(`getTabContext(${id})`)).keys;
+const gate=(tag)=>{let release;const promise=new Promise((resolve)=>release=resolve);gates.set(tag,{promise,release});};
+gate('A');gate('B');
+try {
+  const context=await browser.newContext({viewport:{width:1366,height:940}});
+  await context.route('**/*',(route)=>route.fulfill({contentType:'text/html; charset=utf-8',body:'<!doctype html><meta charset="utf-8"><h1>模拟锁屏后台</h1><main id="fixture"></main>'}));
+  await context.exposeBinding('lsaTestRpc',async({page},data)=>{
+    if(data.kind==='get')return chrome.storage[data.area].get(data.keys);
+    if(data.kind==='set')return chrome.storage[data.area].set(data.patch);
+    const tabId=pages.get(page);messages.push({tabId,...data.message});
+    return new Promise((resolve)=>{if(!handler(data.message,{tab:{id:tabId}},resolve))resolve({ok:false,error:'Unexpected message'});});
+  });
+  const inject=async(page,id)=>{
+    await page.evaluate(({id})=>{
+      window.storageListeners=[];
+      const area=(name)=>({get:(keys)=>window.lsaTestRpc({kind:'get',area:name,keys}),set:(patch)=>window.lsaTestRpc({kind:'set',area:name,patch})});
+      window.chrome={storage:{local:area('local'),sync:area('sync'),onChanged:{addListener:(fn)=>window.storageListeners.push(fn)}},runtime:{onMessage:{addListener:()=>{}},sendMessage:(message)=>window.lsaTestRpc({kind:'message',message})}};
+      window.fixtureId=id;
+    },{id});
+    await page.addStyleTag({path:path.join(root,'assistant.css')});
+    for(const file of ['workflow.js','content.js'])await page.addScriptTag({path:path.join(root,file)});
+    await page.evaluate(()=>{
+      window.__lsaPageTools.scanPageSnapshot=async()=>({ok:true,pageLabel:'当前页',sourcePage:location.href,items:[{id:String(window.fixtureId),originalTitle:'How to care for cats in Room '+(window.fixtureId===101?'A':'B'),originalSummary:'Give your cats a comfortable home',editUrl:'https://lockscreen-admin.mofeeds.com/#/nav/overseasDeliver?index=5&type=editEMPTY&id='+window.fixtureId}]});
+    });
+    await page.addScriptTag({path:path.join(root,'assistant.js')});
+    await page.locator('.lsa-assistant').waitFor();
+  };
+  const create=async(id)=>{
+    const page=await context.newPage();pages.set(page,id);
+    await page.goto('https://lockscreen-admin.mofeeds.com/#/nav/overseasContent?index=5');
+    await inject(page,id);return page;
+  };
+  const a=await create(101), b=await create(202);
+  const ka=await keys(101),kb=await keys(202);
+  assert.notEqual(ka.batchState,kb.batchState);
+  await a.locator('.lsa-scan-batch').click();
+  await b.locator('.lsa-scan-batch').click();
+  await a.locator('.lsa-start-batch').click();
+  await b.locator('.lsa-start-batch').click();
+  await a.waitForFunction(()=>document.querySelector('.lsa-item-status')?.textContent==='AI 改写');
+  await b.waitForFunction(()=>document.querySelector('.lsa-item-status')?.textContent==='AI 改写');
+  assert.equal(peakAi,2,'两个标签页必须同时有AI请求在运行');
+  await a.locator('.lsa-pause-batch').click();
+  assert.equal(store.local[kb.batchState].status,'running');
+  gates.get('A').release();gates.get('B').release();
+  await a.waitForFunction(()=>document.querySelector('.lsa-batch-status').textContent.includes('已暂停'));
+  await b.waitForFunction(()=>document.querySelector('.lsa-batch-status').textContent.includes('处理完成'));
+  assert.equal(store.local[ka.batchState].items[0].id,'101');
+  assert.equal(store.local[kb.batchState].items[0].id,'202');
+  assert.equal(store.local[kb.batchState].items[0].title,'A calm guide to caring for cats at home');
+  const bSnapshot=structuredClone(store.local[kb.batchState]);
+  await a.locator('.lsa-quick-settings summary').click();
+  await a.locator('[data-setting="titleLimit"]').fill('5');
+  await a.locator('[data-setting="titleLimit"]').dispatchEvent('change');
+  assert.equal(store.local[ka.settings].titleLimit,5);
+  assert.equal(store.local[kb.settings].titleLimit,12);
+  await a.locator('.lsa-quick-settings summary').click();
+  await a.locator('.lsa-new-batch').click();
+  await a.waitForFunction(()=>document.querySelector('.lsa-transfer-status').textContent.includes('旧批次已导出'));
+  assert.equal(store.local[ka.batchState],null);
+  assert.deepEqual(store.local[kb.batchState],bSnapshot);
+  await a.locator('.lsa-import-file').setInputFiles({name:'a.json',mimeType:'application/json',buffer:Buffer.from(JSON.stringify(savedExports.find((batch)=>batch.items?.some((item)=>item.id==='101') && batch.version)))});
+  await a.waitForFunction(()=>document.querySelector('.lsa-transfer-status').textContent.includes('已导入'));
+  assert.equal(store.local[ka.batchState].items[0].status,'error','导入按当前标签页的5词限制重检');
+  assert.deepEqual(store.local[kb.batchState],bSnapshot);
+  await a.locator('.lsa-minimize').click();
+  assert.equal(await b.locator('.lsa-assistant.is-minimized').count(),0);
+  await b.reload();await inject(b,202);
+  assert.equal(await b.locator('.lsa-batch-card').count(),1,'刷新恢复当前标签页');
+  const c=await create(303);
+  assert.equal(await c.locator('.lsa-batch-card').count(),0,'同一个URL的新标签页不继承其他批次');
+  await b.evaluate(()=>{
+    document.querySelector('#fixture').innerHTML='<label>标题<input id="title" value="Original title"></label><label>简介<textarea id="summary">Original summary</textarea></label><input id="picture" type="file">';
+    location.hash='#/nav/overseasDeliver?index=5&type=editEMPTY&id=202';
+  });
+  await chrome.storage.sync.set({settings:{...store.sync.settings,siteRules:{'lockscreen-admin.mofeeds.com':{titleSelector:'#title',summarySelector:'#summary'}}}});
+  await b.locator('.lsa-apply-record').click();
+  assert.equal(await b.locator('#title').inputValue(),bSnapshot.items[0].title,'超过12字符但只有10词的标题应能填写');
+  assert.equal(await b.locator('#picture').evaluate((input)=>input.files.length),0);
+  await b.locator('[data-tab="manual"]').click();
+  await b.locator('.lsa-draft-copy').fill('one two three four five six seven eight nine ten eleven twelve thirteen\nA valid summary');
+  await b.locator('.lsa-apply-draft').click();
+  assert.ok((await b.locator('.lsa-manual-status').textContent()).includes('超过限制'));
+  assert.equal(await b.locator('#title').inputValue(),bSnapshot.items[0].title,'13词拒绝后不能覆盖旧值');
+  await b.locator('.lsa-draft-copy').fill('How to care for cats\nA valid summary');
+  assert.equal(await b.locator('.lsa-title-count').textContent(),'标题 5 / 12 词');
+  assert.ok(!messages.some((message)=>['NEXT_LIST_PAGE','SCAN_OPEN_PAGES'].includes(message.action)));
+  fs.mkdirSync(path.join(root,'tests','artifacts'),{recursive:true});
+  await b.screenshot({path:path.join(root,'tests','artifacts','word-count-0.10.png')});
+  const before=await run('getTabContext(202)');startup();const after=await run('getTabContext(202)');
+  assert.notEqual(before.keys.batchState,after.keys.batchState,'浏览器重启后不误认复用的标签ID');
+  assert.ok((await run('savedBatches()')).batches.some((batch)=>batch.key===before.keys.batchState),'旧批次保留可恢复');
+  console.log('真实后台逻辑 + 双标签浏览器测试通过：并行AI、独立暂停/导入/清空/窗口/词数设置、刷新恢复、新标签隔离、按词校验与填写、保留手动上传、旧批次恢复');
+  await context.close();
+} finally { await browser.close(); }
