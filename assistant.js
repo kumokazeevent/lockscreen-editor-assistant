@@ -137,6 +137,65 @@
       .trim();
   }
 
+  function trimMethodTitleCore(value = "") {
+    return cleanText(value)
+      .replace(/^[：:，,；;、|｜\-–—\s]+|[：:，,；;、|｜\-–—\s]+$/g, "")
+      .replace(/^(?:how\s+to|cómo|como|如何|怎样|怎么|cách|как|як|كيفية)\s*/iu, "")
+      .replace(/^(?:to|for|of|para|por|de|để|giúp|nhằm|для|чтобы|каб|لأجل|من\s+أجل)\s+/iu, "")
+      .replace(/的$/u, "")
+      .trim();
+  }
+
+  function isGenericMethodTitle(value = "") {
+    const title = cleanText(value).replace(/[.!?。！？]/g, "").trim();
+    if (!title) return false;
+    const patterns = [
+      /^(?:这)?(?:\d+|[一二三四五六七八九十百几多]+)?\s*(?:种|个|条|大)?\s*(?:(?:最|简单|有效|实用|最佳|常用|快速|重要|关键|轻松|自然|健康|安全|免费|科学|正确|聪明|基本|主要|好用|必要|新颖|全新|新)的?\s*)*(?:方法|方式|技巧|步骤|窍门|建议|秘诀|办法)$/u,
+      /^(?:(?:top|these|the)\s+)?(?:\d+|several|some|many|a\s+few)?\s*(?:(?:simple|easy|effective|best|useful|practical|quick|important|key|smart|essential|new|proven|natural)\s+)*(?:methods?|ways?|tips?|steps?|tricks?|techniques?|strategies?|approaches?|hacks?)$/iu,
+      /^(?:\d+|varios|varias|algunos|algunas|muchos|muchas|pocos|pocas)?\s*(?:(?:simples?|sencillos?|sencillas?|fáciles?|eficaces?|efectivos?|útiles?|prácticos?|rápidos?|mejores?|importantes?|nuevos?)\s+)*(?:formas?|métodos?|maneras?|consejos?|pasos?|técnicas?|estrategias?)(?:\s+(?:simples?|sencillos?|sencillas?|fáciles?|eficaces?|efectivos?|útiles?|prácticos?|rápidos?|mejores?|importantes?|nuevos?))*$/iu,
+      /^(?:\d+|vài|nhiều|một\s+số)?\s*(?:cách|phương\s+pháp|mẹo|bước|bí\s+quyết)(?:\s+(?:đơn\s+giản|hiệu\s+quả|hữu\s+ích|thiết\s+thực|nhanh|quan\s+trọng|tốt\s+nhất|mới))*$/iu,
+      /^(?:\d+|несколько|некоторые|шмат|некалькі|топ[- ]?\d+)?\s*(?:(?:прост\p{L}*|эффективн\p{L}*|эфектыўн\p{L}*|полезн\p{L}*|лепш\p{L}*|быстр\p{L}*|важн\p{L}*|нов\p{L}*)\s+)*(?:способ\p{L}*|метод\p{L}*|совет\p{L}*|шаг\p{L}*|прием\p{L}*|прыём\p{L}*|подход\p{L}*|парада\p{L}*)$/iu,
+      /^(?:\d+|عدة|بعض|أفضل)?\s*(?:(?:بسيطة|فعالة|سهلة|عملية|سريعة|مهمة|جديدة)\s+)*(?:طرق|طريقة|أساليب|نصائح|خطوات|وسائل)(?:\s+(?:بسيطة|فعالة|سهلة|عملية|سريعة|مهمة|جديدة))*$/u,
+    ];
+    return patterns.some((pattern) => pattern.test(title));
+  }
+
+  function isMeaningfulMethodCore(value = "") {
+    const core = trimMethodTitleCore(value);
+    if (textLength(core) < 2 || isGenericMethodTitle(core)) return false;
+    return !/^(?:简单|有效|实用|最佳|快速|重要|关键|easy|simple|effective|best|useful|quick|fácil|simple|eficaz|đơn\s+giản|hiệu\s+quả|بسيطة|فعالة)$/iu.test(core);
+  }
+
+  function extractMethodTitleCore(value = "") {
+    const title = cleanText(value).replace(/[.!?。！？]$/g, "").trim();
+    if (!title) return "";
+
+    const zhCount = "(?:\\d+|[一二三四五六七八九十百几多]+)";
+    const zhAdjectives = "(?:(?:最|简单|有效|实用|最佳|常用|快速|重要|关键|轻松|自然|健康|安全|免费|科学|正确|聪明|基本|主要|好用|必要|新颖|全新|新)的?\\s*)*";
+    const zhNoun = "(?:方法|方式|技巧|步骤|窍门|建议|秘诀|办法)";
+    const patterns = [
+      new RegExp(`^${zhCount}\\s*(?:种|个|条|大)?\\s*${zhAdjectives}(.+?)\\s*的?${zhNoun}$`, "u"),
+      new RegExp(`^(.+?)的?${zhCount}\\s*(?:种|个|条|大)?\\s*${zhAdjectives}${zhNoun}$`, "u"),
+      new RegExp(`^${zhCount}\\s*(?:种|个|条|大)?\\s*${zhAdjectives}${zhNoun}(?:可以|可|来|能|帮你|助你|让你|教你)?(.+)$`, "u"),
+      /^(?:\d+|several|some|many|a\s+few|top\s+\d+)\s+(?:(?:simple|easy|effective|best|useful|practical|quick|important|key|smart|essential|new|proven|natural)\s+)*(?:methods?|ways?|tips?|steps?|tricks?|techniques?|strategies?|approaches?|hacks?)\s+(?:to|for|that|which|of)\s+(.+)$/iu,
+      /^(.+?)[：:，,;；\-–—]\s*(?:\d+|several|some|many|a\s+few|top\s+\d+)\s+(?:(?:simple|easy|effective|best|useful|practical|quick|important|key|smart|essential|new|proven|natural)\s+)*(?:methods?|ways?|tips?|steps?|tricks?|techniques?|strategies?|approaches?|hacks?)$/iu,
+      /^(?:\d+|several|some|many|a\s+few)\s+(?:(?:simple|easy|effective|best|useful|practical|quick|important|key|smart|essential|new|proven|natural)\s+)*(.+?)\s+(?:methods?|ways?|tips?|steps?|tricks?|techniques?|strategies?|approaches?|hacks?)$/iu,
+      /^(?:\d+|varios|varias|algunos|algunas|muchos|muchas|pocos|pocas)\s+(?:formas?|métodos?|maneras?|consejos?|pasos?|técnicas?|estrategias?)(?:\s+(?:simples?|sencillos?|sencillas?|fáciles?|eficaces?|efectivos?|útiles?|prácticos?|rápidos?|mejores?|importantes?|nuevos?))*\s+(?:de|para)\s+(.+)$/iu,
+      /^(.+?)[：:，,;；\-–—]\s*(?:\d+|varios|varias|algunos|algunas|muchos|muchas|pocos|pocas)\s+(?:(?:simples?|sencillos?|sencillas?|fáciles?|eficaces?|efectivos?|útiles?|prácticos?|rápidos?|mejores?|importantes?|nuevos?)\s+)*(?:formas?|métodos?|maneras?|consejos?|pasos?|técnicas?|estrategias?)(?:\s+(?:simples?|sencillos?|sencillas?|fáciles?|eficaces?|efectivos?|útiles?|prácticos?|rápidos?|mejores?|importantes?|nuevos?))*$/iu,
+      /^(?:\d+|vài|nhiều|một\s+số)\s+(?:cách|phương\s+pháp|mẹo|bước|bí\s+quyết)(?:\s+(?:đơn\s+giản|hiệu\s+quả|hữu\s+ích|thiết\s+thực|nhanh|quan\s+trọng|tốt\s+nhất|mới))*\s+(?:để|giúp|nhằm)\s+(.+)$/iu,
+      /^(.+?)[：:，,;；\-–—]\s*(?:\d+|vài|nhiều|một\s+số)\s+(?:cách|phương\s+pháp|mẹo|bước|bí\s+quyết)(?:\s+(?:đơn\s+giản|hiệu\s+quả|hữu\s+ích|thiết\s+thực|nhanh|quan\s+trọng|tốt\s+nhất|mới))*$/iu,
+      /^(?:\d+|несколько|некоторые|шмат|некалькі)\s+(?:\p{L}+\s+){0,4}(?:способ\p{L}*|метод\p{L}*|совет\p{L}*|шаг\p{L}*|прием\p{L}*|прыём\p{L}*|подход\p{L}*|парада\p{L}*)\s+(?:для|чтобы|каб)?\s*(.+)$/iu,
+      /^(?:\d+|عدة|بعض)\s+(?:(?:بسيطة|فعالة|سهلة|عملية|سريعة|مهمة|جديدة)\s+)*(?:طرق|طريقة|أساليب|نصائح|خطوات|وسائل)(?:\s+(?:بسيطة|فعالة|سهلة|عملية|سريعة|مهمة|جديدة))*\s+(?:ل|لـ|لأجل|من\s+أجل)?\s*(.+)$/u,
+    ];
+
+    for (const pattern of patterns) {
+      const match = title.match(pattern);
+      const core = trimMethodTitleCore(match?.[1] || "");
+      if (isMeaningfulMethodCore(core)) return core;
+    }
+    return "";
+  }
+
   function segmentWords(value) {
     if (typeof Intl.Segmenter !== "function") return graphemes(value);
     return [...new Intl.Segmenter("zh-CN", { granularity: "word" }).segment(value)]
@@ -186,6 +245,11 @@
       .replace(/全新|最新|重磅|正式|首次曝光|震撼|火速|赶紧|即将|已经|正在/g, "")
       .replace(/[！!。.]$/g, "")
       .trim();
+    const methodCore = extractMethodTitleCore(source);
+    if (methodCore) source = methodCore;
+    else if (isGenericMethodTitle(source) && summary) {
+      source = stripEditorialFiller(summary).split(/[。！？.!?؟；;؛，,،]/)[0].trim();
+    }
     if (textLength(source) <= limit) return source;
 
     const clauses = source.split(/[：:，,،；;؛。！？!?؟｜|]/).map(cleanText).filter(Boolean);
@@ -498,6 +562,7 @@
     state.sourceLanguage = await detectTextLanguage(
       `${state.originalCopy.title} ${state.originalCopy.summary}`,
     );
+    const originalMethodCore = extractMethodTitleCore(state.originalCopy.title);
     button.disabled = true;
     button.textContent = "正在改写…";
     setStatus("正在根据关键信息重写标题和简介");
@@ -517,6 +582,7 @@
         summaryLimit: state.settings.summaryLimit,
         sourceLanguage: state.sourceLanguage.code,
         sourceLanguageLabel: state.sourceLanguage.label,
+        titleCore: originalMethodCore,
       });
       if (!response?.ok) throw new Error(response?.error || "AI 改写失败");
       if (response.configured) {
@@ -529,7 +595,24 @@
         ) {
           throw new Error(`AI 返回了${outputLanguage.label}，与原稿${state.sourceLanguage.label}不一致`);
         }
-        result = localRewrite(response.title, response.summary);
+        const rawTitleHook = cleanText(response.titleHook || "");
+        const originalTitleLower = cleanText(state.originalCopy.title).toLocaleLowerCase();
+        const titleHook = rawTitleHook && originalTitleLower.includes(rawTitleHook.toLocaleLowerCase())
+          ? rawTitleHook
+          : "";
+        const preferredTitle = originalMethodCore && textLength(originalMethodCore) <= state.settings.titleLimit
+          ? originalMethodCore
+          : isGenericMethodTitle(response.title) && titleHook && textLength(titleHook) <= state.settings.titleLimit
+            ? titleHook
+            : response.title;
+        result = localRewrite(preferredTitle, response.summary);
+        if (isGenericMethodTitle(result.title)) {
+          result.title = rewriteTitleLocally(
+            originalMethodCore || titleHook || state.originalCopy.title,
+            response.summary || state.originalCopy.summary,
+            state.settings.titleLimit,
+          );
+        }
         usedAi = true;
         aiImageQuery = response.imageQueryEn || "";
       } else {

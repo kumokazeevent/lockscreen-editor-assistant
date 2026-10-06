@@ -335,10 +335,12 @@ async function rewriteWithAi(payload) {
     `Write title and summary only in ${sourceLanguageLabel} (${sourceLanguage}); keep its script and regional spelling.`,
     `Limits: title <= ${titleLimit} Unicode characters; summary <= ${summaryLimit} Unicode characters.`,
     "Preserve the central subject, action and outcome first, then essential names, places and numbers. Remove secondary detail and filler. Rewrite naturally; never truncate mid-word, add ellipses, translate, or invent facts.",
+    "For list/how-to titles in ANY language, never return only a count plus a generic word such as methods, ways, tips, steps or their translation. Remove the count and generic adjectives such as easy, effective, useful or best, then preserve the source's concrete object, goal or action. If that concrete original phrase already fits the title limit, copy it verbatim; otherwise shorten only that phrase.",
+    "Select title_hook as the most attention-grabbing FACTUAL word or short phrase copied exactly from the original title. Prefer a specific person, event, outcome, risk, change, place or unusual concrete object. Never choose generic clickbait, a list count, a method word, or vague adjectives. Use this hook in the title only when it fits naturally without changing the meaning or displacing the concrete core.",
     "Create image_query_en from the ORIGINAL source as 5 to 8 concrete English visual keywords (people, place, object, scene, atmosphere).",
-    "Return strict JSON only: {\"title\":\"...\",\"summary\":\"...\",\"image_query_en\":\"...\",\"language\":\"...\"}",
+    "Return strict JSON only: {\"title\":\"...\",\"summary\":\"...\",\"title_hook\":\"exact source phrase\",\"image_query_en\":\"...\",\"language\":\"...\"}",
   ].join("\n");
-  const userPrompt = `TITLE: ${payload.title || "(empty)"}\nSUMMARY: ${payload.summary || "(empty)"}`;
+  const userPrompt = `TITLE: ${payload.title || "(empty)"}\nCONCRETE_TITLE_CORE: ${payload.titleCore || "(detect it from the title)"}\nSUMMARY: ${payload.summary || "(empty)"}`;
   const requestBody = {
     model,
     temperature: 0.1,
@@ -368,6 +370,7 @@ async function rewriteWithAi(payload) {
     configured: true,
     title: String(rewritten.title || "").trim(),
     summary: String(rewritten.summary || "").trim(),
+    titleHook: String(rewritten.title_hook || "").trim(),
     imageQueryEn: String(rewritten.image_query_en || "").trim(),
   };
 }
