@@ -29,6 +29,7 @@ try {
       && globalThis.LSABackgroundAi
       && globalThis.LSABackgroundStock
       && globalThis.LSABackgroundDownloads
+      && globalThis.LSABackendPreview
       && globalThis.LSABackgroundLocks,
   ));
   if (!loaded) throw new Error("后台模块未全部载入");

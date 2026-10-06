@@ -1181,6 +1181,14 @@
 .lsa-assistant .lsa-page-filter { display: block; }
 .lsa-assistant [hidden] { display: none !important; }
 .lsa-current-folder { overflow-wrap: anywhere; font-weight: 700; color: #176345; }
+.lsa-backend-preview-progress { width: 100%; height: 12px; accent-color: #328360; }
+.lsa-backend-preview-folder { overflow-wrap: anywhere; }
+.lsa-backend-preview-list { max-height: 260px; overflow: auto; }
+.lsa-backend-preview-row { display: flex; align-items: center; gap: 10px; padding: 10px 0; border-bottom: 1px solid #e1e9e3; }
+.lsa-backend-preview-copy { display: flex; flex: 1; flex-direction: column; gap: 4px; min-width: 0; font-size: 12px; overflow-wrap: anywhere; }
+.lsa-backend-preview-copy small { font-size: 11px; color: #657269; }
+.lsa-backend-preview-copy .is-error { color: #c22f2f; }
+.lsa-backend-preview-row > a { flex-shrink: 0; font-size: 12px; }
 .lsa-saved-batches { display: block; width: 100%; min-width: 0; margin: 8px 0; padding: 8px; }
 .lsa-assistant .lsa-total-progress-head, .lsa-assistant .lsa-original-title { font-size: 14px; }
 .lsa-assistant .lsa-stock-title, .lsa-assistant .lsa-stock-meta { font-size: 12px; }

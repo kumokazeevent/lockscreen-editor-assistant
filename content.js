@@ -1011,6 +1011,31 @@
     return { ...result, metadata: readListMetadata(), sourcePage: location.href, pageLabel: page === "当前页" ? "当前列表页" : `列表第 ${page} 页` };
   }
 
+  async function readBackendPreviewImage(id) {
+    if (!LSABackendPreview.validId(id)) throw new Error("条目 ID 无效，请重新读取列表");
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 20000);
+    try {
+      const url = new URL("/api/OverseasLockScreen/get", location.origin);
+      url.searchParams.set("id", id);
+      const response = await fetch(url.href, {
+        method: "GET", credentials: "same-origin", cache: "no-store",
+        headers: { Accept: "application/json" }, signal: controller.signal,
+      });
+      if (!response.ok) throw new Error(`后台详情读取失败（${response.status}）`);
+      if (!/json/i.test(response.headers.get("content-type") || "")) {
+        throw new Error("后台未返回详情 JSON，请检查登录状态");
+      }
+      const detail = LSABackendPreview.detailFromResponse(await response.json(), id);
+      return { id, title: cleanText(detail.title), image: LSABackendPreview.previewFromDetail(detail) };
+    } catch (error) {
+      if (controller.signal.aborted) throw new Error("后台详情读取超过 20 秒，请稍后重试");
+      throw error;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
   function dataUrlToBlob(dataUrl, fallbackMime = "image/jpeg") {
     const match = String(dataUrl || "").match(/^data:([^;,]+)?(;base64)?,([\s\S]*)$/);
     if (!match) throw new Error("图片数据不是有效的 data URL");
@@ -1165,6 +1190,7 @@
     getSiteRoute,
     scanListItems,
     scanPageSnapshot,
+    readBackendPreviewImage,
     getPageContext,
     applyDraft,
     applyBatchRecord,

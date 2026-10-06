@@ -154,7 +154,7 @@ assert(assistant.includes("lsa-bangladesh-toggle")
   && workflow.includes('["bn", /bengali'),
   "孟加拉模式双条件、提示词、初筛、警告或语言识别未完整实现");
 
-for (const file of ["workflow.js", "page-bridge.js", "background-entry.js", ...backgroundFiles, "content.js", "assistant-engine.js", "assistant-ui.js", "assistant.js", "options.js"]) {
+for (const file of ["workflow.js", "backend-preview.js", "page-bridge.js", "background-entry.js", ...backgroundFiles, "content.js", "assistant-engine.js", "assistant-ui.js", "assistant.js", "options.js"]) {
   execFileSync(process.execPath, ["--check", path.join(root, file)], { stdio: "inherit" });
 }
 

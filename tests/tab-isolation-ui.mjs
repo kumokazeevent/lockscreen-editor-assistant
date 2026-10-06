@@ -59,7 +59,7 @@ const sandbox=vm.createContext({chrome,console,crypto:webcrypto,URL,URLSearchPar
     return new Response('image bytes',{headers:{'content-type':'image/jpeg'}});
   },
 });
-for(const file of ['workflow.js','background-ai.js','background-stock.js','background-downloads.js','background-locks.js','background.js'])vm.runInContext(fs.readFileSync(path.join(root,file),'utf8'),sandbox);
+for(const file of ['workflow.js','backend-preview.js','background-ai.js','background-stock.js','background-downloads.js','background-locks.js','background.js'])vm.runInContext(fs.readFileSync(path.join(root,file),'utf8'),sandbox);
 const run=(text)=>vm.runInContext(text,sandbox);
 const keys=async(id)=>(await run(`getTabContext(${id})`)).keys;
 const gate=(tag)=>{let release;const promise=new Promise((resolve)=>release=resolve);gates.set(tag,{promise,release});};
@@ -86,7 +86,7 @@ try {
       window.fixtureId=id;
     },{id});
     await page.addStyleTag({path:path.join(root,'assistant.css')});
-    for(const file of ['workflow.js','content.js','assistant-engine.js','assistant-ui.js'])await page.addScriptTag({path:path.join(root,file)});
+    for(const file of ['workflow.js','backend-preview.js','content.js','assistant-engine.js','assistant-ui.js'])await page.addScriptTag({path:path.join(root,file)});
     await page.evaluate(()=>{
       window.realPageSnapshot = window.__lsaPageTools.scanPageSnapshot;
       window.__lsaPageTools.scanPageSnapshot=async()=>({ok:true,pageLabel:'当前页',sourcePage:location.href,items:[{id:String(window.fixtureId),originalTitle:'How to care for cats in Room '+(window.fixtureId===101?'A':'B'),originalSummary:'Give your cats a comfortable home',sourceUrl:'https://article.test/'+window.fixtureId,editUrl:'https://lockscreen-admin.mofeeds.com/#/nav/overseasDeliver?index=5&type=editEMPTY&id='+window.fixtureId}]});

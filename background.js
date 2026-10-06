@@ -1,7 +1,7 @@
 const LSAWorkflow = globalThis.LSAWorkflow;
 const { parseRetryAfter, retryDelayMs, classifyAiError } = globalThis.LSABackgroundAi;
 const { PERSON_TERMS, containsWholeTerm, inspectImageMetadataSafety, buildSafeStockQuery } = globalThis.LSABackgroundStock;
-const { extensionForMime, fileNameForMime } = globalThis.LSABackgroundDownloads;
+const { extensionForMime, fileNameForMime, imageMimeFromBytes } = globalThis.LSABackgroundDownloads;
 const queueWorkLock = globalThis.LSABackgroundLocks.serialQueue();
 const SEARCH_ENGINES = {
   baidu: (query) =>
@@ -1652,12 +1652,18 @@ async function fetchImageFile(payload = {}) {
     headers: { Accept: "image/jpeg,image/png;q=0.9,image/*;q=0.5,*/*;q=0.1" },
   }, clampNumber(payload.timeoutMs, 45000, 5000, 120000), "图片");
   if (!response.ok) throw new Error(`图片读取失败（${response.status}）`);
+  const declaredMime = String(response.headers.get("content-type") || "").split(";")[0].trim().toLowerCase();
+  if (declaredMime && !/^image\//.test(declaredMime) && declaredMime !== "application/octet-stream") {
+    throw new Error("图片地址返回的不是图片，可能已失效或需要登录");
+  }
   const declaredLength = Number(response.headers.get("content-length")) || 0;
   if (declaredLength > MAX_IMAGE_BYTES) throw new Error("图片超过 24MB，无法写入上传控件");
   const sourceBuffer = await response.arrayBuffer();
   if (!sourceBuffer.byteLength) throw new Error("下载到的图片为空");
   if (sourceBuffer.byteLength > MAX_IMAGE_BYTES) throw new Error("图片超过 24MB，无法写入上传控件");
-  const sourceMime = inferImageMime(url, response.headers.get("content-type"));
+  const detectedMime = imageMimeFromBytes(sourceBuffer);
+  if (payload.requireRecognizedImage && !detectedMime) throw new Error("下载内容不是可识别的图片文件，未保存为 JPG");
+  const sourceMime = detectedMime || inferImageMime(url, response.headers.get("content-type"));
   if (!/^image\//.test(sourceMime)) throw new Error("下载地址返回的不是图片");
   const normalized = await normalizeDownloadedImage(sourceBuffer, sourceMime);
   const { buffer, mime } = normalized;
@@ -2130,6 +2136,35 @@ async function downloadImage(url, fileName) {
   return { downloadId };
 }
 
+async function downloadBackendPreview(payload = {}) {
+  const preview = payload.image;
+  if (preview?.sourceField !== "originImageWebp") throw new Error("未读取到后台右侧预览图");
+  const url = LSABackendPreview.imageUrl(preview.url);
+  if (!url) throw new Error("后台右侧预览图地址为空");
+  const record = payload.record || {};
+  const settings = await getBatchSettings();
+  const file = await fetchImageFile({ url, fileName: LSABackendPreview.fileName(record), requireRecognizedImage: true });
+  const baseFolder = joinDownloadPath(sanitizeRelativeFolder(payload.folder, settings.imageFolder),
+    sanitizePathSegment(payload.batchFolder, "后台预览图"));
+  const size = LSAWorkflow.batchSize(payload.batchLimit);
+  const group = Math.ceil(Math.max(1, Number(record.index) || 1) / size);
+  const folder = joinDownloadPath(baseFolder, `后台预览图/第${String(group).padStart(2, "0")}组`);
+  const path = joinDownloadPath(folder, file.fileName);
+  // Each record needs its own upload file even when two records use the same URL.
+  const downloadId = await chrome.downloads.download({ url: file.dataUrl, filename: path, conflictAction: "uniquify", saveAs: false });
+  const deadline = Date.now() + 30000;
+  while (Date.now() < deadline) {
+    const [download] = await chrome.downloads.search({ id: downloadId });
+    if (download?.state === "complete") {
+      return { downloadId, path, fileName: file.fileName, size: file.size, mime: file.mime,
+        converted: file.converted, sourceUrl: url, status: "completed" };
+    }
+    if (download?.state === "interrupted") throw new Error(`图片保存中断：${download.error || "请查看浏览器下载列表"}`);
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+  throw new Error("图片已加入浏览器下载，但 30 秒内未确认完成，请查看下载列表后重试");
+}
+
 function respondAsync(sendResponse, promise, fallbackMessage) {
   Promise.resolve(promise)
     .then((result) => sendResponse({ ok: true, ...result }))
@@ -2250,6 +2285,10 @@ chrome.runtime.onMessage.addListener((message = {}, _sender, sendResponse) => {
 
   if (action === "DOWNLOAD_FINAL_IMAGE") {
     return respondAsync(sendResponse, downloadFinalImage(message, _sender.tab?.id), "成品图片下载失败");
+  }
+
+  if (action === "DOWNLOAD_BACKEND_PREVIEW") {
+    return respondAsync(sendResponse, downloadBackendPreview(message), "后台预览图下载失败");
   }
 
   return false;
