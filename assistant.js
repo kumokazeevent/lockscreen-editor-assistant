@@ -19,6 +19,11 @@
     pending: "待处理", fetching: "读取文章", rewriting: "AI 改写", searching: "搜索配图",
     completed: "已完成", needs_review: "图片需复核", error: "处理失败",
   };
+  const PROCESS_STAGES = [
+    { key: "article", label: "读取文章" },
+    { key: "ai", label: "AI 改写" },
+    { key: "image", label: "搜索图片" },
+  ];
 
   const state = {
     root: null,
@@ -140,7 +145,62 @@
   }
 
   function getBatchItems() {
-    return Array.isArray(state.batch?.items) ? state.batch.items : [];
+    const items = Array.isArray(state.batch?.items) ? state.batch.items : [];
+    items.forEach(ensureItemStages);
+    return items;
+  }
+
+  function ensureItemStages(item) {
+    if (!item || typeof item !== "object") return item;
+    item.stages = { article: "pending", ai: "pending", image: "pending", ...(item.stages || {}) };
+    if (item.articleText && item.stages.article === "pending") item.stages.article = "done";
+    if (item.title && item.summary && item.imageQueryEn && item.stages.ai === "pending") item.stages.ai = "done";
+    if (item.image && item.stages.image === "pending") item.stages.image = "done";
+    if (item.status === "fetching") item.stages.article = "working";
+    if (item.status === "rewriting") item.stages.ai = "working";
+    if (item.status === "searching") item.stages.image = "working";
+    if (["completed", "needs_review"].includes(item.status)) {
+      PROCESS_STAGES.forEach(({ key }) => { item.stages[key] = "done"; });
+    }
+    if (item.status === "error" && !PROCESS_STAGES.some(({ key }) => item.stages[key] === "error")) {
+      const failedKey = item.stages.ai === "done" ? "image" : item.stages.article === "done" ? "ai" : "article";
+      item.stages[failedKey] = "error";
+      item.currentStage ||= failedKey;
+    }
+    return item;
+  }
+
+  function itemProgressPercent(item) {
+    ensureItemStages(item);
+    if (["completed", "needs_review", "error"].includes(item.status)) return 100;
+    const units = PROCESS_STAGES.reduce((sum, { key }) => {
+      const stage = item.stages[key];
+      return sum + (stage === "done" ? 1 : stage === "working" ? 0.5 : 0);
+    }, 0);
+    return Math.round(units / PROCESS_STAGES.length * 100);
+  }
+
+  function progressMetrics() {
+    const items = getBatchItems();
+    const stages = Object.fromEntries(PROCESS_STAGES.map(({ key }) => [key, { done: 0, working: 0, error: 0 }]));
+    let totalPercent = 0;
+    let settled = 0;
+    for (const item of items) {
+      totalPercent += itemProgressPercent(item);
+      if (["completed", "needs_review", "error"].includes(item.status)) settled += 1;
+      for (const { key } of PROCESS_STAGES) {
+        const status = item.stages[key];
+        if (status === "done") stages[key].done += 1;
+        else if (status === "working") stages[key].working += 1;
+        else if (status === "error") stages[key].error += 1;
+      }
+    }
+    return {
+      total: items.length,
+      settled,
+      percent: items.length ? Math.round(totalPercent / items.length) : 0,
+      stages,
+    };
   }
 
   function batchCounts() {
@@ -191,6 +251,8 @@
       attempts: 0,
       error: "",
       diagnostics: raw.diagnostics || [],
+      currentStage: "",
+      stages: { article: "pending", ai: "pending", image: "pending" },
     };
   }
 
@@ -366,11 +428,24 @@
     }
   }
 
+  function resetItemProgress(item) {
+    item.currentStage = "";
+    item.stages = { article: "pending", ai: "pending", image: "pending" };
+  }
+
+  function setItemStage(item, key, status) {
+    ensureItemStages(item);
+    item.currentStage = key;
+    item.stages[key] = status;
+  }
+
   async function processItem(item, token) {
     if (token !== state.runToken || state.pauseRequested) return;
     item.attempts = Number(item.attempts || 0) + 1;
     item.error = "";
+    resetItemProgress(item);
     try {
+      setItemStage(item, "article", "working");
       if (!item.sourceUrl) throw new Error("未读取到“查看链接”的文章地址");
       item.status = "fetching";
       await persistBatch();
@@ -379,8 +454,10 @@
       if (!articleText) throw new Error("文章链接已打开，但没有提取到正文");
       item.articleText = articleText;
       item.articleTitle = cleanText(articleResponse.title || articleResponse.article?.title || "");
+      setItemStage(item, "article", "done");
 
       if (token !== state.runToken) return;
+      setItemStage(item, "ai", "working");
       item.status = "rewriting";
       await persistBatch();
       const aiResponse = await sendRuntime("AI_PROCESS_ITEM", {
@@ -395,8 +472,10 @@
       const ai = normalizeAiResult(aiResponse);
       validateAiResult(ai);
       Object.assign(item, ai);
+      setItemStage(item, "ai", "done");
 
       if (token !== state.runToken) return;
+      setItemStage(item, "image", "working");
       item.status = "searching";
       await persistBatch();
       const imageResponse = await sendRuntime("SEARCH_PEXELS_BATCH", {
@@ -404,9 +483,12 @@
         preferredRatio: state.settings.preferredRatio, orientation: "portrait",
       });
       item.image = selectBestImage(imageResponse);
+      setItemStage(item, "image", "done");
+      item.currentStage = "";
       item.status = item.image.safetyStatus === "passed" ? "completed" : "needs_review";
       item.error = "";
     } catch (error) {
+      setItemStage(item, item.currentStage || "article", "error");
       item.status = "error";
       item.error = error.message || "处理失败";
       const fatalAiError = ["AI_NOT_CONFIGURED", "AI_ENDPOINT_INVALID"].includes(error.code)
@@ -431,7 +513,13 @@
     state.batch.status = "running";
     state.batch.fatalError = "";
     getBatchItems().forEach((item) => {
-      if (["fetching", "rewriting", "searching"].includes(item.status)) item.status = "pending";
+      if (["fetching", "rewriting", "searching"].includes(item.status)) {
+        item.status = "pending";
+        PROCESS_STAGES.forEach(({ key }) => {
+          if (item.stages[key] === "working") item.stages[key] = "pending";
+        });
+        item.currentStage = "";
+      }
     });
     await persistBatch();
     setPanelStatus(".lsa-batch-status", "批处理已开始；并发数最多为 2。切换页面不会丢失已完成记录。");
@@ -492,7 +580,11 @@
       setPanelStatus(".lsa-batch-status", "没有需要重试的失败项");
       return;
     }
-    targets.forEach((item) => { item.status = "pending"; item.error = ""; });
+    targets.forEach((item) => {
+      item.status = "pending";
+      item.error = "";
+      resetItemProgress(item);
+    });
     state.batch.status = "ready";
     persistBatch();
     runBatch();
@@ -559,6 +651,63 @@
       : `已加入下载列表：${candidates.length} 张。`, Boolean(failed));
   }
 
+  function stageStatusText(status) {
+    return ({ pending: "等待", working: "进行中", done: "完成", error: "失败" })[status] || "等待";
+  }
+
+  function createItemProgress(item) {
+    const percent = itemProgressPercent(item);
+    const wrap = create("div", `lsa-item-progress${item.status === "error" ? " is-error" : ""}`);
+    const headline = create("div", "lsa-item-progress-head");
+    headline.append(create("span", "", "本条进度"), create("strong", "", `${percent}%`));
+    const track = create("div", "lsa-progress-track");
+    const fill = create("span", "lsa-progress-fill");
+    fill.style.width = `${percent}%`;
+    track.append(fill);
+    const stages = create("div", "lsa-item-stage-list");
+    PROCESS_STAGES.forEach(({ key, label }) => {
+      const status = item.stages[key] || "pending";
+      const stage = create("span", `lsa-item-stage is-${status}`, `${label} · ${stageStatusText(status)}`);
+      stages.append(stage);
+    });
+    wrap.append(headline, track, stages);
+    return wrap;
+  }
+
+  function renderTotalProgress() {
+    const metrics = progressMetrics();
+    const value = q(".lsa-total-progress-value");
+    const fill = q(".lsa-total-progress-fill");
+    const detail = q(".lsa-total-progress-detail");
+    const stagesWrap = q(".lsa-stage-progress-list");
+    if (value) value.textContent = `${metrics.percent}%`;
+    if (fill) fill.style.width = `${metrics.percent}%`;
+    if (detail) detail.textContent = metrics.total
+      ? `已结束 ${metrics.settled} / ${metrics.total} 条；总进度会计入正在执行的步骤`
+      : "扫描列表后显示总进度";
+    if (!stagesWrap) return;
+    stagesWrap.replaceChildren();
+    PROCESS_STAGES.forEach(({ key, label }) => {
+      const stageMetrics = metrics.stages[key];
+      const resolved = stageMetrics.done + stageMetrics.error;
+      const stagePercent = metrics.total
+        ? Math.round((resolved + stageMetrics.working * 0.5) / metrics.total * 100)
+        : 0;
+      const row = create("div", `lsa-stage-progress-row${stageMetrics.error ? " has-error" : ""}`);
+      const copy = create("div", "lsa-stage-progress-copy");
+      const parts = [`完成 ${stageMetrics.done}/${metrics.total}`];
+      if (stageMetrics.working) parts.push(`进行中 ${stageMetrics.working}`);
+      if (stageMetrics.error) parts.push(`失败 ${stageMetrics.error}`);
+      copy.append(create("span", "", label), create("small", "", parts.join(" · ")));
+      const track = create("div", "lsa-progress-track");
+      const bar = create("span", "lsa-progress-fill");
+      bar.style.width = `${stagePercent}%`;
+      track.append(bar);
+      row.append(copy, track);
+      stagesWrap.append(row);
+    });
+  }
+
   function renderBatchItems() {
     const wrap = q(".lsa-batch-items");
     if (!wrap) return;
@@ -575,7 +724,7 @@
       const title = create("strong", "lsa-original-title", item.originalTitle || "（未读取到原标题）");
       title.title = item.originalTitle || "";
       header.append(title, create("span", "lsa-item-status", STATUS_LABELS[item.status] || item.status || "待处理"));
-      card.append(header);
+      card.append(header, createItemProgress(item));
       if (item.title || item.summary) {
         const output = create("div", "lsa-item-output");
         output.append(create("b", "", item.title || "—"), create("p", "", item.summary || "—"));
@@ -635,6 +784,7 @@
         ? `${state.batch.batchId} · 共 ${counts.total} · 完成 ${counts.done} · 需复核 ${counts.review} · 失败 ${counts.failed} · 待处理 ${counts.pending + counts.working}`
         : "尚未建立批次";
     }
+    renderTotalProgress();
     const start = q(".lsa-start-batch");
     const pause = q(".lsa-pause-batch");
     const retry = q(".lsa-retry-failed");
@@ -926,6 +1076,12 @@
           <div class="lsa-section-card">
             <div class="lsa-section-row"><h2 class="lsa-section-title">列表批处理（最多 30 条）</h2><button class="lsa-text-action lsa-scan-batch" type="button">扫描当前页</button></div>
             <p class="lsa-section-hint">卡片按页面左上到右下编号；读取“查看链接”的正文后，独立 API 一次生成同语言标题、简介和英文配图词。</p>
+            <div class="lsa-total-progress" aria-label="批次总进度">
+              <div class="lsa-total-progress-head"><span>总进度</span><strong class="lsa-total-progress-value">0%</strong></div>
+              <div class="lsa-progress-track lsa-total-progress-track"><span class="lsa-progress-fill lsa-total-progress-fill"></span></div>
+              <p class="lsa-total-progress-detail">扫描列表后显示总进度</p>
+              <div class="lsa-stage-progress-list"></div>
+            </div>
             <p class="lsa-batch-summary">尚未建立批次</p>
             <div class="lsa-button-row"><button class="lsa-primary-button lsa-start-batch" type="button" disabled>开始处理</button><button class="lsa-secondary-button lsa-pause-batch" type="button" disabled>暂停</button><button class="lsa-secondary-button lsa-retry-failed" type="button" disabled>重试失败项</button></div>
             <div class="lsa-button-row"><button class="lsa-secondary-button lsa-save-batch-json" type="button" disabled>保存批次 JSON</button><button class="lsa-secondary-button lsa-download-all" type="button" disabled>下载自动通过图</button></div>
