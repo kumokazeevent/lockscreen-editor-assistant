@@ -592,12 +592,19 @@ function normalizeLanguageCode(value) {
   return text.slice(0, 12);
 }
 
-function shouldDisableThinking(model, endpoint = "") {
+function supportsThinkingControl(model, endpoint = "") {
   const value = String(model || "").trim();
   let hostname = "";
   try { hostname = new URL(endpoint).hostname; } catch {}
   return /(^|\.)api\.deepseek\.com$/i.test(hostname) ||
     /^glm[-_.\s]?5(?:\D|$)/i.test(value) || /^deepseek-v4(?:[-_.]|$)/i.test(value);
+}
+
+function enableMediumThinking(requestBody, model, endpoint = "") {
+  if (!supportsThinkingControl(model, endpoint)) return requestBody;
+  requestBody.thinking = { type: "enabled" };
+  requestBody.reasoning_effort = "medium";
+  return requestBody;
 }
 
 function normalizeAiEndpoint(value) {
@@ -791,6 +798,64 @@ function buildAiMessages(context, correction = "") {
   ];
 }
 
+async function reviewAiCandidate(candidate, context, settings, localSecrets, timeout) {
+  const endpointValue = String(settings.reviewAiEndpoint || "").trim();
+  const model = String(settings.reviewAiModel || "").trim();
+  const apiKey = String(localSecrets.reviewAiApiKey || "").trim();
+  if (!endpointValue || !model || !apiKey) {
+    throw new RequestError("审核 AI 已启用，但接口地址、模型或 API Key 未配置完整", {
+      code: "REVIEW_AI_NOT_CONFIGURED",
+      retryable: false,
+    });
+  }
+  const endpoint = normalizeAiEndpoint(endpointValue);
+  const requestBody = {
+    model,
+    temperature: 0,
+    max_tokens: 1400,
+    stream: false,
+    messages: [
+      {
+        role: "system",
+        content: [
+          "You are the final quality reviewer for lock-screen magazine copy.",
+          "Compare the candidate with the original title and description. Correct the candidate whenever needed.",
+          `The final title MUST use the original language and contain at most ${context.titleLimit} Unicode characters, including every space and punctuation mark.`,
+          `The final summary MUST use the original language and contain at most ${context.summaryLimit} Unicode characters, including every space and punctuation mark.`,
+          "Preserve the core meaning, important proper nouns and every stated number of methods, steps, tips or items. Do not invent facts.",
+          "image_query_en must remain a concrete English stock-photo query based on the original material.",
+          "Count title and summary character by character before replying. Rewrite and recount until both limits are satisfied.",
+          "Return exactly one strict JSON object and nothing else:",
+          '{"title":"...","summary":"...","image_query_en":"...","language":"..."}',
+        ].join("\n"),
+      },
+      {
+        role: "user",
+        content: JSON.stringify({
+          original_title: context.originalTitle,
+          original_summary: context.originalSummary,
+          original_article: context.articleText,
+          candidate,
+        }),
+      },
+    ],
+  };
+  enableMediumThinking(requestBody, model, endpoint);
+  const data = await fetchJson(endpoint, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${apiKey}`,
+    },
+    body: JSON.stringify(requestBody),
+  }, timeout, "审核 AI");
+  const content = getAiResponseText(data);
+  if (!content) {
+    throw new RequestError(describeEmptyAiResponse(data), { code: "REVIEW_AI_INVALID", retryable: true });
+  }
+  return validateAiResult(extractJson(content), context);
+}
+
 function shouldRetry(error) {
   if (error?.retryable === false) return false;
   // A second full timeout usually means another 30 seconds with the same result.
@@ -843,13 +908,11 @@ async function generateBatchItemWithAi(payload = {}) {
     const requestBody = {
       model,
       temperature: 0.1,
-      max_tokens: 500,
+      max_tokens: 1600,
       stream: false,
       messages: buildAiMessages(context, attempt > 0 ? cleanErrorMessage(lastError, "The previous output was invalid") : ""),
     };
-    if (shouldDisableThinking(model, endpoint)) {
-      requestBody.thinking = { type: "disabled" };
-    }
+    enableMediumThinking(requestBody, model, endpoint);
     try {
       const data = await fetchJson(endpoint, {
         method: "POST",
@@ -863,7 +926,10 @@ async function generateBatchItemWithAi(payload = {}) {
       if (!content) {
         throw new RequestError(describeEmptyAiResponse(data), { code: "AI_INVALID", retryable: false });
       }
-      const result = validateAiResult(extractJson(content), context);
+      const candidate = extractJson(content);
+      const result = settings.reviewAiEnabled
+        ? await reviewAiCandidate(candidate, context, settings, localSecrets, timeout)
+        : validateAiResult(candidate, context);
       return {
         configured: true,
         result,
@@ -872,6 +938,7 @@ async function generateBatchItemWithAi(payload = {}) {
         image_query_en: result.image_query_en,
         imageQueryEn: result.image_query_en,
         language: result.language,
+        reviewed: Boolean(settings.reviewAiEnabled),
         attempts: attemptsMade,
       };
     } catch (error) {
@@ -908,7 +975,7 @@ async function generateImageQueryWithAi(payload) {
   const requestBody = {
     model,
     temperature: 0.1,
-    max_tokens: 180,
+    max_tokens: 700,
     messages: [
       {
         role: "system",
@@ -923,9 +990,7 @@ async function generateImageQueryWithAi(payload) {
       { role: "user", content: `${String(payload.title || "")}\n${String(payload.summary || "")}`.trim() },
     ],
   };
-  if (shouldDisableThinking(model, endpoint)) {
-    requestBody.thinking = { type: "disabled" };
-  }
+  enableMediumThinking(requestBody, model, endpoint);
   const data = await fetchJson(endpoint, {
     method: "POST",
     headers: {

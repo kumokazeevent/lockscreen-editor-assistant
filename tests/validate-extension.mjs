@@ -13,7 +13,7 @@ function assert(condition, message) {
 }
 
 assert(manifest.manifest_version === 3, "必须使用 Manifest V3");
-assert(manifest.version === "0.7.6", "构建版本应为 0.7.6");
+assert(manifest.version === "0.7.7", "构建版本应为 0.7.7");
 assert(manifest.permissions.includes("downloads"), "缺少下载权限");
 assert(manifest.permissions.includes("storage"), "缺少存储权限");
 assert(
@@ -28,6 +28,10 @@ for (const id of [
   "aiEndpoint",
   "aiModel",
   "aiApiKey",
+  "reviewAiEnabled",
+  "reviewAiEndpoint",
+  "reviewAiModel",
+  "reviewAiApiKey",
   "pexelsEndpoint",
   "pexelsApiKey",
   "pixabayEndpoint",
@@ -68,9 +72,13 @@ assert(content.includes('"未投递"') && content.includes("isCardMetaText"), "�
 const assistant = read("assistant.js");
 assert(assistant.includes("batchState"), "批任务未持久化");
 assert(assistant.includes("APPLY_BATCH_RECORD"), "编辑页未接入批次填充/上传");
+assert(assistant.includes("lsa-record-option-status") && assistant.includes("selectAndNavigateRecord"),
+  "记录列表未实现编号-状态显示或点击跳转");
+assert(background.includes("reviewAiCandidate") && background.includes('reasoning_effort = "medium"'),
+  "第二 AI 审核或中等推理未接入");
 
 for (const file of ["page-bridge.js", "background.js", "content.js", "assistant.js", "options.js"]) {
   execFileSync(process.execPath, ["--check", path.join(root, file)], { stdio: "inherit" });
 }
 
-console.log("锁屏编辑助手 0.7.6 静态验证通过");
+console.log("锁屏编辑助手 0.7.7 静态验证通过");

@@ -823,23 +823,51 @@
   }
 
   function renderEditRecordSelector() {
-    const select = q(".lsa-record-select");
-    if (!select) return;
+    const list = q(".lsa-record-list");
+    if (!list) return;
     const items = getBatchItems();
     const automatic = items.findIndex(recordMatchesRoute);
     if (state.selectedRecordIndex < 0 && automatic >= 0) state.selectedRecordIndex = automatic;
-    const previous = state.selectedRecordIndex;
-    select.replaceChildren();
-    const empty = create("option", "", items.length ? "请选择批次记录" : "没有批次记录，请先到列表页处理");
-    empty.value = "-1";
-    select.append(empty);
+    list.replaceChildren();
+    if (!items.length) {
+      list.append(create("div", "lsa-empty-result", "没有批次记录，请先到列表页处理"));
+      renderSelectedRecord();
+      return;
+    }
     items.forEach((item, index) => {
-      const option = create("option", "", `${String(item.index).padStart(2, "0")} · ${item.originalTitle || "无标题"} · ${STATUS_LABELS[item.status] || item.status}`);
-      option.value = String(index);
-      select.append(option);
+      const option = create("button", `lsa-record-option${index === state.selectedRecordIndex ? " is-selected" : ""}`);
+      option.type = "button";
+      option.setAttribute("role", "option");
+      option.setAttribute("aria-selected", index === state.selectedRecordIndex ? "true" : "false");
+      const status = STATUS_LABELS[item.status] || item.status || "未知状态";
+      option.append(
+        create("strong", `lsa-record-option-status${item.status === "error" ? " is-error" : ""}`,
+          `${String(item.index).padStart(2, "0")}-${status}`),
+        create("span", "lsa-record-option-title", item.originalTitle || "无标题"),
+      );
+      option.addEventListener("click", () => selectAndNavigateRecord(index));
+      list.append(option);
     });
-    select.value = String(previous >= 0 && items[previous] ? previous : -1);
     renderSelectedRecord();
+  }
+
+  function selectAndNavigateRecord(index) {
+    const items = getBatchItems();
+    const item = items[index];
+    if (!item) return;
+    state.selectedRecordIndex = index;
+    renderEditRecordSelector();
+    if (!item.editUrl) {
+      setPanelStatus(".lsa-edit-status", `第 ${item.index} 条没有识别到编辑页地址，无法跳转`, true);
+      return;
+    }
+    const target = new URL(item.editUrl, location.href).href;
+    if (target === location.href) {
+      setPanelStatus(".lsa-edit-status", `已选择第 ${item.index} 条，当前已在对应编辑页。`);
+      return;
+    }
+    setPanelStatus(".lsa-edit-status", `正在跳转到第 ${item.index} 条编辑页…`);
+    location.assign(target);
   }
 
   function renderSelectedRecord() {
@@ -1092,8 +1120,8 @@
         <section class="lsa-tab-panel" data-panel="record">
           <div class="lsa-section-card">
             <div class="lsa-section-row"><h2 class="lsa-section-title">从批次填入当前编辑页</h2><button class="lsa-text-action lsa-refresh-record" type="button">重新匹配 ID</button></div>
-            <p class="lsa-section-hint">优先按当前 URL 的 id 自动匹配；不一致时可手动选择。只填入标题、简介和上传图片，绝不点击后台最终保存。</p>
-            <select class="lsa-source-select lsa-record-select" aria-label="选择批次记录"></select>
+            <p class="lsa-section-hint">优先按当前 URL 的 id 自动匹配；点击下面任一记录会立即跳转到对应编辑页。只填入标题、简介和上传图片，绝不点击后台最终保存。</p>
+            <div class="lsa-record-list" role="listbox" aria-label="选择并跳转到批次记录"></div>
             <div class="lsa-selected-record"></div>
             <button class="lsa-primary-button lsa-apply-record" type="button" disabled>填入文案并上传图片</button>
             <p class="lsa-status-text lsa-edit-status">请先核对匹配记录；图片使用原图数据写入后台上传控件。</p>
@@ -1208,10 +1236,6 @@
     q(".lsa-retry-failed")?.addEventListener("click", () => retryFailed());
     q(".lsa-save-batch-json")?.addEventListener("click", () => saveTextSnapshot("batch").catch(() => {}));
     q(".lsa-download-all")?.addEventListener("click", downloadAllImages);
-    q(".lsa-record-select")?.addEventListener("change", (event) => {
-      state.selectedRecordIndex = Number(event.target.value);
-      renderSelectedRecord();
-    });
     q(".lsa-refresh-record")?.addEventListener("click", () => {
       state.selectedRecordIndex = -1;
       renderEditRecordSelector();

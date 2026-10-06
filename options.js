@@ -6,6 +6,9 @@ const DEFAULT_SETTINGS = {
   aiTimeoutMs: 30000,
   aiEndpoint: "https://api.deepseek.com/chat/completions",
   aiModel: "",
+  reviewAiEnabled: false,
+  reviewAiEndpoint: "",
+  reviewAiModel: "",
   pexelsEndpoint: "https://api.pexels.com/v1/search",
   pixabayEndpoint: "https://pixabay.com/api/",
   preferredRatio: "auto",
@@ -23,6 +26,9 @@ const fields = {
   aiTimeoutSeconds: document.querySelector("#aiTimeoutSeconds"),
   aiEndpoint: document.querySelector("#aiEndpoint"),
   aiModel: document.querySelector("#aiModel"),
+  reviewAiEnabled: document.querySelector("#reviewAiEnabled"),
+  reviewAiEndpoint: document.querySelector("#reviewAiEndpoint"),
+  reviewAiModel: document.querySelector("#reviewAiModel"),
   pexelsEndpoint: document.querySelector("#pexelsEndpoint"),
   pixabayEndpoint: document.querySelector("#pixabayEndpoint"),
   preferredRatio: document.querySelector("#preferredRatio"),
@@ -31,6 +37,7 @@ const fields = {
 };
 
 const aiApiKey = document.querySelector("#aiApiKey");
+const reviewAiApiKey = document.querySelector("#reviewAiApiKey");
 const pexelsApiKey = document.querySelector("#pexelsApiKey");
 const pixabayApiKey = document.querySelector("#pixabayApiKey");
 const ruleList = document.querySelector("#ruleList");
@@ -72,6 +79,9 @@ async function loadSettings() {
   fields.aiTimeoutSeconds.value = Math.round(settings.aiTimeoutMs / 1000);
   fields.aiEndpoint.value = settings.aiEndpoint || "";
   fields.aiModel.value = settings.aiModel || "";
+  fields.reviewAiEnabled.checked = Boolean(settings.reviewAiEnabled);
+  fields.reviewAiEndpoint.value = settings.reviewAiEndpoint || "";
+  fields.reviewAiModel.value = settings.reviewAiModel || "";
   fields.pexelsEndpoint.value = settings.pexelsEndpoint || DEFAULT_SETTINGS.pexelsEndpoint;
   fields.pixabayEndpoint.value = settings.pixabayEndpoint || DEFAULT_SETTINGS.pixabayEndpoint;
   fields.preferredRatio.value = ["auto", "9:16", "9:20"].includes(settings.preferredRatio)
@@ -80,6 +90,7 @@ async function loadSettings() {
   fields.originalFolder.value = settings.originalFolder;
   fields.imageFolder.value = settings.imageFolder;
   setSecretPlaceholder(aiApiKey, Boolean(localSecrets.aiApiKey), "API Key");
+  setSecretPlaceholder(reviewAiApiKey, Boolean(localSecrets.reviewAiApiKey), "审核 AI API Key");
   setSecretPlaceholder(pexelsApiKey, Boolean(localSecrets.pexelsApiKey), "Pexels API Key");
   setSecretPlaceholder(pixabayApiKey, Boolean(localSecrets.pixabayApiKey), "Pixabay API Key");
   renderRules(settings.siteRules);
@@ -134,10 +145,14 @@ async function saveAllSettings() {
   saveMessage.classList.remove("error");
   try {
     const endpoint = fields.aiEndpoint.value.trim();
+    const reviewAiEndpoint = fields.reviewAiEndpoint.value.trim();
     const pexelsEndpoint = fields.pexelsEndpoint.value.trim();
     const pixabayEndpoint = fields.pixabayEndpoint.value.trim();
-    for (const [label, value] of [["AI", endpoint], ["Pexels", pexelsEndpoint], ["Pixabay", pixabayEndpoint]]) {
+    for (const [label, value] of [["AI", endpoint], ["审核 AI", reviewAiEndpoint], ["Pexels", pexelsEndpoint], ["Pixabay", pixabayEndpoint]]) {
       if (value && !/^https?:\/\//i.test(value)) throw new Error(`${label} 接口地址必须以 http:// 或 https:// 开头`);
+    }
+    if (fields.reviewAiEnabled.checked && (!reviewAiEndpoint || !fields.reviewAiModel.value.trim())) {
+      throw new Error("启用审核 AI 时必须填写审核接口地址和模型名称");
     }
     const { settings: saved = {} } = await chrome.storage.sync.get("settings");
     const settings = {
@@ -150,6 +165,9 @@ async function saveAllSettings() {
       aiTimeoutMs: clamp(fields.aiTimeoutSeconds.value, 10, 120, 30) * 1000,
       aiEndpoint: endpoint,
       aiModel: fields.aiModel.value.trim(),
+      reviewAiEnabled: fields.reviewAiEnabled.checked,
+      reviewAiEndpoint,
+      reviewAiModel: fields.reviewAiModel.value.trim(),
       pexelsEndpoint,
       pixabayEndpoint,
       preferredRatio: fields.preferredRatio.value,
@@ -158,9 +176,13 @@ async function saveAllSettings() {
       siteRules: saved.siteRules || {},
     };
     const { localSecrets: savedSecrets = {} } = await chrome.storage.local.get("localSecrets");
+    if (fields.reviewAiEnabled.checked && !reviewAiApiKey.value.trim() && !savedSecrets.reviewAiApiKey) {
+      throw new Error("启用审核 AI 时必须填写审核 AI API Key");
+    }
     const localSecrets = {
       ...savedSecrets,
       ...(aiApiKey.value.trim() ? { aiApiKey: aiApiKey.value.trim() } : {}),
+      ...(reviewAiApiKey.value.trim() ? { reviewAiApiKey: reviewAiApiKey.value.trim() } : {}),
       ...(pexelsApiKey.value.trim() ? { pexelsApiKey: pexelsApiKey.value.trim() } : {}),
       ...(pixabayApiKey.value.trim() ? { pixabayApiKey: pixabayApiKey.value.trim() } : {}),
     };
@@ -169,9 +191,11 @@ async function saveAllSettings() {
       chrome.storage.local.set({ localSecrets }),
     ]);
     aiApiKey.value = "";
+    reviewAiApiKey.value = "";
     pexelsApiKey.value = "";
     pixabayApiKey.value = "";
     setSecretPlaceholder(aiApiKey, Boolean(localSecrets.aiApiKey), "API Key");
+    setSecretPlaceholder(reviewAiApiKey, Boolean(localSecrets.reviewAiApiKey), "审核 AI API Key");
     setSecretPlaceholder(pexelsApiKey, Boolean(localSecrets.pexelsApiKey), "Pexels API Key");
     setSecretPlaceholder(pixabayApiKey, Boolean(localSecrets.pixabayApiKey), "Pixabay API Key");
     fields.originalFolder.value = settings.originalFolder;
@@ -187,9 +211,11 @@ document.querySelector("#saveSettings").addEventListener("click", saveAllSetting
 document.querySelector("#clearSecrets").addEventListener("click", async () => {
   await chrome.storage.local.set({ localSecrets: {} });
   aiApiKey.value = "";
+  reviewAiApiKey.value = "";
   pexelsApiKey.value = "";
   pixabayApiKey.value = "";
   setSecretPlaceholder(aiApiKey, false, "API Key");
+  setSecretPlaceholder(reviewAiApiKey, false, "审核 AI API Key");
   setSecretPlaceholder(pexelsApiKey, false, "Pexels API Key");
   setSecretPlaceholder(pixabayApiKey, false, "Pixabay API Key");
   saveMessage.classList.remove("error");

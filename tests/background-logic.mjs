@@ -45,10 +45,14 @@ assert(evaluate("buildSafeStockQuery('peony garden morning light')") === "peony 
   "非人物搜索词不应追加人物姿态");
 assert(evaluate("buildSafeStockQuery('woman walking in city')").includes("side profile"),
   "人物搜索词应追加侧脸/背影约束");
-assert(evaluate("shouldDisableThinking('dsv4flash', 'https://api.deepseek.com/chat/completions')") === true,
-  "DeepSeek 官方端点未关闭思考模式");
-assert(evaluate("shouldDisableThinking('deepseek-v4-pro')") === true, "DeepSeek V4 Pro 未关闭思考模式");
-assert(evaluate("shouldDisableThinking('glm-5')") === true, "GLM 5 未关闭思考模式");
+assert(evaluate("supportsThinkingControl('dsv4flash', 'https://api.deepseek.com/chat/completions')") === true,
+  "DeepSeek 官方端点未识别思考控制");
+assert(evaluate("supportsThinkingControl('deepseek-v4-pro')") === true, "DeepSeek V4 Pro 未识别思考控制");
+assert(evaluate("supportsThinkingControl('glm-5')") === true, "GLM 5 未识别思考控制");
+assert(evaluate("enableMediumThinking({}, 'dsv4flash', 'https://api.deepseek.com/chat/completions').thinking.type") === "enabled",
+  "DeepSeek 思考模式未开启");
+assert(evaluate("enableMediumThinking({}, 'dsv4flash', 'https://api.deepseek.com/chat/completions').reasoning_effort") === "medium",
+  "DeepSeek 推理档位不是 medium");
 assert(evaluate("normalizeAiEndpoint('https://api.deepseek.com')") === "https://api.deepseek.com/chat/completions", "DeepSeek 根地址未补全");
 assert(evaluate("describeEmptyAiResponse({choices:[{finish_reason:'length',message:{reasoning_content:'thinking'}}]})").includes("思考内容"),
   "DeepSeek 空响应诊断不明确");

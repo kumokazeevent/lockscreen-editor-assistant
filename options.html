@@ -12,18 +12,25 @@
         <div class="brand">锁</div>
         <div>
           <h1>锁屏编辑助手设置</h1>
-          <p>0.7.6 · 严格字符限制提示词与纠错重试</p>
+          <p>0.7.7 · 中等思考、记录跳转与第二 AI 审核</p>
         </div>
       </header>
 
       <section>
         <h2>独立 AI 接口</h2>
-        <p class="section-description">模型名称不设默认值、不改名、不纠正：输入什么就原样发送什么。密钥只存于本机；更新扩展时不要卸载，点击“重新加载”即可保留配置。</p>
+        <p class="section-description">模型名称不设默认值、不改名、不纠正：输入什么就原样发送什么。主 AI 开启思考并使用 medium 推理档位。密钥只存于本机。</p>
         <div class="api-row">
           <div class="api-row-title">AI API</div>
           <label>Chat Completions 完整地址<input id="aiEndpoint" type="url" placeholder="https://api.deepseek.com/chat/completions" /></label>
           <label>模型名称（原样发送）<input id="aiModel" type="text" placeholder="填写提供商给出的准确模型 ID" /></label>
           <label>API Key<input id="aiApiKey" type="password" placeholder="留空则不修改现有密钥" autocomplete="new-password" /></label>
+        </div>
+        <label class="toggle-row"><input id="reviewAiEnabled" type="checkbox" />启用第二 AI 审核与修改（每条内容会增加一次 API 请求）</label>
+        <div class="api-row">
+          <div class="api-row-title">审核 AI API</div>
+          <label>Chat Completions 完整地址<input id="reviewAiEndpoint" type="url" placeholder="填写第二个 AI 的完整接口地址" /></label>
+          <label>模型名称（原样发送）<input id="reviewAiModel" type="text" placeholder="填写第二个 AI 的准确模型 ID" /></label>
+          <label>API Key<input id="reviewAiApiKey" type="password" placeholder="留空则不修改现有密钥" autocomplete="new-password" /></label>
         </div>
         <div class="form-grid">
           <label>请求超时（秒）<input id="aiTimeoutSeconds" type="number" min="10" max="120" /></label>
