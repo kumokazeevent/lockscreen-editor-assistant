@@ -105,7 +105,13 @@
   async function sendRuntime(type, payload = {}) {
     const response = await chrome.runtime.sendMessage({ type, action: type, ...payload });
     if (!response) throw new Error(`${type} 未返回结果，请重新加载插件`);
-    if (response.ok === false) throw new Error(response.error || response.message || `${type} 执行失败`);
+    if (response.ok === false) {
+      const error = new Error(response.error || response.message || `${type} 执行失败`);
+      error.code = response.code || "";
+      error.status = Number(response.status) || 0;
+      error.requestUrl = response.requestUrl || "";
+      throw error;
+    }
     return response;
   }
 
@@ -403,6 +409,12 @@
     } catch (error) {
       item.status = "error";
       item.error = error.message || "处理失败";
+      const fatalAiError = ["AI_NOT_CONFIGURED", "AI_ENDPOINT_INVALID"].includes(error.code)
+        || (error.code === "HTTP_ERROR" && [400, 401, 403, 404, 422].includes(Number(error.status)));
+      if (fatalAiError) {
+        state.pauseRequested = true;
+        state.batch.fatalError = item.error;
+      }
     }
     await persistBatch();
   }
@@ -417,6 +429,7 @@
     state.runToken += 1;
     const token = state.runToken;
     state.batch.status = "running";
+    state.batch.fatalError = "";
     getBatchItems().forEach((item) => {
       if (["fetching", "rewriting", "searching"].includes(item.status)) item.status = "pending";
     });
@@ -441,7 +454,13 @@
     const counts = batchCounts();
     if (state.pauseRequested) {
       state.batch.status = "paused";
-      setPanelStatus(".lsa-batch-status", "已暂停；正在执行的请求已完成并保存，可稍后继续。");
+      setPanelStatus(
+        ".lsa-batch-status",
+        state.batch.fatalError
+          ? `已停止整批，未继续请求剩余条目：${state.batch.fatalError}`
+          : "已暂停；正在执行的请求已完成并保存，可稍后继续。",
+        Boolean(state.batch.fatalError),
+      );
     } else if (counts.failed) {
       state.batch.status = "partial";
       setPanelStatus(".lsa-batch-status", `本轮完成，${counts.failed} 条失败。请查看原因后点击“重试失败项”。`, true);

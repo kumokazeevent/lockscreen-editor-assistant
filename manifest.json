@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "锁屏编辑助手",
-  "version": "0.7.0",
+  "version": "0.7.1",
   "description": "为锁屏内容后台批量改写多语言标题与简介、搜索竖屏商用图片并辅助真实上传。",
   "permissions": [
     "contextMenus",
@@ -20,6 +20,16 @@
     "default_title": "显示或隐藏锁屏编辑助手"
   },
   "content_scripts": [
+    {
+      "matches": [
+        "https://lockscreen-admin.mofeeds.com/*"
+      ],
+      "js": [
+        "page-bridge.js"
+      ],
+      "run_at": "document_start",
+      "world": "MAIN"
+    },
     {
       "matches": [
         "https://lockscreen-admin.mofeeds.com/*"

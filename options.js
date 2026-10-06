@@ -5,7 +5,7 @@ const DEFAULT_SETTINGS = {
   batchConcurrency: 2,
   aiTimeoutMs: 30000,
   aiEndpoint: "https://opencode.ai/zen/go/v1/chat/completions",
-  aiModel: "glm-5.2",
+  aiModel: "deepseek-v4-flash",
   preferredRatio: "auto",
   originalFolder: "锁屏批次/原始内容",
   imageFolder: "锁屏批次/成品图片",
@@ -35,6 +35,13 @@ const saveMessage = document.querySelector("#saveMessage");
 function clamp(value, min, max, fallback) {
   const number = Number(value);
   return Number.isFinite(number) ? Math.max(min, Math.min(max, Math.round(number))) : fallback;
+}
+
+function normalizeModelId(value) {
+  const raw = String(value || "").trim();
+  const compact = raw.toLowerCase().replace(/[-_.\s/]+/g, "");
+  if (["dsv4flash", "deepseekv4flash"].includes(compact)) return "deepseek-v4-flash";
+  return raw;
 }
 
 function cleanDownloadFolder(value, fallback) {
@@ -67,7 +74,7 @@ async function loadSettings() {
   fields.batchConcurrency.value = settings.batchConcurrency;
   fields.aiTimeoutSeconds.value = Math.round(settings.aiTimeoutMs / 1000);
   fields.aiEndpoint.value = settings.aiEndpoint || "";
-  fields.aiModel.value = settings.aiModel || "";
+  fields.aiModel.value = normalizeModelId(settings.aiModel || "");
   fields.preferredRatio.value = ["auto", "9:16", "9:20"].includes(settings.preferredRatio)
     ? settings.preferredRatio
     : "auto";
@@ -141,7 +148,7 @@ async function saveAllSettings() {
       batchConcurrency: clamp(fields.batchConcurrency.value, 1, 2, 2),
       aiTimeoutMs: clamp(fields.aiTimeoutSeconds.value, 10, 120, 30) * 1000,
       aiEndpoint: endpoint,
-      aiModel: fields.aiModel.value.trim(),
+      aiModel: normalizeModelId(fields.aiModel.value),
       preferredRatio: fields.preferredRatio.value,
       originalFolder: cleanDownloadFolder(fields.originalFolder.value, DEFAULT_SETTINGS.originalFolder),
       imageFolder: cleanDownloadFolder(fields.imageFolder.value, DEFAULT_SETTINGS.imageFolder),

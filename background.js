@@ -25,7 +25,7 @@ const TARGET_RATIOS = {
 
 const MAX_ARTICLE_HTML_CHARS = 500000;
 const MAX_ARTICLE_TEXT_CHARS = 160000;
-const MAX_AI_ARTICLE_CHARS = 14000;
+const MAX_AI_ARTICLE_CHARS = 6000;
 const MAX_IMAGE_BYTES = 24 * 1024 * 1024;
 const MAX_TEXT_DOWNLOAD_BYTES = 8 * 1024 * 1024;
 
@@ -165,15 +165,30 @@ async function fetchJson(url, options = {}, timeout = 30000, timeoutLabel = "接
     }
   }
   if (!response.ok) {
-    const providerMessage =
+    const responseUrl = (() => {
+      try {
+        const parsed = new URL(response.url || String(url));
+        return `${parsed.origin}${parsed.pathname}`;
+      } catch {
+        return String(url || "");
+      }
+    })();
+    const returnedHtml = /<!doctype html|<html\b/i.test(bodyText);
+    const opencodeRouteHint = response.status === 404 && /(^|\.)opencode\.ai$/i.test((() => {
+      try { return new URL(response.url || String(url)).hostname; } catch { return ""; }
+    })())
+      ? `OpenCode API 路由不存在：${responseUrl}。OpenCode Go 模型应使用 https://opencode.ai/zen/go/v1/chat/completions（末尾不要加 /）`
+      : "";
+    const providerMessage = opencodeRouteHint ||
       payload?.detail ||
       payload?.error?.message ||
       payload?.message ||
-      bodyText.slice(0, 240) ||
+      (returnedHtml ? "服务器返回了网页而不是 API JSON，请检查完整接口地址" : bodyText.slice(0, 240)) ||
       `HTTP ${response.status}`;
     throw new RequestError(`${timeoutLabel}请求失败（${response.status}）：${providerMessage}`, {
       code: "HTTP_ERROR",
       status: response.status,
+      requestUrl: responseUrl,
       retryable: response.status === 408 || response.status === 409 || response.status === 429 || response.status >= 500,
     });
   }
@@ -570,6 +585,13 @@ function normalizeLanguageCode(value) {
   return text.slice(0, 12);
 }
 
+function normalizeModelId(value) {
+  const raw = String(value || "").trim();
+  const compact = raw.toLowerCase().replace(/[-_.\s/]+/g, "");
+  if (["dsv4flash", "deepseekv4flash"].includes(compact)) return "deepseek-v4-flash";
+  return raw;
+}
+
 function detectSourceLanguage(text) {
   const value = String(text || "").trim();
   if (!value) return { code: "", confidence: 0 };
@@ -718,6 +740,10 @@ function buildAiMessages(context) {
 
 function shouldRetry(error) {
   if (error?.retryable === false) return false;
+  // A second full timeout usually means another 30 seconds with the same result.
+  // Let the user retry explicitly while preserving automatic retries for short
+  // transient failures and invalid model output.
+  if (error?.code === "TIMEOUT") return false;
   if ([400, 401, 403, 404, 422].includes(Number(error?.status))) return false;
   return true;
 }
@@ -729,8 +755,8 @@ async function generateBatchItemWithAi(payload = {}) {
     chrome.storage.local.get("localSecrets"),
   ]);
   const settings = { ...DEFAULT_BATCH_SETTINGS, ...savedSettings };
-  const endpoint = String(settings.aiEndpoint || "").trim();
-  const model = String(settings.aiModel || "").trim();
+  let endpoint = String(settings.aiEndpoint || "").trim();
+  const model = normalizeModelId(settings.aiModel);
   const apiKey = String(localSecrets.aiApiKey || "").trim();
   if (!endpoint || !model || !apiKey) {
     throw new RequestError("独立 AI 接口未配置完整，请在设置中填写接口地址、模型和 API Key", {
@@ -738,7 +764,18 @@ async function generateBatchItemWithAi(payload = {}) {
       retryable: false,
     });
   }
-  validateHttpUrl(endpoint, "AI 接口地址");
+  const endpointUrl = validateHttpUrl(endpoint, "AI 接口地址");
+  endpointUrl.pathname = endpointUrl.pathname.replace(/\/+$/g, "");
+  if (/^(?:www\.)?opencode\.ai$/i.test(endpointUrl.hostname)) {
+    endpointUrl.hostname = "opencode.ai";
+    if (endpointUrl.pathname.startsWith("/zen/go/") && endpointUrl.pathname !== "/zen/go/v1/chat/completions") {
+      throw new RequestError(
+        "OpenCode Go 接口地址不完整；请填写 https://opencode.ai/zen/go/v1/chat/completions",
+        { code: "AI_ENDPOINT_INVALID", retryable: false },
+      );
+    }
+  }
+  endpoint = endpointUrl.href;
 
   const originalTitle = String(item.originalTitle || item.title || "").trim();
   if (!originalTitle) throw new Error("没有读取到原标题，无法改写");
@@ -763,8 +800,9 @@ async function generateBatchItemWithAi(payload = {}) {
     attemptsMade = attempt + 1;
     const requestBody = {
       model,
-      temperature: 0.15,
-      max_tokens: 360,
+      temperature: 0.1,
+      max_tokens: 220,
+      stream: false,
       messages: buildAiMessages(context),
     };
     if (/^glm[-_.\s]?5(?:\D|$)/i.test(model)) {
@@ -800,7 +838,18 @@ async function generateBatchItemWithAi(payload = {}) {
       await new Promise((resolve) => setTimeout(resolve, 250 * (attempt + 1)));
     }
   }
-  throw new Error(`AI 改写失败（已尝试 ${attemptsMade} 次）：${cleanErrorMessage(lastError, "上游接口不可用")}`);
+  const timeoutHint = lastError?.code === "TIMEOUT"
+    ? "；为避免连续等待约 90 秒，超时不会自动重复请求，可稍后点击重试"
+    : "";
+  throw new RequestError(
+    `AI 改写失败（已尝试 ${attemptsMade} 次）：${cleanErrorMessage(lastError, "上游接口不可用")}${timeoutHint}`,
+    {
+      code: lastError?.code || "AI_FAILED",
+      status: lastError?.status,
+      requestUrl: lastError?.requestUrl,
+      retryable: false,
+    },
+  );
 }
 
 async function generateImageQueryWithAi(payload) {
@@ -809,7 +858,7 @@ async function generateImageQueryWithAi(payload) {
     chrome.storage.local.get("localSecrets"),
   ]);
   const endpoint = settings.aiEndpoint?.trim();
-  const model = settings.aiModel?.trim();
+  const model = normalizeModelId(settings.aiModel);
   const apiKey = localSecrets.aiApiKey?.trim();
   if (!endpoint || !model || !apiKey) return { configured: false };
 
@@ -1085,7 +1134,13 @@ async function downloadImage(url, fileName) {
 function respondAsync(sendResponse, promise, fallbackMessage) {
   Promise.resolve(promise)
     .then((result) => sendResponse({ ok: true, ...result }))
-    .catch((error) => sendResponse({ ok: false, error: cleanErrorMessage(error, fallbackMessage), code: error?.code || "" }));
+    .catch((error) => sendResponse({
+      ok: false,
+      error: cleanErrorMessage(error, fallbackMessage),
+      code: error?.code || "",
+      status: Number(error?.status) || 0,
+      requestUrl: error?.requestUrl || "",
+    }));
   return true;
 }
 

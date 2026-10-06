@@ -16,9 +16,61 @@
     routeSignature: "",
     siteStateSignature: "",
     siteStateTimer: null,
+    capturedRecords: [],
   };
 
   const ACTION_LABELS = ["查看链接", "编辑", "下载图片", "复用锁屏"];
+
+  function normalizedTitleKey(value) {
+    return cleanText(value).toLocaleLowerCase().replace(/[\p{P}\p{S}\s]+/gu, "");
+  }
+
+  function acceptBridgeRecords(records) {
+    if (!Array.isArray(records)) return;
+    const normalized = records
+      .map((record) => ({
+        id: cleanText(record?.id),
+        title: cleanText(record?.title),
+        sourceUrl: cleanText(record?.sourceUrl),
+        editUrl: cleanText(record?.editUrl),
+      }))
+      .filter((record) => record.id && record.title)
+      .slice(-300);
+    if (normalized.length) state.capturedRecords = normalized;
+  }
+
+  window.addEventListener("message", (event) => {
+    if (event.source !== window || event.data?.source !== "lsa-page-bridge" || event.data.type !== "records") return;
+    acceptBridgeRecords(event.data.records);
+  });
+
+  async function requestBridgeRecords() {
+    window.postMessage({ source: "lsa-extension", type: "request-records" }, location.origin);
+    await new Promise((resolve) => setTimeout(resolve, 90));
+  }
+
+  function capturedRecordForTitle(title) {
+    const key = normalizedTitleKey(title);
+    if (!key) return null;
+    const ranked = state.capturedRecords
+      .map((record) => {
+        const candidate = normalizedTitleKey(record.title);
+        let score = 0;
+        if (candidate === key) score = 100;
+        else if (candidate.includes(key) || key.includes(candidate)) {
+          score = 60 + Math.min(candidate.length, key.length) / Math.max(candidate.length, key.length) * 30;
+        }
+        return { record, score };
+      })
+      .filter((entry) => entry.score >= 70)
+      .sort((left, right) => right.score - left.score);
+    return ranked[0]?.record || null;
+  }
+
+  function editUrlForId(id) {
+    if (!id) return "";
+    return `${location.origin}/#/nav/overseasDeliver?index=5&type=editEMPTY&id=${encodeURIComponent(id)}`;
+  }
 
   function cleanText(value) {
     return String(value || "").replace(/\u00a0/g, " ").replace(/\s+/g, " ").trim();
@@ -791,6 +843,8 @@
         if (value && /^[\w.-]{2,}$/.test(value)) return value;
       }
     }
+    const labelledId = cleanText(container?.textContent).match(/(?:内容\s*ID|文章\s*ID|content\s*id|article\s*id)\s*[:：#]?\s*([\w.-]{2,})/i)?.[1];
+    if (labelledId) return labelledId;
     return "";
   }
 
@@ -842,7 +896,8 @@
     }));
   }
 
-  function scanListItems(limit = 30) {
+  async function scanListItems(limit = 30) {
+    await requestBridgeRecords();
     const route = getSiteRoute();
     const numericLimit = Math.max(1, Math.min(30, Number(limit) || 30));
     if (!route.isList) {
@@ -867,10 +922,13 @@
     const items = positioned.slice(0, numericLimit).map(({ container, rect }, position) => {
       const viewAction = actionByLabel(container, "查看链接");
       const editAction = actionByLabel(container, "编辑");
-      const sourceUrl = urlFromAction(viewAction, container) || findFallbackUrl(container, "source");
-      const editUrl = urlFromAction(editAction, container) || findFallbackUrl(container, "edit");
+      let sourceUrl = urlFromAction(viewAction, container) || findFallbackUrl(container, "source");
+      let editUrl = urlFromAction(editAction, container) || findFallbackUrl(container, "edit");
       const originalTitle = extractOriginalTitle(container);
-      const id = extractItemId(container, editUrl);
+      const captured = capturedRecordForTitle(originalTitle);
+      const id = extractItemId(container, editUrl) || captured?.id || "";
+      sourceUrl ||= captured?.sourceUrl || "";
+      editUrl ||= captured?.editUrl || editUrlForId(id);
       const missing = [];
       if (!originalTitle) missing.push("originalTitle");
       if (!sourceUrl) missing.push("sourceUrl");
@@ -901,6 +959,7 @@
         actionCount: actions.length,
         containerCount: containers.length,
         visibleContainerCount: positioned.length,
+        capturedRecordCount: state.capturedRecords.length,
         returnedCount: items.length,
         warnings,
       },
@@ -1075,8 +1134,13 @@
       return;
     }
     if (action === "SCAN_LIST_ITEMS") {
-      sendResponse(scanListItems(message.limit));
-      return;
+      scanListItems(message.limit).then(sendResponse).catch((error) => sendResponse({
+        ok: false,
+        items: [],
+        message: error?.message || "扫描列表失败",
+        diagnostics: { route: getSiteRoute(), warnings: ["scan_failed"] },
+      }));
+      return true;
     }
     if (action === "GET_PAGE_CONTEXT") {
       getPageContext().then(sendResponse).catch((error) => sendResponse({
