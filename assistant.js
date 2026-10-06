@@ -830,7 +830,8 @@
         try { const result = await downloadFinalImage(item, null, false, destination); if (result.skipped) skipped += 1; } catch { failed += 1; }
       }
     };
-    await Promise.all([worker(), worker()]);
+    const workerCount = Math.min(4, candidates.length);
+    await Promise.all(Array.from({ length: workerCount }, () => worker()));
     if (button) button.disabled = false;
     if (currentFolder() === destination.batchFolder) setPanelStatus(".lsa-batch-status", `下载结束：${candidates.length - failed - skipped} 张加入下载，跳过重复 ${skipped} 张，失败 ${failed} 张；每 ${destination.batchLimit} 张分组。`, Boolean(failed));
   }
@@ -1075,6 +1076,8 @@
     const list = q(".lsa-record-list");
     if (!list) return;
     const items = getBatchItems();
+    const label = q(".lsa-record-fold-label");
+    if (label) label.textContent = items.length ? `批次记录（${items.length} 条）` : "批次记录（暂无）";
     const automatic = items.findIndex(recordMatchesRoute);
     if (state.selectedRecordIndex < 0 && automatic >= 0) state.selectedRecordIndex = automatic;
     list.replaceChildren();
@@ -1414,28 +1417,22 @@
     const root = create("aside", "lsa-assistant");
     root.setAttribute("aria-label", "锁屏编辑助手悬浮窗");
     const isList = route.kind === "list";
-    root.innerHTML = `
-      <header class="lsa-assistant-header">
-        <div class="lsa-assistant-logo">锁</div>
-        <div class="lsa-assistant-name"><strong>锁屏编辑助手</strong><small>${isList ? "列表批处理" : "编辑页"}</small></div>
-        <div class="lsa-window-actions"><button class="lsa-window-button lsa-minimize" type="button" title="最小化">—</button><button class="lsa-window-button lsa-close" type="button" title="关闭">×</button></div>
-      </header>
-      <nav class="lsa-assistant-nav" data-tabs="${isList ? "2" : "3"}">
-        ${isList ? '<button class="lsa-tab-button is-active" data-tab="batch" type="button">批处理</button>' : '<button class="lsa-tab-button is-active" data-tab="record" type="button">批次填入</button><button class="lsa-tab-button" data-tab="manual" type="button">手动填写</button>'}
-        <button class="lsa-tab-button" data-tab="images" type="button">单条配图</button>
-      </nav>
-      <div class="lsa-assistant-body">
-        <details class="lsa-quick-settings lsa-section-card">
-          <summary>当前标签页设置 · 词数 / 模式 / 思考强度</summary>
+    const quickSettings = `
+      <details class="lsa-quick-settings lsa-section-card lsa-fold-card">
+        <summary>当前标签页设置 · 词数 / 模式 / 思考强度</summary>
+        <div class="lsa-fold-content">
           <div class="lsa-quick-grid">
             <label>标题词数上限<input data-setting="titleLimit" type="number" min="1" max="100"></label>
             <label>简介词数上限<input data-setting="summaryLimit" type="number" min="1" max="500"></label>
             <label>改写方式<select data-setting="rewriteMode"><option value="ai">AI 改写</option><option value="local">本地候选</option></select></label>
             <label>思考强度<select data-setting="thinkingLevel"><option value="off">关闭</option><option value="low">低</option><option value="medium">中等</option><option value="high">高</option><option value="max">最高</option><option value="provider">提供商默认</option></select></label>
           </div><p class="lsa-status-text lsa-quick-status">只修改当前标签页。空格和标点不计词数，连字符词与缩写计 1 词。底部“设置”管理通用默认值与 API。</p>
-        </details>
-        <div class="lsa-section-card lsa-transfer">
-          <strong>当前文件夹</strong><p class="lsa-current-folder lsa-status-text"></p>
+        </div>
+      </details>`;
+    const transferPanel = `
+      <details class="lsa-section-card lsa-transfer lsa-fold-card">
+        <summary class="lsa-folder-summary"><span>当前文件夹</span><small class="lsa-current-folder">尚未选择文件夹</small></summary>
+        <div class="lsa-fold-content">
           <div class="lsa-quick-grid">
             <label>语言<input data-meta="language" placeholder="例如：俄语"></label>
             <label>国家<input data-meta="country" placeholder="例如：白俄罗斯"></label>
@@ -1447,6 +1444,18 @@
           <details class="lsa-restore"><summary>切换文件夹 / 恢复旧版批次</summary><button class="lsa-text-action lsa-list-saved" type="button">刷新文件夹列表</button><select class="lsa-saved-batches" aria-label="选择要恢复的批次"></select><button class="lsa-secondary-button lsa-restore-saved" type="button">打开选中文件夹</button></details>
           <p class="lsa-status-text lsa-transfer-status">只显示当前文件夹。导入或读取不同页面时先归档旧批次，不再追加；未知语言国家请手动补全。</p>
         </div>
+      </details>`;
+    root.innerHTML = `
+      <header class="lsa-assistant-header">
+        <div class="lsa-assistant-logo">锁</div>
+        <div class="lsa-assistant-name"><strong>锁屏编辑助手</strong><small>${isList ? "列表批处理" : "编辑页"}</small></div>
+        <div class="lsa-window-actions"><button class="lsa-window-button lsa-minimize" type="button" title="最小化">—</button><button class="lsa-window-button lsa-close" type="button" title="关闭">×</button></div>
+      </header>
+      <nav class="lsa-assistant-nav" data-tabs="${isList ? "2" : "3"}">
+        ${isList ? '<button class="lsa-tab-button is-active" data-tab="batch" type="button">批处理</button>' : '<button class="lsa-tab-button is-active" data-tab="record" type="button">批次填入</button><button class="lsa-tab-button" data-tab="manual" type="button">手动填写</button>'}
+        <button class="lsa-tab-button" data-tab="images" type="button">单条配图</button>
+      </nav>
+      <div class="lsa-assistant-body">
         ${isList ? `
         <section class="lsa-tab-panel" data-panel="batch">
           <div class="lsa-section-card">
@@ -1465,17 +1474,24 @@
             <div class="lsa-button-row"><button class="lsa-secondary-button lsa-save-batch-json" type="button" disabled>保存批次 JSON</button><button class="lsa-secondary-button lsa-download-all" type="button" disabled>下载自动通过图</button></div>
             <p class="lsa-status-text lsa-batch-status">扫描后可开始；并发固定不超过 2，状态实时保存。</p>
           </div>
+          ${transferPanel}
+          ${quickSettings}
           <div class="lsa-batch-items"></div>
         </section>` : `
         <section class="lsa-tab-panel" data-panel="record">
           <div class="lsa-section-card">
             <div class="lsa-section-row"><h2 class="lsa-section-title">从批次填入当前编辑页</h2><button class="lsa-text-action lsa-refresh-record" type="button">重新匹配 ID</button></div>
             <p class="lsa-section-hint">优先按当前 URL 的 id 自动匹配；点击下面任一记录会立即跳转到对应编辑页。工具只填入标题和简介，图片由你手动上传，也不会点击后台最终保存。</p>
-            <div class="lsa-record-list" role="listbox" aria-label="选择并跳转到批次记录"></div>
+            <details class="lsa-record-fold lsa-inner-fold"${getBatchItems().length ? " open" : ""}>
+              <summary class="lsa-record-fold-label">批次记录</summary>
+              <div class="lsa-record-list" role="listbox" aria-label="选择并跳转到批次记录"></div>
+            </details>
             <div class="lsa-selected-record"></div>
             <button class="lsa-primary-button lsa-apply-record" type="button" disabled>填入标题和简介</button>
             <p class="lsa-status-text lsa-edit-status">请先核对匹配记录；图片请在后台手动上传。</p>
           </div>
+          ${transferPanel}
+          ${quickSettings}
         </section>
         <section class="lsa-tab-panel" data-panel="manual" hidden>
           <div class="lsa-section-card">

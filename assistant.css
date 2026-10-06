@@ -177,7 +177,15 @@
 .lsa-quick-grid input, .lsa-quick-grid select, .lsa-page-filter {
   width: 100%; min-width: 0; height: 38px; padding: 6px 9px; margin-top: 5px; border: 1px solid #cddbd2; border-radius: 8px; background: white; color: #173d2d;
 }
-.lsa-quick-settings summary { cursor: pointer; font-weight: 700; }
+.lsa-quick-settings summary, .lsa-fold-card > summary, .lsa-inner-fold > summary { cursor: pointer; font-weight: 700; }
+.lsa-fold-card > summary { min-height: 24px; color: #263b31; }
+.lsa-fold-card[open] > summary { margin-bottom: 10px; }
+.lsa-fold-content { min-width: 0; }
+.lsa-folder-summary { display: flex; align-items: center; gap: 10px; }
+.lsa-folder-summary .lsa-current-folder { min-width: 0; overflow: hidden; color: #24704d; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.lsa-record-fold { margin: 10px 0; border: 1px solid #d8e0da; border-radius: 10px; background: #fff; }
+.lsa-record-fold > summary { padding: 11px 12px; color: #365646; }
+.lsa-record-fold[open] > summary { border-bottom: 1px solid #e2e8e3; }
 .lsa-transfer .lsa-button-row { flex-wrap: wrap; }
 .lsa-transfer input[hidden] { display: none !important; }
 .lsa-page-results { max-height: 180px; overflow: auto; margin: 12px 0; }
@@ -866,12 +874,12 @@
   display: grid;
   gap: 4px;
   width: 100%;
-  margin: 10px 0;
+  margin: 0;
   max-height: 240px;
   overflow-y: auto;
   padding: 4px;
-  border: 1px solid #d8e0da;
-  border-radius: 10px;
+  border: 0;
+  border-radius: 0 0 10px 10px;
   background: #fff;
 }
 

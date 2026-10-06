@@ -86,6 +86,7 @@ try {
   await b.locator('.lsa-start-batch').click();
   await a.waitForFunction(()=>document.querySelector('.lsa-item-status')?.textContent==='AI 改写');
   await b.waitForFunction(()=>document.querySelector('.lsa-item-status')?.textContent==='AI 改写');
+  for(let attempt=0;attempt<100&&peakAi<2;attempt++)await new Promise((resolve)=>setTimeout(resolve,20));
   assert.equal(peakAi,2,'两个标签页必须同时有AI请求在运行');
   await a.locator('.lsa-pause-batch').click();
   assert.equal(store.local[kb.batchState].status,'running');
@@ -102,6 +103,7 @@ try {
   assert.equal(store.local[ka.settings].titleLimit,5);
   assert.equal(store.local[kb.settings].titleLimit,12);
   await a.locator('.lsa-quick-settings summary').click();
+  await a.locator('.lsa-transfer > summary').click();
   await a.locator('.lsa-new-batch').click();
   await a.waitForFunction(()=>document.querySelector('.lsa-transfer-status').textContent.includes('旧批次已导出'));
   assert.equal(store.local[ka.batchState],null);
@@ -117,6 +119,10 @@ try {
   const c=await create(303);
   assert.equal(await c.locator('.lsa-batch-card').count(),0,'同一个URL的新标签页不继承其他批次');
   const kc=await keys(303);
+  assert.equal(await c.locator('.lsa-transfer').evaluate((node)=>node.open),false,'当前文件夹默认折叠');
+  assert.equal(await c.locator('.lsa-quick-settings').evaluate((node)=>node.open),false,'当前标签页设置默认折叠');
+  assert.ok(await c.locator('[data-panel="batch"] > .lsa-section-card').first().evaluate((main)=>main.compareDocumentPosition(document.querySelector('.lsa-transfer'))&Node.DOCUMENT_POSITION_FOLLOWING),'列表页文件夹设置应位于处理功能下面');
+  await c.locator('.lsa-transfer > summary').click();
   await c.evaluate(()=>{
     document.querySelector('#fixture').innerHTML='<div><label>语言：<select><option>俄语</option></select></label><label>国家：<select><option>白俄罗斯</option></select></label></div><section id="cards"></section>';
     for(let i=1;i<=45;i++) {
@@ -192,6 +198,11 @@ try {
   await b.locator('.lsa-apply-record').click();
   assert.equal(await b.locator('#title').inputValue(),bSnapshot.items[0].title,'超过12字符但只有10词的标题应能填写');
   assert.equal(await b.locator('#picture').evaluate((input)=>input.files.length),0);
+  assert.ok(await b.locator('[data-panel="record"] > .lsa-section-card').first().evaluate((main)=>main.compareDocumentPosition(document.querySelector('.lsa-transfer'))&Node.DOCUMENT_POSITION_FOLLOWING),'编辑页文件夹与设置应位于批次填入下面');
+  assert.equal(await b.locator('.lsa-record-fold').evaluate((node)=>node.open),true,'有批次记录时列表默认展开');
+  await b.screenshot({path:path.join(root,'tests','artifacts','edit-layout-0.12.png')});
+  await b.locator('.lsa-record-fold > summary').click();
+  assert.equal(await b.locator('.lsa-record-fold').evaluate((node)=>node.open),false,'批次记录应可折叠');
   await b.locator('[data-tab="manual"]').click();
   await b.locator('.lsa-draft-copy').fill('one two three four five six seven eight nine ten eleven twelve thirteen\nA valid summary');
   await b.locator('.lsa-apply-draft').click();
@@ -205,6 +216,6 @@ try {
   const before=await run('getTabContext(202)');startup();const after=await run('getTabContext(202)');
   assert.notEqual(before.keys.batchState,after.keys.batchState,'浏览器重启后不误认复用的标签ID');
   assert.ok((await run('savedBatches()')).batches.some((batch)=>batch.key===before.keys.batchState),'旧批次保留可恢复');
-  console.log('0.11.1 浏览器测试通过：实际扫描40条、语言国家读取、重复导入不堆积、71条拆3文件夹、归档恢复、JSON目录、30/40切换及原双标签并行测试');
+  console.log('0.12.0 浏览器测试通过：实际扫描40条、语言国家读取、重复导入不堆积、71条拆3文件夹、归档恢复、JSON目录、30/40切换及原双标签并行测试');
   await context.close();
 } finally { await browser.close(); }
