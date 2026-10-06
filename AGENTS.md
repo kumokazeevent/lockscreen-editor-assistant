@@ -17,7 +17,7 @@
 ```text
 lockscreen-editor-assistant/
 ├─ AGENTS.md                 # 本交接指南
-├─ README.md                 # 安装、使用及版本说明
+├─ README.md                 # 实现原理、代码结构与工作链路
 ├─ agent.md                  # 0.12.3—0.14.3 的迭代笔记
 ├─ manifest.json             # MV3 入口、权限与注入范围
 ├─ background-entry.js       # 模块型 service worker 入口
@@ -42,6 +42,7 @@ lockscreen-editor-assistant/
 │  └─ artifacts/             # 既有界面截图
 └─ docs/
    ├─ VERSIONS.md            # 39 份历史源码标签、功能变化及归档边界
+   ├─ release-notes.json     # 各版本 Release 说明的本地副本
    ├─ iterations/           # 基于现有证据重建的历史迭代记录
    ├─ decisions/            # 技术决策记录
    └─ HANDOFF.md             # 可直接转交下一位 Agent 的摘要

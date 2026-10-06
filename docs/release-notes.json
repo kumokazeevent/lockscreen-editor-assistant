@@ -1,0 +1,402 @@
+[
+  {
+    "tag_name": "v0.1.0",
+    "target_commitish": "7e45cc6d07bde526be6bb680850d203cc21eeab1",
+    "name": "v0.1.0",
+    "body": "## 本版改动\n\n这是现存第一版，建立以下基础工作流：\n\n- 首版：字段读取与绑定、12/50 字符截断、本地关键词、外部搜图和页面换图预览。\n\n## 实现方式\n\n内容脚本读取网页和已绑定输入框，本地分词得到关键词；图片替换只操作页面预览及已绑定的 URL 字段，最终保存仍由后台完成。\n\n## 实现目的\n\n先减少复制粘贴，验证单条审核工作流。\n\n## 文件变化\n\n- A：`README.md`\n- A：`background.js`\n- A：`content.css`\n- A：`content.js`\n- A：`manifest.json`\n- A：`options.css`\n- A：`options.html`\n- A：`options.js`\n- A：`popup.css`\n- A：`popup.html`\n- A：`popup.js`\n\n## 历史说明\n\n本说明依据源码快照、各版 README 与迭代记录整理；实现目的部分包含根据改动作出的推断。Release 发布时间为本次补录时间，原开发日期未知。\n",
+    "draft": false,
+    "prerelease": false,
+    "make_latest": "false",
+    "generate_release_notes": false
+  },
+  {
+    "tag_name": "v0.2.0",
+    "target_commitish": "ccb6a320c7c6f22aaa45686f77a2736990e84101",
+    "name": "v0.2.0",
+    "body": "## 本版改动\n\n相对前一个归档快照，主要新增、修改或替换：\n\n- 常驻悬浮窗、本地语义精简、可选 AI、Openverse/Pexels 搜索。\n\n## 实现方式\n\n把交互移入页面内的悬浮窗，保存窗口和草稿状态；文案经本地规则或兼容 Chat Completions 的接口改写，图库结果直接展示在窗口内。\n\n## 实现目的\n\n持续操作更方便，并减少直接截断造成的语义破坏。\n\n## 文件变化\n\n- M：`README.md`\n- A：`assistant.css`\n- A：`assistant.js`\n- M：`background.js`\n- M：`content.js`\n- M：`manifest.json`\n- M：`options.css`\n- M：`options.html`\n- M：`options.js`\n- D：`popup.css`\n- D：`popup.html`\n- D：`popup.js`\n\n## 归档对比\n\n[v0.1.0 → v0.2.0 的实际差异](https://github.com/kumokazeevent/lockscreen-editor-assistant/compare/v0.1.0...v0.2.0)。这是相邻归档快照的比较，不代表已确认的原始开发继承关系。\n\n## 历史说明\n\n本说明依据源码快照、各版 README 与迭代记录整理；实现目的部分包含根据改动作出的推断。Release 发布时间为本次补录时间，原开发日期未知。\n",
+    "draft": false,
+    "prerelease": false,
+    "make_latest": "false",
+    "generate_release_notes": false
+  },
+  {
+    "tag_name": "v0.3.0",
+    "target_commitish": "44764ca0677a267c9c7d0a12aacb89401ab6e08e",
+    "name": "v0.3.0",
+    "body": "## 本版改动\n\n相对前一个归档快照，主要新增、修改或替换：\n\n- 保留原稿生成英文搜图词；绑定文件上传控件并写入素材文件。\n\n## 实现方式\n\n改写前单独保存原题与原简介用于英文视觉词提取；远程图片转换为浏览器 File，写入 input[type=file] 并触发 input/change 事件。\n\n## 实现目的\n\n改写结果不适合准确搜图；预览替换不足以完成真实上传。\n\n## 文件变化\n\n- M：`README.md`\n- M：`assistant.js`\n- M：`background.js`\n- M：`content.js`\n- M：`manifest.json`\n- M：`options.html`\n- M：`options.js`\n\n## 归档对比\n\n[v0.2.0 → v0.3.0 的实际差异](https://github.com/kumokazeevent/lockscreen-editor-assistant/compare/v0.2.0...v0.3.0)。这是相邻归档快照的比较，不代表已确认的原始开发继承关系。\n\n## 历史说明\n\n本说明依据源码快照、各版 README 与迭代记录整理；实现目的部分包含根据改动作出的推断。Release 发布时间为本次补录时间，原开发日期未知。\n",
+    "draft": false,
+    "prerelease": false,
+    "make_latest": "false",
+    "generate_release_notes": false
+  },
+  {
+    "tag_name": "v0.4.0",
+    "target_commitish": "8f6767a8dea8c33504ea10a0bdc17a52a1cb780c",
+    "name": "v0.4.0",
+    "body": "## 本版改动\n\n相对前一个归档快照，主要新增、修改或替换：\n\n- 多语种识别和改写语言校验。\n\n## 实现方式\n\n先识别原稿语种并写入 AI 约束，再校验返回的标题、简介；语言不一致时拒绝结果或退回保持原文语言的本地候选。\n\n## 实现目的\n\n外语原稿应保持原语言，不统一改写成中文。\n\n## 文件变化\n\n- M：`README.md`\n- M：`assistant.js`\n- M：`background.js`\n- M：`manifest.json`\n\n## 归档对比\n\n[v0.3.0 → v0.4.0 的实际差异](https://github.com/kumokazeevent/lockscreen-editor-assistant/compare/v0.3.0...v0.4.0)。这是相邻归档快照的比较，不代表已确认的原始开发继承关系。\n\n## 历史说明\n\n本说明依据源码快照、各版 README 与迭代记录整理；实现目的部分包含根据改动作出的推断。Release 发布时间为本次补录时间，原开发日期未知。\n",
+    "draft": false,
+    "prerelease": false,
+    "make_latest": "false",
+    "generate_release_notes": false
+  },
+  {
+    "tag_name": "v0.4.1",
+    "target_commitish": "6c069a4f7b958172f0a1a10dd938821b9051d8ca",
+    "name": "v0.4.1",
+    "body": "## 本版改动\n\n相对前一个归档快照，主要新增、修改或替换：\n\n- Pexels/Openverse 强制竖图筛选。\n\n## 实现方式\n\n图库请求传入竖向参数，返回后再次验证实际 height > width，避免仅依赖服务端方向标签。\n\n## 实现目的\n\n适配手机锁屏版式。\n\n## 文件变化\n\n- M：`README.md`\n- M：`assistant.css`\n- M：`assistant.js`\n- M：`background.js`\n- M：`manifest.json`\n- M：`options.html`\n\n## 归档对比\n\n[v0.4.0 → v0.4.1 的实际差异](https://github.com/kumokazeevent/lockscreen-editor-assistant/compare/v0.4.0...v0.4.1)。这是相邻归档快照的比较，不代表已确认的原始开发继承关系。\n\n## 历史说明\n\n本说明依据源码快照、各版 README 与迭代记录整理；实现目的部分包含根据改动作出的推断。Release 发布时间为本次补录时间，原开发日期未知。\n",
+    "draft": false,
+    "prerelease": false,
+    "make_latest": "false",
+    "generate_release_notes": false
+  },
+  {
+    "tag_name": "v0.4.2",
+    "target_commitish": "dea21feca336aa3dbca6dd6fc85e42b88317d3aa",
+    "name": "v0.4.2",
+    "body": "## 本版改动\n\n相对前一个归档快照，主要新增、修改或替换：\n\n- GLM 5.x 关闭思考，缩短提示词与输出。\n\n## 实现方式\n\n为 GLM 5.x 请求发送 thinking.type=disabled，压缩提示词与短 JSON 输出，其他模型保持各自兼容参数。\n\n## 实现目的\n\n减少短文案任务的等待时间。\n\n## 文件变化\n\n- M：`README.md`\n- M：`background.js`\n- M：`manifest.json`\n\n## 归档对比\n\n[v0.4.1 → v0.4.2 的实际差异](https://github.com/kumokazeevent/lockscreen-editor-assistant/compare/v0.4.1...v0.4.2)。这是相邻归档快照的比较，不代表已确认的原始开发继承关系。\n\n## 历史说明\n\n本说明依据源码快照、各版 README 与迭代记录整理；实现目的部分包含根据改动作出的推断。Release 发布时间为本次补录时间，原开发日期未知。\n",
+    "draft": false,
+    "prerelease": false,
+    "make_latest": "false",
+    "generate_release_notes": false
+  },
+  {
+    "tag_name": "v0.4.3",
+    "target_commitish": "a3825b85fb6652cff16db9d4e3300747bcb62330",
+    "name": "v0.4.3",
+    "body": "## 本版改动\n\n相对前一个归档快照，主要新增、修改或替换：\n\n- 明确 45 秒超时并转本地精简。\n\n## 实现方式\n\n用显式超时控制在线请求，将底层中断错误转换为可理解的状态消息，并使用本地规则继续生成候选。\n\n## 实现目的\n\n处理不明确的 aborted 错误。\n\n## 文件变化\n\n- M：`README.md`\n- M：`background.js`\n- M：`manifest.json`\n\n## 归档对比\n\n[v0.4.2 → v0.4.3 的实际差异](https://github.com/kumokazeevent/lockscreen-editor-assistant/compare/v0.4.2...v0.4.3)。这是相邻归档快照的比较，不代表已确认的原始开发继承关系。\n\n## 历史说明\n\n本说明依据源码快照、各版 README 与迭代记录整理；实现目的部分包含根据改动作出的推断。Release 发布时间为本次补录时间，原开发日期未知。\n",
+    "draft": false,
+    "prerelease": false,
+    "make_latest": "false",
+    "generate_release_notes": false
+  },
+  {
+    "tag_name": "v0.5.0",
+    "target_commitish": "67e2a5d7fd9786a9611522090037b8c457758853",
+    "name": "v0.5.0",
+    "body": "## 本版改动\n\n相对前一个归档快照，主要新增、修改或替换：\n\n- 增加 Pixabay 备用，所有图库实行竖图筛选。\n\n## 实现方式\n\n增加 Pixabay 适配器，使用 vertical、photo、safesearch 参数，并按实际尺寸二次过滤；请求结果缓存以减少重复访问。\n\n## 实现目的\n\n扩大可用素材范围并保持方向一致。\n\n## 文件变化\n\n- M：`README.md`\n- M：`assistant.js`\n- M：`background.js`\n- M：`manifest.json`\n- M：`options.html`\n- M：`options.js`\n\n## 归档对比\n\n[v0.4.3 → v0.5.0 的实际差异](https://github.com/kumokazeevent/lockscreen-editor-assistant/compare/v0.4.3...v0.5.0)。这是相邻归档快照的比较，不代表已确认的原始开发继承关系。\n\n## 历史说明\n\n本说明依据源码快照、各版 README 与迭代记录整理；实现目的部分包含根据改动作出的推断。Release 发布时间为本次补录时间，原开发日期未知。\n",
+    "draft": false,
+    "prerelease": false,
+    "make_latest": "false",
+    "generate_release_notes": false
+  },
+  {
+    "tag_name": "v0.5.1",
+    "target_commitish": "74bc50322711042c5d1d8dc622fb3a5122b260df",
+    "name": "v0.5.1",
+    "body": "## 本版改动\n\n相对前一个归档快照，主要新增、修改或替换：\n\n- 方法类标题提取具体核心，避免只保留数字/方法；保留有事实含量的吸引点。\n\n## 实现方式\n\n对多语言方法类结构移除数量、泛化修饰和方法词，提取具体对象/动作；核心未超限时保留原句，超限才进一步精简。\n\n## 实现目的\n\n避免空泛标题与图文不符。\n\n## 文件变化\n\n- M：`README.md`\n- M：`assistant.js`\n- M：`background.js`\n- M：`manifest.json`\n\n## 归档对比\n\n[v0.5.0 → v0.5.1 的实际差异](https://github.com/kumokazeevent/lockscreen-editor-assistant/compare/v0.5.0...v0.5.1)。这是相邻归档快照的比较，不代表已确认的原始开发继承关系。\n\n## 历史说明\n\n本说明依据源码快照、各版 README 与迭代记录整理；实现目的部分包含根据改动作出的推断。Release 发布时间为本次补录时间，原开发日期未知。\n",
+    "draft": false,
+    "prerelease": false,
+    "make_latest": "false",
+    "generate_release_notes": false
+  },
+  {
+    "tag_name": "snapshot-v0.5.2",
+    "target_commitish": "72889f87a1e922a495318621a665c7616649e1ef",
+    "name": "归档 0.5.2（实际 manifest 0.6.1）",
+    "body": "## 本版改动\n\n相对前一个归档快照，主要新增、修改或替换：\n\n- 归档目录名为 0.5.2，实际 manifest/README 为 0.6.1；自动读稿、自动英文搜图、可缩放窗和素材下载。\n\n## 实现方式\n\n原稿合并为标题////简介，待填写文本按行解析；页面读取原标题后生成英文视觉词并立即搜图，窗口大小与素材下载路径由扩展保存。\n\n## 实现目的\n\n编号与先后关系不确定；原样保留，以专门标签记录差异。\n\n## 文件变化\n\n- M：`README.md`\n- M：`assistant.css`\n- M：`assistant.js`\n- M：`background.js`\n- M：`content.js`\n- M：`manifest.json`\n- M：`options.html`\n- M：`options.js`\n\n## 归档对比\n\n[v0.5.1 → snapshot-v0.5.2 的实际差异](https://github.com/kumokazeevent/lockscreen-editor-assistant/compare/v0.5.1...snapshot-v0.5.2)。这是相邻归档快照的比较，不代表已确认的原始开发继承关系。\n\n## 历史说明\n\n本说明依据源码快照、各版 README 与迭代记录整理；实现目的部分包含根据改动作出的推断。Release 发布时间为本次补录时间，原开发日期未知。 原目录名是 v0.5.2，manifest/README 实际声明 0.6.1；两个标签指向同一份快照，实际先后关系未确认。\n",
+    "draft": false,
+    "prerelease": true,
+    "make_latest": "false",
+    "generate_release_notes": false
+  },
+  {
+    "tag_name": "v0.6.1",
+    "target_commitish": "72889f87a1e922a495318621a665c7616649e1ef",
+    "name": "v0.6.1（原目录标作 0.5.2）",
+    "body": "## 本版改动\n\n相对前一个归档快照，主要新增、修改或替换：\n\n- 归档目录名为 0.5.2，实际 manifest/README 为 0.6.1；自动读稿、自动英文搜图、可缩放窗和素材下载。\n\n## 实现方式\n\n原稿合并为标题////简介，待填写文本按行解析；页面读取原标题后生成英文视觉词并立即搜图，窗口大小与素材下载路径由扩展保存。\n\n## 实现目的\n\n编号与先后关系不确定；原样保留，以专门标签记录差异。\n\n## 文件变化\n\n- M：`README.md`\n- M：`assistant.css`\n- M：`assistant.js`\n- M：`background.js`\n- M：`content.js`\n- M：`manifest.json`\n- M：`options.html`\n- M：`options.js`\n\n## 归档对比\n\n[v0.5.1 → snapshot-v0.5.2 的实际差异](https://github.com/kumokazeevent/lockscreen-editor-assistant/compare/v0.5.1...snapshot-v0.5.2)。这是相邻归档快照的比较，不代表已确认的原始开发继承关系。\n\n## 历史说明\n\n本说明依据源码快照、各版 README 与迭代记录整理；实现目的部分包含根据改动作出的推断。Release 发布时间为本次补录时间，原开发日期未知。 原目录名是 v0.5.2，manifest/README 实际声明 0.6.1；两个标签指向同一份快照，实际先后关系未确认。\n",
+    "draft": false,
+    "prerelease": true,
+    "make_latest": "false",
+    "generate_release_notes": false
+  },
+  {
+    "tag_name": "v0.5.3",
+    "target_commitish": "d92de98249779d2773c570a79c52b63d8807a9d7",
+    "name": "v0.5.3",
+    "body": "## 本版改动\n\n相对前一个归档快照，主要新增、修改或替换：\n\n- AI 标题精简强调原意、专有名词、吸引力及同语种；素材仅预览。\n\n## 实现方式\n\n提示词加入专有名词保留及通用缩写规则，并在填写前校验同语种及 12/50 字符上限；读取原标题后自动搜图。\n\n## 实现目的\n\n提高标题质量并保留人工图片操作。\n\n## 文件变化\n\n- M：`README.md`\n- M：`assistant.css`\n- M：`assistant.js`\n- M：`background.js`\n- M：`manifest.json`\n- M：`options.html`\n\n## 归档对比\n\n[snapshot-v0.5.2 → v0.5.3 的实际差异](https://github.com/kumokazeevent/lockscreen-editor-assistant/compare/snapshot-v0.5.2...v0.5.3)。这是相邻归档快照的比较，不代表已确认的原始开发继承关系。\n\n## 历史说明\n\n本说明依据源码快照、各版 README 与迭代记录整理；实现目的部分包含根据改动作出的推断。Release 发布时间为本次补录时间，原开发日期未知。\n",
+    "draft": false,
+    "prerelease": false,
+    "make_latest": "false",
+    "generate_release_notes": false
+  },
+  {
+    "tag_name": "v0.6.0",
+    "target_commitish": "ec2373de7b8a6d021a2a326d65f24c5c9f3e7d02",
+    "name": "v0.6.0（已取消的实验版）",
+    "body": "## 本版改动\n\n相对前一个归档快照，主要新增、修改或替换：\n\n- 实验版：中外文逐词对齐，点中文词选择外语原词组标题；简介继续精简。\n\n## 实现方式\n\nAI 返回整句翻译及原词/中文词的对齐关系，界面把词组画成可选按钮，再按原标题顺序组合被选中的外语原词。\n\n## 实现目的\n\n帮助人工选取外语标题词；用户后来明确取消此方案。\n\n## 文件变化\n\n- M：`README.md`\n- M：`assistant.css`\n- M：`assistant.js`\n- M：`background.js`\n- M：`content.js`\n- M：`manifest.json`\n- M：`options.html`\n- M：`options.js`\n\n## 归档对比\n\n[v0.5.3 → v0.6.0 的实际差异](https://github.com/kumokazeevent/lockscreen-editor-assistant/compare/v0.5.3...v0.6.0)。这是相邻归档快照的比较，不代表已确认的原始开发继承关系。\n\n## 历史说明\n\n本说明依据源码快照、各版 README 与迭代记录整理；实现目的部分包含根据改动作出的推断。Release 发布时间为本次补录时间，原开发日期未知。 此版本是用户明确取消的词语对齐实验方案，仅作历史归档。\n",
+    "draft": false,
+    "prerelease": true,
+    "make_latest": "false",
+    "generate_release_notes": false
+  },
+  {
+    "tag_name": "v0.7.0",
+    "target_commitish": "e14668f84e6e17bb22041655de554cf30f89feb1",
+    "name": "v0.7.0",
+    "body": "## 本版改动\n\n相对前一个归档快照，主要新增、修改或替换：\n\n- 实际后台列表/编辑页批处理、读文章、AI 改写、竖图搜索、分目录导出、填表与尝试上传。\n\n## 实现方式\n\n对目标 hash 路由做专门适配；扫描卡片并编号，读取查看链接正文，逐条请求 AI 的结构化文案及搜图词，图库候选经尺寸和元数据初筛后保存。\n\n## 实现目的\n\n把单条辅助扩展为最多 30 条的真实后台工作流。\n\n## 文件变化\n\n- M：`README.md`\n- M：`assistant.css`\n- M：`assistant.js`\n- M：`background.js`\n- M：`content.js`\n- M：`manifest.json`\n- M：`options.css`\n- M：`options.html`\n- M：`options.js`\n- A：`tests/background-logic.mjs`\n- A：`tests/validate-extension.mjs`\n\n## 归档对比\n\n[v0.6.0 → v0.7.0 的实际差异](https://github.com/kumokazeevent/lockscreen-editor-assistant/compare/v0.6.0...v0.7.0)。这是相邻归档快照的比较，不代表已确认的原始开发继承关系。\n\n## 历史说明\n\n本说明依据源码快照、各版 README 与迭代记录整理；实现目的部分包含根据改动作出的推断。Release 发布时间为本次补录时间，原开发日期未知。\n",
+    "draft": false,
+    "prerelease": false,
+    "make_latest": "false",
+    "generate_release_notes": false
+  },
+  {
+    "tag_name": "v0.7.1",
+    "target_commitish": "501506c4c63d3bef28e7a1766c5a651501d32d0f",
+    "name": "v0.7.1",
+    "body": "## 本版改动\n\n相对前一个归档快照，主要新增、修改或替换：\n\n- OpenCode 端点/模型简称处理，致命错误停止批次，超时不连续重复。\n\n## 实现方式\n\n规范当时的默认模型简称和 OpenCode Go 请求地址，区分致命配置错误与临时错误；致命错误暂停后续条目，超时只等待一次。\n\n## 实现目的\n\n降低 404 和连续等待的损耗。\n\n## 文件变化\n\n- M：`README.md`\n- M：`assistant.js`\n- M：`background.js`\n- M：`content.js`\n- M：`manifest.json`\n- M：`options.html`\n- M：`options.js`\n- A：`page-bridge.js`\n- M：`tests/background-logic.mjs`\n- M：`tests/validate-extension.mjs`\n\n## 归档对比\n\n[v0.7.0 → v0.7.1 的实际差异](https://github.com/kumokazeevent/lockscreen-editor-assistant/compare/v0.7.0...v0.7.1)。这是相邻归档快照的比较，不代表已确认的原始开发继承关系。\n\n## 历史说明\n\n本说明依据源码快照、各版 README 与迭代记录整理；实现目的部分包含根据改动作出的推断。Release 发布时间为本次补录时间，原开发日期未知。\n",
+    "draft": false,
+    "prerelease": false,
+    "make_latest": "false",
+    "generate_release_notes": false
+  },
+  {
+    "tag_name": "v0.7.2",
+    "target_commitish": "973ac4f9f74e8f228076fa34478abfd5e25eb941",
+    "name": "v0.7.2",
+    "body": "## 本版改动\n\n相对前一个归档快照，主要新增、修改或替换：\n\n- 逐条读文/AI/搜图阶段与总进度。\n\n## 实现方式\n\n为每条建立文章、AI、图片三个阶段的状态机，实时汇总阶段完成数和批次百分比。\n\n## 实现目的\n\n让批次进展和故障位置可见。\n\n## 文件变化\n\n- M：`README.md`\n- M：`assistant.css`\n- M：`assistant.js`\n- M：`manifest.json`\n- M：`options.html`\n- M：`tests/validate-extension.mjs`\n\n## 归档对比\n\n[v0.7.1 → v0.7.2 的实际差异](https://github.com/kumokazeevent/lockscreen-editor-assistant/compare/v0.7.1...v0.7.2)。这是相邻归档快照的比较，不代表已确认的原始开发继承关系。\n\n## 历史说明\n\n本说明依据源码快照、各版 README 与迭代记录整理；实现目的部分包含根据改动作出的推断。Release 发布时间为本次补录时间，原开发日期未知。\n",
+    "draft": false,
+    "prerelease": false,
+    "make_latest": "false",
+    "generate_release_notes": false
+  },
+  {
+    "tag_name": "v0.7.3",
+    "target_commitish": "abb89a1b46b7ef90e541da8f0ff468d74167ae36",
+    "name": "v0.7.3",
+    "body": "## 本版改动\n\n相对前一个归档快照，主要新增、修改或替换：\n\n- 扫描标题排除未投递等徽标。\n\n## 实现方式\n\n标题候选评分排除投递/审核状态词，并降低卡片右上角短文本、状态标签的权重。\n\n## 实现目的\n\n修复把状态识别为标题。\n\n## 文件变化\n\n- M：`README.md`\n- M：`content.js`\n- M：`manifest.json`\n- M：`options.html`\n- M：`tests/validate-extension.mjs`\n\n## 归档对比\n\n[v0.7.2 → v0.7.3 的实际差异](https://github.com/kumokazeevent/lockscreen-editor-assistant/compare/v0.7.2...v0.7.3)。这是相邻归档快照的比较，不代表已确认的原始开发继承关系。\n\n## 历史说明\n\n本说明依据源码快照、各版 README 与迭代记录整理；实现目的部分包含根据改动作出的推断。Release 发布时间为本次补录时间，原开发日期未知。\n",
+    "draft": false,
+    "prerelease": false,
+    "make_latest": "false",
+    "generate_release_notes": false
+  },
+  {
+    "tag_name": "v0.7.4",
+    "target_commitish": "295bb0c5f9c746f5be2fc82c1c64dd21eb61e472",
+    "name": "v0.7.4",
+    "body": "## 本版改动\n\n相对前一个归档快照，主要新增、修改或替换：\n\n- DeepSeek 官方端点及明确关闭当时的模型思考。\n\n## 实现方式\n\n调整默认端点，并在当时的 DeepSeek V4 请求中明确禁用思考，避免有限输出预算只产生 reasoning 而没有正文。\n\n## 实现目的\n\n避免预算被思考占满而没有最终正文。\n\n## 文件变化\n\n- M：`README.md`\n- M：`background.js`\n- M：`manifest.json`\n- M：`options.html`\n- M：`options.js`\n- M：`tests/background-logic.mjs`\n- M：`tests/validate-extension.mjs`\n\n## 归档对比\n\n[v0.7.3 → v0.7.4 的实际差异](https://github.com/kumokazeevent/lockscreen-editor-assistant/compare/v0.7.3...v0.7.4)。这是相邻归档快照的比较，不代表已确认的原始开发继承关系。\n\n## 历史说明\n\n本说明依据源码快照、各版 README 与迭代记录整理；实现目的部分包含根据改动作出的推断。Release 发布时间为本次补录时间，原开发日期未知。\n",
+    "draft": false,
+    "prerelease": false,
+    "make_latest": "false",
+    "generate_release_notes": false
+  },
+  {
+    "tag_name": "v0.7.5",
+    "target_commitish": "dc281c3776e9b08e0b09674a5fb4f838278daf40",
+    "name": "v0.7.5",
+    "body": "## 本版改动\n\n相对前一个归档快照，主要新增、修改或替换：\n\n- 取消默认模型/别名改写，原样发送模型 ID；列出接口配置并增强空响应诊断。\n\n## 实现方式\n\n取消模型预填和自动别名纠正，实际请求原样使用用户输入；解析多种正文响应结构，并记录空响应模型、finish_reason 和字段形态。\n\n## 实现目的\n\n避免提供商模型名称被错误替换。\n\n## 文件变化\n\n- M：`README.md`\n- M：`background.js`\n- M：`manifest.json`\n- M：`options.css`\n- M：`options.html`\n- M：`options.js`\n- M：`tests/background-logic.mjs`\n- M：`tests/validate-extension.mjs`\n\n## 归档对比\n\n[v0.7.4 → v0.7.5 的实际差异](https://github.com/kumokazeevent/lockscreen-editor-assistant/compare/v0.7.4...v0.7.5)。这是相邻归档快照的比较，不代表已确认的原始开发继承关系。\n\n## 历史说明\n\n本说明依据源码快照、各版 README 与迭代记录整理；实现目的部分包含根据改动作出的推断。Release 发布时间为本次补录时间，原开发日期未知。\n",
+    "draft": false,
+    "prerelease": false,
+    "make_latest": "false",
+    "generate_release_notes": false
+  },
+  {
+    "tag_name": "v0.7.6",
+    "target_commitish": "6b3cd0d949e53e4a8d7b03b186b6cf662d61cd79",
+    "name": "v0.7.6",
+    "body": "## 本版改动\n\n相对前一个归档快照，主要新增、修改或替换：\n\n- 严格字符复核，重试携带上次具体超限原因。\n\n## 实现方式\n\n提示词要求输出前计数；本地发现超限时，将具体错误和上次结果反馈给下一次请求，而不是重复相同提示。\n\n## 实现目的\n\n减少超长文案反复返回。\n\n## 文件变化\n\n- M：`README.md`\n- M：`background.js`\n- M：`manifest.json`\n- M：`options.html`\n- M：`tests/background-logic.mjs`\n- M：`tests/validate-extension.mjs`\n\n## 归档对比\n\n[v0.7.5 → v0.7.6 的实际差异](https://github.com/kumokazeevent/lockscreen-editor-assistant/compare/v0.7.5...v0.7.6)。这是相邻归档快照的比较，不代表已确认的原始开发继承关系。\n\n## 历史说明\n\n本说明依据源码快照、各版 README 与迭代记录整理；实现目的部分包含根据改动作出的推断。Release 发布时间为本次补录时间，原开发日期未知。\n",
+    "draft": false,
+    "prerelease": false,
+    "make_latest": "false",
+    "generate_release_notes": false
+  },
+  {
+    "tag_name": "v0.7.7",
+    "target_commitish": "447341ee396c5db514cdf4ba318143e7d1958bcc",
+    "name": "v0.7.7",
+    "body": "## 本版改动\n\n相对前一个归档快照，主要新增、修改或替换：\n\n- 中等思考、可选第二审核 AI、编号状态与编辑页导航。\n\n## 实现方式\n\n主请求配置中等思考，可选独立审核接口再对照原稿改写；编辑页用自定义记录列表代替原生选择项，支持状态样式和按 ID 导航。\n\n## 实现目的\n\n改善文案约束遵守和失败条目定位。\n\n## 文件变化\n\n- M：`README.md`\n- M：`assistant.css`\n- M：`assistant.js`\n- M：`background.js`\n- M：`manifest.json`\n- M：`options.css`\n- M：`options.html`\n- M：`options.js`\n- M：`tests/background-logic.mjs`\n- M：`tests/validate-extension.mjs`\n\n## 归档对比\n\n[v0.7.6 → v0.7.7 的实际差异](https://github.com/kumokazeevent/lockscreen-editor-assistant/compare/v0.7.6...v0.7.7)。这是相邻归档快照的比较，不代表已确认的原始开发继承关系。\n\n## 历史说明\n\n本说明依据源码快照、各版 README 与迭代记录整理；实现目的部分包含根据改动作出的推断。Release 发布时间为本次补录时间，原开发日期未知。\n",
+    "draft": false,
+    "prerelease": false,
+    "make_latest": "false",
+    "generate_release_notes": false
+  },
+  {
+    "tag_name": "v0.7.8",
+    "target_commitish": "2d7adf42fd6145d8e769d4047b917ddc8e9ed69e",
+    "name": "v0.7.8",
+    "body": "## 本版改动\n\n相对前一个归档快照，主要新增、修改或替换：\n\n- 思考截断时扩大 4096→8192 输出预算。\n\n## 实现方式\n\n识别 finish_reason=length 且思考占满预算的情况，仅对该情形扩大输出额度重试。\n\n## 实现目的\n\n解决只返回思考没有正文的 length 响应。\n\n## 文件变化\n\n- M：`README.md`\n- M：`background.js`\n- M：`manifest.json`\n- M：`options.html`\n- M：`tests/background-logic.mjs`\n- M：`tests/validate-extension.mjs`\n\n## 归档对比\n\n[v0.7.7 → v0.7.8 的实际差异](https://github.com/kumokazeevent/lockscreen-editor-assistant/compare/v0.7.7...v0.7.8)。这是相邻归档快照的比较，不代表已确认的原始开发继承关系。\n\n## 历史说明\n\n本说明依据源码快照、各版 README 与迭代记录整理；实现目的部分包含根据改动作出的推断。Release 发布时间为本次补录时间，原开发日期未知。\n",
+    "draft": false,
+    "prerelease": false,
+    "make_latest": "false",
+    "generate_release_notes": false
+  },
+  {
+    "tag_name": "v0.7.9",
+    "target_commitish": "83f470dacc2de84d95fdf625a21f3ca3944a437a",
+    "name": "v0.7.9",
+    "body": "## 本版改动\n\n相对前一个归档快照，主要新增、修改或替换：\n\n- 审核 AI 无思考；主结果通过校验时可保留并标记审核跳过。\n\n## 实现方式\n\n审核请求明确禁用思考；审核临时失败时检查主候选是否已通过本地约束，合格则保留候选并记录审核跳过。\n\n## 实现目的\n\n避免可选审核服务临时不可用阻断合格结果。\n\n## 文件变化\n\n- M：`README.md`\n- M：`assistant.css`\n- M：`assistant.js`\n- M：`background.js`\n- M：`manifest.json`\n- M：`options.html`\n- M：`tests/background-logic.mjs`\n- M：`tests/validate-extension.mjs`\n\n## 归档对比\n\n[v0.7.8 → v0.7.9 的实际差异](https://github.com/kumokazeevent/lockscreen-editor-assistant/compare/v0.7.8...v0.7.9)。这是相邻归档快照的比较，不代表已确认的原始开发继承关系。\n\n## 历史说明\n\n本说明依据源码快照、各版 README 与迭代记录整理；实现目的部分包含根据改动作出的推断。Release 发布时间为本次补录时间，原开发日期未知。\n",
+    "draft": false,
+    "prerelease": false,
+    "make_latest": "false",
+    "generate_release_notes": false
+  },
+  {
+    "tag_name": "v0.7.10",
+    "target_commitish": "4ff56231765df116674fc778da45ea1cf38867a0",
+    "name": "v0.7.10",
+    "body": "## 本版改动\n\n相对前一个归档快照，主要新增、修改或替换：\n\n- 路由挂载锁和旧悬浮窗清理。\n\n## 实现方式\n\n为异步挂载增加递增序号，只允许最后一次路由挂载生效，并在重新挂载前清除旧窗口节点。\n\n## 实现目的\n\n解决切换列表/编辑页后残留窗口。\n\n## 文件变化\n\n- M：`README.md`\n- M：`assistant.js`\n- M：`manifest.json`\n- M：`options.html`\n- M：`tests/validate-extension.mjs`\n\n## 归档对比\n\n[v0.7.9 → v0.7.10 的实际差异](https://github.com/kumokazeevent/lockscreen-editor-assistant/compare/v0.7.9...v0.7.10)。这是相邻归档快照的比较，不代表已确认的原始开发继承关系。\n\n## 历史说明\n\n本说明依据源码快照、各版 README 与迭代记录整理；实现目的部分包含根据改动作出的推断。Release 发布时间为本次补录时间，原开发日期未知。\n",
+    "draft": false,
+    "prerelease": false,
+    "make_latest": "false",
+    "generate_release_notes": false
+  },
+  {
+    "tag_name": "v0.8.0",
+    "target_commitish": "1a5847a9fe3c9ea7ac2eb7683264f080b8a018ab",
+    "name": "v0.8.0",
+    "body": "## 本版改动\n\n相对前一个归档快照，主要新增、修改或替换：\n\n- 编辑页只填文案，人工上传图片；成品图每 30 张分组。\n\n## 实现方式\n\n编辑页填写链路移除图片上传步骤，只写标题和简介；后台下载分配器按累计数量建立每 30 张一个的目录。\n\n## 实现目的\n\n匹配人工上传工作流，避免不稳定的自动上传。\n\n## 文件变化\n\n- M：`README.md`\n- M：`assistant.js`\n- M：`background.js`\n- M：`content.js`\n- M：`manifest.json`\n- M：`options.html`\n- M：`tests/validate-extension.mjs`\n\n## 归档对比\n\n[v0.7.10 → v0.8.0 的实际差异](https://github.com/kumokazeevent/lockscreen-editor-assistant/compare/v0.7.10...v0.8.0)。这是相邻归档快照的比较，不代表已确认的原始开发继承关系。\n\n## 历史说明\n\n本说明依据源码快照、各版 README 与迭代记录整理；实现目的部分包含根据改动作出的推断。Release 发布时间为本次补录时间，原开发日期未知。\n",
+    "draft": false,
+    "prerelease": false,
+    "make_latest": "false",
+    "generate_release_notes": false
+  },
+  {
+    "tag_name": "v0.9.0",
+    "target_commitish": "5ca6eca470748e6303546c5c6c3782e7856bc2aa",
+    "name": "v0.9.0",
+    "body": "## 本版改动\n\n相对前一个归档快照，主要新增、修改或替换：\n\n- 多页读取、JSON 导入导出、可调字符上限/思考/提示词、本地模式、搜图翻页与下载重复检查。\n\n## 实现方式\n\n增加多页批次结构、按 ID 合并的 JSON 恢复、参数化限制与提示词；图库维护关键词/页码，下载维护素材地址和 SHA-256 重复记录。\n\n## 实现目的\n\n扩展批处理并支持恢复与规则调整。\n\n## 文件变化\n\n- M：`README.md`\n- M：`assistant.css`\n- M：`assistant.js`\n- M：`background.js`\n- M：`content.js`\n- M：`manifest.json`\n- M：`options.css`\n- M：`options.html`\n- M：`options.js`\n- M：`page-bridge.js`\n- M：`tests/background-logic.mjs`\n- A：`tests/ui-workflow.mjs`\n- M：`tests/validate-extension.mjs`\n- A：`tests/workflow-logic.mjs`\n- A：`workflow.js`\n\n## 归档对比\n\n[v0.8.0 → v0.9.0 的实际差异](https://github.com/kumokazeevent/lockscreen-editor-assistant/compare/v0.8.0...v0.9.0)。这是相邻归档快照的比较，不代表已确认的原始开发继承关系。\n\n## 历史说明\n\n本说明依据源码快照、各版 README 与迭代记录整理；实现目的部分包含根据改动作出的推断。Release 发布时间为本次补录时间，原开发日期未知。\n",
+    "draft": false,
+    "prerelease": false,
+    "make_latest": "false",
+    "generate_release_notes": false
+  },
+  {
+    "tag_name": "v0.10.0",
+    "target_commitish": "81346c7f24550ca3595ff8fdf5a1b313d58712cf",
+    "name": "v0.10.0",
+    "body": "## 本版改动\n\n相对前一个归档快照，主要新增、修改或替换：\n\n- 改为多标签页独立并行，取消后台自动翻页；由字符限制改为可调词数。\n\n## 实现方式\n\n存储键加入标签页上下文；统一提示词、校验、导入和填写的词数算法，对无空格文本使用浏览器分词。\n\n## 实现目的\n\n按用户明确的多标签工作方式与后台词数要求实现。\n\n## 文件变化\n\n- M：`README.md`\n- M：`assistant.js`\n- M：`background.js`\n- M：`content.js`\n- M：`manifest.json`\n- M：`options.html`\n- M：`options.js`\n- M：`tests/background-logic.mjs`\n- A：`tests/tab-isolation-ui.mjs`\n- D：`tests/ui-workflow.mjs`\n- M：`tests/validate-extension.mjs`\n- M：`tests/workflow-logic.mjs`\n- M：`workflow.js`\n\n## 归档对比\n\n[v0.9.0 → v0.10.0 的实际差异](https://github.com/kumokazeevent/lockscreen-editor-assistant/compare/v0.9.0...v0.10.0)。这是相邻归档快照的比较，不代表已确认的原始开发继承关系。\n\n## 历史说明\n\n本说明依据源码快照、各版 README 与迭代记录整理；实现目的部分包含根据改动作出的推断。Release 发布时间为本次补录时间，原开发日期未知。\n",
+    "draft": false,
+    "prerelease": false,
+    "make_latest": "false",
+    "generate_release_notes": false
+  },
+  {
+    "tag_name": "v0.11.0",
+    "target_commitish": "015a4f6ea317706626ecfd132d6584de66e77464",
+    "name": "v0.11.0",
+    "body": "## 本版改动\n\n相对前一个归档快照，主要新增、修改或替换：\n\n- 导入不再堆积；语言_国家_时间目录；30/40 切换。\n\n## 实现方式\n\n读取/导入先归档旧批次，再只显示选中的文件夹；从页面筛选框取得语言国家，30/40 设置同时影响读取上限和图片分组。\n\n## 实现目的\n\n隔离批次并适配各国每日条目数。\n\n## 文件变化\n\n- M：`README.md`\n- M：`assistant.css`\n- M：`assistant.js`\n- M：`background.js`\n- M：`content.js`\n- M：`manifest.json`\n- M：`options.html`\n- M：`options.js`\n- M：`tests/tab-isolation-ui.mjs`\n- M：`tests/validate-extension.mjs`\n- M：`tests/workflow-logic.mjs`\n- M：`workflow.js`\n\n## 归档对比\n\n[v0.10.0 → v0.11.0 的实际差异](https://github.com/kumokazeevent/lockscreen-editor-assistant/compare/v0.10.0...v0.11.0)。这是相邻归档快照的比较，不代表已确认的原始开发继承关系。\n\n## 历史说明\n\n本说明依据源码快照、各版 README 与迭代记录整理；实现目的部分包含根据改动作出的推断。Release 发布时间为本次补录时间，原开发日期未知。\n",
+    "draft": false,
+    "prerelease": false,
+    "make_latest": "false",
+    "generate_release_notes": false
+  },
+  {
+    "tag_name": "v0.11.1",
+    "target_commitish": "4c5e174255f3f1ddfbf13008136398ca3b9e033e",
+    "name": "v0.11.1",
+    "body": "## 本版改动\n\n相对前一个归档快照，主要新增、修改或替换：\n\n- AVIF/WebP/GIF 实际转换 JPEG，JPEG/PNG 不重复压缩。\n\n## 实现方式\n\n请求优先接受 JPEG；对 AVIF/WebP/GIF 使用浏览器图片解码和画布重新编码 JPEG，并按实际 MIME 改正扩展名。\n\n## 实现目的\n\n处理后台不支持 AVIF 上传的问题。\n\n## 文件变化\n\n- M：`README.md`\n- M：`background.js`\n- M：`manifest.json`\n- M：`options.html`\n- M：`tests/background-logic.mjs`\n- M：`tests/tab-isolation-ui.mjs`\n- M：`tests/validate-extension.mjs`\n- M：`tests/workflow-logic.mjs`\n\n## 归档对比\n\n[v0.11.0 → v0.11.1 的实际差异](https://github.com/kumokazeevent/lockscreen-editor-assistant/compare/v0.11.0...v0.11.1)。这是相邻归档快照的比较，不代表已确认的原始开发继承关系。\n\n## 历史说明\n\n本说明依据源码快照、各版 README 与迭代记录整理；实现目的部分包含根据改动作出的推断。Release 发布时间为本次补录时间，原开发日期未知。\n",
+    "draft": false,
+    "prerelease": false,
+    "make_latest": "false",
+    "generate_release_notes": false
+  },
+  {
+    "tag_name": "v0.12.0",
+    "target_commitish": "f0d9953b10b8caa796462e8b13d1cd487b2a4c52",
+    "name": "v0.12.0",
+    "body": "## 本版改动\n\n相对前一个归档快照，主要新增、修改或替换：\n\n- 区块重排和折叠，最多 4 路下载并固定目标目录。\n\n## 实现方式\n\n重排悬浮窗区块并改用 details 折叠；图片下载采用最多 4 个 worker，开始时固定目录，避免运行中切换导致写错路径。\n\n## 实现目的\n\n减少遮挡并提高下载速度，避免切换文件夹写错路径。\n\n## 文件变化\n\n- M：`README.md`\n- M：`assistant.css`\n- M：`assistant.js`\n- M：`manifest.json`\n- M：`options.html`\n- M：`tests/tab-isolation-ui.mjs`\n- M：`tests/validate-extension.mjs`\n- M：`tests/workflow-logic.mjs`\n\n## 归档对比\n\n[v0.11.1 → v0.12.0 的实际差异](https://github.com/kumokazeevent/lockscreen-editor-assistant/compare/v0.11.1...v0.12.0)。这是相邻归档快照的比较，不代表已确认的原始开发继承关系。\n\n## 历史说明\n\n本说明依据源码快照、各版 README 与迭代记录整理；实现目的部分包含根据改动作出的推断。Release 发布时间为本次补录时间，原开发日期未知。\n",
+    "draft": false,
+    "prerelease": false,
+    "make_latest": "false",
+    "generate_release_notes": false
+  },
+  {
+    "tag_name": "v0.12.1",
+    "target_commitish": "6cc8386466b49b8fe75b74ad9c84c0d817a6ae2d",
+    "name": "v0.12.1",
+    "body": "## 本版改动\n\n相对前一个归档快照，主要新增、修改或替换：\n\n- 自动通过图下载不再依赖整条文案状态，增加数量和下载反馈。\n\n## 实现方式\n\n候选下载条件只检查图片 safetyStatus，而不绑定整条文案状态；按钮展示数量，下载结束展示成功、重复跳过和失败数。\n\n## 实现目的\n\n修复按钮无响应或被错误禁用。\n\n## 文件变化\n\n- M：`README.md`\n- M：`assistant.js`\n- M：`manifest.json`\n- M：`options.html`\n- M：`tests/tab-isolation-ui.mjs`\n- M：`tests/validate-extension.mjs`\n- M：`tests/workflow-logic.mjs`\n\n## 归档对比\n\n[v0.12.0 → v0.12.1 的实际差异](https://github.com/kumokazeevent/lockscreen-editor-assistant/compare/v0.12.0...v0.12.1)。这是相邻归档快照的比较，不代表已确认的原始开发继承关系。\n\n## 历史说明\n\n本说明依据源码快照、各版 README 与迭代记录整理；实现目的部分包含根据改动作出的推断。Release 发布时间为本次补录时间，原开发日期未知。\n",
+    "draft": false,
+    "prerelease": false,
+    "make_latest": "false",
+    "generate_release_notes": false
+  },
+  {
+    "tag_name": "v0.12.2",
+    "target_commitish": "613c38e830bf11abba291764c583ec53874fe9df",
+    "name": "v0.12.2",
+    "body": "## 本版改动\n\n相对前一个归档快照，主要新增、修改或替换：\n\n- 自动/换图搜索统一从原标题生成词，旧结果导入重建来源。\n\n## 实现方式\n\n把批处理和手动换图的自动词生成都绑定到 originalTitle；导入时检查词的来源标记，缺失或不匹配则重建。\n\n## 实现目的\n\n防止搜图词被其他文案带偏；人工搜索限制后来放宽。\n\n## 文件变化\n\n- M：`README.md`\n- M：`assistant.js`\n- M：`background.js`\n- M：`content.js`\n- M：`manifest.json`\n- M：`options.html`\n- M：`tests/background-logic.mjs`\n- M：`tests/tab-isolation-ui.mjs`\n- M：`tests/validate-extension.mjs`\n- M：`tests/workflow-logic.mjs`\n- M：`workflow.js`\n\n## 归档对比\n\n[v0.12.1 → v0.12.2 的实际差异](https://github.com/kumokazeevent/lockscreen-editor-assistant/compare/v0.12.1...v0.12.2)。这是相邻归档快照的比较，不代表已确认的原始开发继承关系。\n\n## 历史说明\n\n本说明依据源码快照、各版 README 与迭代记录整理；实现目的部分包含根据改动作出的推断。Release 发布时间为本次补录时间，原开发日期未知。\n",
+    "draft": false,
+    "prerelease": false,
+    "make_latest": "false",
+    "generate_release_notes": false
+  },
+  {
+    "tag_name": "v0.13.0",
+    "target_commitish": "e1bbe982e8ad4278df57c7d0d240e39ff66c88cd",
+    "name": "v0.13.0",
+    "body": "## 本版改动\n\n相对前一个归档快照，主要新增、修改或替换：\n\n- 模块型后台、局部进度刷新、任务锁、重启隔离与回归验证。\n\n## 实现方式\n\n后台改用模块型 service worker，拆分 AI 恢复、图库安全、下载命名和锁；卡片按条目局部刷新，完成后再整体渲染。\n\n## 实现目的\n\n减少界面跳动并改善复杂任务的可维护性。\n\n## 文件变化\n\n- M：`README.md`\n- A：`agent.md`\n- A：`assistant-engine.js`\n- A：`assistant-ui.js`\n- M：`assistant.css`\n- M：`assistant.js`\n- A：`background-ai.js`\n- A：`background-downloads.js`\n- A：`background-entry.js`\n- A：`background-locks.js`\n- A：`background-stock.js`\n- M：`background.js`\n- M：`manifest.json`\n- M：`options.html`\n- M：`options.js`\n- A：`tests/ai-recovery-logic.mjs`\n- M：`tests/background-logic.mjs`\n- A：`tests/extension-load-smoke.mjs`\n- M：`tests/tab-isolation-ui.mjs`\n- M：`tests/validate-extension.mjs`\n- M：`tests/workflow-logic.mjs`\n- M：`workflow.js`\n\n## 合入的中间迭代（缺少独立源码快照）\n\n- **0.12.3**：全局手动重复标记、图片用量、批次候选占用及下载状态对账；目的是减少跨批次重复素材和并行选图冲突。\n- **0.12.4**：AI 错误分类、诊断、5/15/30 秒退避、截断扩容和备用模型；目的是区分可恢复故障与配置错误。\n- **0.12.5**：空输入/原标题走自动英文词，人工英文输入直接搜索且不覆盖默认词；目的是兼顾自动搜索和人工修正。\n- **0.12.6**：原标题离线中文对照及手动 AI 翻译，缓存 titleZh；译文不参与填写或搜图，供编辑核对。\n- **0.12.7**：孟加拉语＋孟加拉双条件的人工启用模式，强化内容/图片初筛并强制复核；增加地区要求的审核提示。\n\n这些阶段的独立源码未保存，因此没有伪造相应源码标签；合并后的实现以本版快照为证。\n\n## 归档对比\n\n[v0.12.2 → v0.13.0 的实际差异](https://github.com/kumokazeevent/lockscreen-editor-assistant/compare/v0.12.2...v0.13.0)。这是相邻归档快照的比较，不代表已确认的原始开发继承关系。\n\n## 历史说明\n\n本说明依据源码快照、各版 README 与迭代记录整理；实现目的部分包含根据改动作出的推断。Release 发布时间为本次补录时间，原开发日期未知。\n",
+    "draft": false,
+    "prerelease": false,
+    "make_latest": "false",
+    "generate_release_notes": false
+  },
+  {
+    "tag_name": "v0.13.1",
+    "target_commitish": "c4a7e9f3c4926fd1a4b2183bfed99d37b4c0d59b",
+    "name": "v0.13.1",
+    "body": "## 本版改动\n\n相对前一个归档快照，主要新增、修改或替换：\n\n- 编辑页批次记录默认折叠并调整区块顺序。\n\n## 实现方式\n\n编辑页批次记录默认不设置展开状态，并将记录区放到当前文件夹之后、标签页设置之前。\n\n## 实现目的\n\n优先显示常用填入操作。\n\n## 文件变化\n\n- M：`README.md`\n- M：`agent.md`\n- M：`assistant.js`\n- M：`manifest.json`\n- M：`tests/background-logic.mjs`\n- M：`tests/tab-isolation-ui.mjs`\n- M：`tests/validate-extension.mjs`\n\n## 归档对比\n\n[v0.13.0 → v0.13.1 的实际差异](https://github.com/kumokazeevent/lockscreen-editor-assistant/compare/v0.13.0...v0.13.1)。这是相邻归档快照的比较，不代表已确认的原始开发继承关系。\n\n## 历史说明\n\n本说明依据源码快照、各版 README 与迭代记录整理；实现目的部分包含根据改动作出的推断。Release 发布时间为本次补录时间，原开发日期未知。\n",
+    "draft": false,
+    "prerelease": false,
+    "make_latest": "false",
+    "generate_release_notes": false
+  },
+  {
+    "tag_name": "v0.13.2",
+    "target_commitish": "06c72d53f0070fe77a1473b327ed2414dc54bef0",
+    "name": "v0.13.2",
+    "body": "## 本版改动\n\n相对前一个归档快照，主要新增、修改或替换：\n\n- 恢复自定义英文搜图/原标题切换，继续局部刷新和模块拆分。\n\n## 实现方式\n\n搜索输入为空或保持原标题时生成默认英文词；用户输入英文词时直接搜索，恢复原标题按钮重建默认入口。\n\n## 实现目的\n\n满足原标题偶尔不适合搜索时的人工修正。\n\n## 文件变化\n\n- M：`README.md`\n- M：`agent.md`\n- M：`assistant-engine.js`\n- M：`assistant.js`\n- M：`background-ai.js`\n- M：`background-downloads.js`\n- M：`background-locks.js`\n- M：`background-stock.js`\n- M：`background.js`\n- M：`manifest.json`\n- M：`tests/background-logic.mjs`\n- M：`tests/tab-isolation-ui.mjs`\n- M：`tests/validate-extension.mjs`\n\n## 归档对比\n\n[v0.13.1 → v0.13.2 的实际差异](https://github.com/kumokazeevent/lockscreen-editor-assistant/compare/v0.13.1...v0.13.2)。这是相邻归档快照的比较，不代表已确认的原始开发继承关系。\n\n## 历史说明\n\n本说明依据源码快照、各版 README 与迭代记录整理；实现目的部分包含根据改动作出的推断。Release 发布时间为本次补录时间，原开发日期未知。\n",
+    "draft": false,
+    "prerelease": false,
+    "make_latest": "false",
+    "generate_release_notes": false
+  },
+  {
+    "tag_name": "v0.13.3",
+    "target_commitish": "00119b3c7de5d0852274b6a5df453d0c73959b81",
+    "name": "v0.13.3",
+    "body": "## 本版改动\n\n相对前一个归档快照，主要新增、修改或替换：\n\n- 正文作为文案来源，正文为空则失败，取消原题/原简介兜底。\n\n## 实现方式\n\n正文作为强制事实输入，缺正文直接报错；本地候选同样从正文生成，并写入 article_body 来源标记。\n\n## 实现目的\n\n减少原稿错配造成的内容错误，代价是抓取失败时无法处理。\n\n## 文件变化\n\n- M：`README.md`\n- M：`agent.md`\n- M：`assistant.js`\n- M：`background.js`\n- M：`manifest.json`\n- M：`options.html`\n- M：`tests/ai-recovery-logic.mjs`\n- M：`tests/background-logic.mjs`\n- M：`tests/tab-isolation-ui.mjs`\n- M：`tests/validate-extension.mjs`\n- M：`tests/workflow-logic.mjs`\n- M：`workflow.js`\n\n## 归档对比\n\n[v0.13.2 → v0.13.3 的实际差异](https://github.com/kumokazeevent/lockscreen-editor-assistant/compare/v0.13.2...v0.13.3)。这是相邻归档快照的比较，不代表已确认的原始开发继承关系。\n\n## 历史说明\n\n本说明依据源码快照、各版 README 与迭代记录整理；实现目的部分包含根据改动作出的推断。Release 发布时间为本次补录时间，原开发日期未知。\n",
+    "draft": false,
+    "prerelease": false,
+    "make_latest": "false",
+    "generate_release_notes": false
+  },
+  {
+    "tag_name": "v0.14.0",
+    "target_commitish": "46d15c74006e227cf537aeeedc26d06a90020b91",
+    "name": "v0.14.0",
+    "body": "## 本版改动\n\n相对前一个归档快照，主要新增、修改或替换：\n\n- 基于 0.13.0 采用正文→简介→标题链，缺正文仍失败。\n\n## 实现方式\n\n沿用 0.13.0 文章读取方案，将简介作为标题唯一生成来源，保存 summarySource/titleSource；没有正文时不生成候选。\n\n## 实现目的\n\n使标题与新生成的简介一致；这是回到旧基座的分支方案。\n\n## 文件变化\n\n- M：`README.md`\n- M：`agent.md`\n- M：`assistant-engine.js`\n- M：`assistant.js`\n- M：`background-ai.js`\n- M：`background-downloads.js`\n- M：`background-locks.js`\n- M：`background-stock.js`\n- M：`background.js`\n- M：`manifest.json`\n- M：`options.html`\n- M：`tests/ai-recovery-logic.mjs`\n- M：`tests/background-logic.mjs`\n- M：`tests/tab-isolation-ui.mjs`\n- M：`tests/validate-extension.mjs`\n- M：`tests/workflow-logic.mjs`\n- M：`workflow.js`\n\n## 归档对比\n\n[v0.13.3 → v0.14.0 的实际差异](https://github.com/kumokazeevent/lockscreen-editor-assistant/compare/v0.13.3...v0.14.0)。这是相邻归档快照的比较，不代表已确认的原始开发继承关系。\n\n## 历史说明\n\n本说明依据源码快照、各版 README 与迭代记录整理；实现目的部分包含根据改动作出的推断。Release 发布时间为本次补录时间，原开发日期未知。 此版按用户要求回到 0.13.0 技术基座，不能假定它继承了所有相邻版本功能。\n",
+    "draft": false,
+    "prerelease": false,
+    "make_latest": "false",
+    "generate_release_notes": false
+  },
+  {
+    "tag_name": "v0.14.1",
+    "target_commitish": "28e9543aafe28191f05138bab75531abec38d50b",
+    "name": "v0.14.1",
+    "body": "## 本版改动\n\n相对前一个归档快照，主要新增、修改或替换：\n\n- 恢复正文→原简介→原标题兜底，先完成简介再独立请求标题，记录来源。\n\n## 实现方式\n\n恢复 0.13.0 的内容缺失兜底，先完成简介及可选审核，再发起只携带生成简介的标题请求。\n\n## 实现目的\n\n兼顾正文读取失败时的可用性与来源核对。\n\n## 文件变化\n\n- M：`README.md`\n- M：`agent.md`\n- M：`assistant.js`\n- M：`background.js`\n- M：`manifest.json`\n- M：`options.html`\n- M：`tests/ai-recovery-logic.mjs`\n- M：`tests/background-logic.mjs`\n- M：`tests/tab-isolation-ui.mjs`\n- M：`tests/validate-extension.mjs`\n- M：`tests/workflow-logic.mjs`\n- M：`workflow.js`\n\n## 归档对比\n\n[v0.14.0 → v0.14.1 的实际差异](https://github.com/kumokazeevent/lockscreen-editor-assistant/compare/v0.14.0...v0.14.1)。这是相邻归档快照的比较，不代表已确认的原始开发继承关系。\n\n## 历史说明\n\n本说明依据源码快照、各版 README 与迭代记录整理；实现目的部分包含根据改动作出的推断。Release 发布时间为本次补录时间，原开发日期未知。 此版按用户要求回到 0.13.0 技术基座，不能假定它继承了所有相邻版本功能。\n",
+    "draft": false,
+    "prerelease": false,
+    "make_latest": "false",
+    "generate_release_notes": false
+  },
+  {
+    "tag_name": "v0.14.2",
+    "target_commitish": "92c3e518252d48c150076267f45d3a2f77bb8b96",
+    "name": "v0.14.2",
+    "body": "## 本版改动\n\n相对前一个归档快照，主要新增、修改或替换：\n\n- 列表已有 JSON 按 ID 直读正文、过滤版权页脚，正常单次主 AI 请求。\n\n## 实现方式\n\n在网页 MAIN world 捕获列表已有 JSON，按 ID 取 content 正文并去除页脚；把简介、标题和原标题搜图词合并到同一次主 AI 响应。\n\n## 实现目的\n\n减少逐条落地页请求，提高读取速度并防止页脚冒充正文。\n\n## 文件变化\n\n- M：`README.md`\n- M：`agent.md`\n- M：`assistant.js`\n- M：`background.js`\n- M：`content.js`\n- M：`manifest.json`\n- M：`page-bridge.js`\n- M：`tests/ai-recovery-logic.mjs`\n- M：`tests/background-logic.mjs`\n- M：`tests/validate-extension.mjs`\n\n## 归档对比\n\n[v0.14.1 → v0.14.2 的实际差异](https://github.com/kumokazeevent/lockscreen-editor-assistant/compare/v0.14.1...v0.14.2)。这是相邻归档快照的比较，不代表已确认的原始开发继承关系。\n\n## 历史说明\n\n本说明依据源码快照、各版 README 与迭代记录整理；实现目的部分包含根据改动作出的推断。Release 发布时间为本次补录时间，原开发日期未知。\n",
+    "draft": false,
+    "prerelease": false,
+    "make_latest": "false",
+    "generate_release_notes": false
+  },
+  {
+    "tag_name": "v0.14.3",
+    "target_commitish": "d98627e59900aaa61a02af3739a489aa747234c2",
+    "name": "v0.14.3",
+    "body": "## 本版改动\n\n相对前一个归档快照，主要新增、修改或替换：\n\n- 批量读取右侧 originImageWebp 图并保存；ID/编号命名、30/40 分组、进度/重试、文件头识别。\n\n## 实现方式\n\n按 ID GET 最新详情后取 originImageWebp.url；4 路读取/下载，按编号、ID、标题命名，检查文件头再转码，等待浏览器下载完成并保存映射记录。\n\n## 实现目的\n\n取回列表缺图但编辑右侧有图的素材，并修复 WebP 被声明为 JPEG 的问题。\n\n## 文件变化\n\n- A：`AGENTS.md`\n- M：`README.md`\n- M：`agent.md`\n- M：`assistant.css`\n- M：`assistant.js`\n- A：`backend-preview.js`\n- M：`background-downloads.js`\n- M：`background-entry.js`\n- M：`background.js`\n- M：`content.js`\n- A：`docs/HANDOFF.md`\n- A：`docs/decisions/0001-采用ManifestV3模块型后台.md`\n- A：`docs/decisions/0002-使用原生JavaScript与浏览器API.md`\n- A：`docs/decisions/0003-观察列表JSON捕获正文.md`\n- A：`docs/decisions/0004-使用可配置的独立AI端点.md`\n- A：`docs/decisions/0005-竖屏素材下载并人工上传.md`\n- A：`docs/decisions/0006-按标签页隔离批次与运行状态.md`\n- A：`docs/decisions/README.md`\n- A：`docs/iterations/00000000-1-基础扩展与后台适配.md`\n- A：`docs/iterations/00000000-2-批次和多标签工作流.md`\n- A：`docs/iterations/00000000-3-竖屏图片与下载去重.md`\n- A：`docs/iterations/00000000-4-AI错误恢复.md`\n- A：`docs/iterations/00000000-5-审核辅助功能.md`\n- A：`docs/iterations/00000000-6-模块化与稳定性.md`\n- A：`docs/iterations/00000000-7-正文直读和文案链.md`\n- A：`docs/iterations/20261005-8-后台预览图批量保存.md`\n- A：`docs/iterations/README.md`\n- M：`manifest.json`\n- A：`tests/backend-preview-logic.mjs`\n- A：`tests/backend-preview-ui.mjs`\n- M：`tests/extension-load-smoke.mjs`\n- M：`tests/tab-isolation-ui.mjs`\n- M：`tests/validate-extension.mjs`\n\n## 归档对比\n\n[v0.14.2 → v0.14.3 的实际差异](https://github.com/kumokazeevent/lockscreen-editor-assistant/compare/v0.14.2...v0.14.3)。这是相邻归档快照的比较，不代表已确认的原始开发继承关系。\n\n## 历史说明\n\n本说明依据源码快照、各版 README 与迭代记录整理；实现目的部分包含根据改动作出的推断。Release 发布时间为本次补录时间，原开发日期未知。\n",
+    "draft": false,
+    "prerelease": false,
+    "make_latest": "true",
+    "generate_release_notes": false
+  }
+]
