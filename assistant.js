@@ -519,6 +519,9 @@
       imageQueryEn: cleanText(data.imageQueryEn || data.image_query_en || data.imageQuery || data.query || ""),
       language: cleanText(data.language || data.languageCode || ""),
       reviewWarning: cleanText(response.reviewWarning || data.reviewWarning || ""),
+      copySource: cleanText(response.copySource || data.copySource || ""),
+      summarySource: cleanText(response.summarySource || data.summarySource || ""),
+      titleSource: cleanText(response.titleSource || data.titleSource || ""),
       rewriteMode: data.rewriteMode || response.rewriteMode || "ai",
       aiModel: cleanText(response.model || data.model || ""),
       aiAttempts: Number(response.attempts || data.attempts || 0),
@@ -639,8 +642,8 @@
       await persistBatch({ item, progressOnly: true });
       const articleResponse = !item.articleText && item.sourceUrl
         ? await sendRuntime("FETCH_ARTICLE", { url: item.sourceUrl, sourceUrl: item.sourceUrl }) : {};
-      const articleText = cleanText(item.articleText || articleTextFromResponse(articleResponse));
-      if (!articleText) throw new Error("未读取到文章正文，已停止生成标题和简介；请检查文章链接后重试");
+      const articleText = item.articleText || articleTextFromResponse(articleResponse);
+      if (!articleText) throw new Error("未读取到文章正文，无法生成简介和标题；请确认“查看链接”有效后重试");
       item.articleText = articleText;
       item.articleTitle = cleanText(articleResponse.title || articleResponse.article?.title || "");
       setItemStage(item, "article", "done");
@@ -649,8 +652,9 @@
       setItemStage(item, "ai", "working");
       item.status = "rewriting";
       await persistBatch({ item, progressOnly: true });
-      const reusedExistingCopy = !item.forceRewrite && item.copySource === "article_body" && item.title && item.summary && textLength(item.title) <= state.settings.titleLimit
-        && textLength(item.summary) <= state.settings.summaryLimit;
+      const reusedExistingCopy = !item.forceRewrite && item.title && item.summary
+        && item.summarySource === "article_body" && item.titleSource === "generated_summary"
+        && textLength(item.title) <= state.settings.titleLimit && textLength(item.summary) <= state.settings.summaryLimit;
       const priorQuerySource = cleanText(item.imageQuerySourceTitle || "");
       const aiResponse = reusedExistingCopy ? { result: item } : await sendRuntime("AI_PROCESS_ITEM", {
         item: {
@@ -669,7 +673,6 @@
       }
       validateAiResult(ai);
       Object.assign(item, ai);
-      item.copySource = "article_body";
       item.forceRewrite = false;
       item.imageQueryEn ||= item.originalTitle;
       item.imageQuerySourceTitle = item.originalTitle;
@@ -721,7 +724,7 @@
         state.batch.fatalError = item.error;
       }
     }
-    if (state.workOwned) await persistBatch({ item, progressOnly: true });
+    if (state.workOwned) await persistBatch();
   }
 
   async function runBatch() {
@@ -1125,7 +1128,12 @@
         search.disabled = state.imageBusy;
         search.addEventListener("click", () => {
           state.imageTargetIndex = item.index;
-          state.originalForSearch = { title: item.originalTitle, summary: item.originalSummary };
+          state.originalForSearch = {
+            title: item.originalTitle,
+            summary: item.originalSummary,
+            articleText: item.articleText || "",
+            sourceUrl: item.sourceUrl || "",
+          };
           q(".lsa-stock-query").value = item.originalTitle;
           switchTab("images");
           searchManualImages(1);
@@ -1486,7 +1494,12 @@
       const matched = getBatchItems().find(recordMatchesRoute);
       const title = cleanText(matched?.originalTitle || context.originalTitle || context.boundTitle || context.heading || context.title || context.selectedText || "");
       const summary = cleanText(matched?.originalSummary || context.boundSummary || context.description || "");
-      state.originalForSearch = { title, summary };
+      state.originalForSearch = {
+        title,
+        summary,
+        articleText: cleanText(matched?.articleText || ""),
+        sourceUrl: matched?.sourceUrl || "",
+      };
       const original = q(".lsa-original-copy");
       const draft = q(".lsa-draft-copy");
       if (original) original.value = formatOriginal(title, summary);
@@ -1521,36 +1534,40 @@
 
   async function rewriteManual() {
     const source = parseOriginal(q(".lsa-original-copy")?.value || "");
-    const matched = getBatchItems().find(recordMatchesRoute) || selectedRecord();
+    const matched = getBatchItems().find(recordMatchesRoute);
     const root = state.root;
     const button = q(".lsa-rewrite-manual");
     if (button) button.disabled = true;
     try {
-      setPanelStatus(".lsa-manual-status", "正在读取正文并生成标题和简介…");
-      let articleText = cleanText(matched?.articleText || "");
-      if (!articleText && matched?.sourceUrl) {
-        const articleResponse = await sendRuntime("FETCH_ARTICLE", { url: matched.sourceUrl, sourceUrl: matched.sourceUrl });
+      let articleText = cleanText(matched?.articleText || state.originalForSearch?.articleText || "");
+      const sourceUrl = matched?.sourceUrl || state.originalForSearch?.sourceUrl || "";
+      if (!articleText && sourceUrl) {
+        setPanelStatus(".lsa-manual-status", "正在读取文章正文…");
+        const articleResponse = await sendRuntime("FETCH_ARTICLE", { url: sourceUrl, sourceUrl });
         articleText = articleTextFromResponse(articleResponse);
-        if (articleText) {
+        if (matched && articleText) {
           matched.articleText = articleText;
-          await persistBatch({ render: false });
+          ensureItemStages(matched);
+          matched.stages.article = "done";
+          await persistBatch({ item: matched, progressOnly: true });
         }
       }
-      if (!articleText) throw new Error("当前记录没有可读取的文章正文，不能生成标题和简介；请先从列表页读取并处理该记录");
+      if (!articleText) throw new Error("未读取到文章正文，无法生成简介和标题；请先在列表页读取含有效原文链接的批次");
+      setPanelStatus(".lsa-manual-status", state.settings.rewriteMode === "local" ? "正在根据正文生成本地候选…" : "正在根据正文生成简介与标题…");
       const response = await sendRuntime("AI_PROCESS_ITEM", { item: {
         originalTitle: source.title,
         originalSummary: source.summary,
         articleText,
-        sourceUrl: matched?.sourceUrl || "",
-        pageLanguage: matched?.pageLanguage || "",
-        pageCountry: matched?.pageCountry || "",
+        sourceUrl,
+        pageLanguage: matched?.pageLanguage,
+        pageCountry: matched?.pageCountry,
       } });
       if (state.root !== root) return;
       const result = normalizeAiResult(response);
       validateAiResult(result);
       q(".lsa-draft-copy").value = `${result.title}\n${result.summary}`;
       updateManualCounts();
-      setPanelStatus(".lsa-manual-status", result.reviewWarning || "已根据正文生成，请核对后填写");
+      setPanelStatus(".lsa-manual-status", result.reviewWarning || "改写完成，请核对后填写");
     } catch (error) { if (state.root === root) setPanelStatus(".lsa-manual-status", error.message, true); }
     finally { if (button) button.disabled = false; }
   }
@@ -1591,12 +1608,15 @@
     const input = q(".lsa-stock-query");
     const originalTitle = manualSearchOriginalTitle();
     const typedValue = cleanText(input?.value || "");
-    const plan = LSAAssistantEngine.manualImageSearchPlan({
-      page, typedValue, originalTitle, currentQuery: state.imageQuery,
-    });
-    if (plan.error) return setPanelStatus(".lsa-image-status", plan.error, true);
-    const usesOriginalTitle = plan.usesOriginalTitle;
-    let value = plan.query;
+    const usesOriginalTitle = page > 1 ? null : !typedValue || typedValue === originalTitle;
+    let value = page > 1 ? state.imageQuery : typedValue;
+    if (page > 1 && !value) return setPanelStatus(".lsa-image-status", "当前没有可翻页的搜索结果，请先搜索", true);
+    if (page === 1 && usesOriginalTitle && !originalTitle) {
+      return setPanelStatus(".lsa-image-status", "没有读取到原标题，无法搜索图片", true);
+    }
+    if (page === 1 && !usesOriginalTitle && /[^\x00-\x7f]/.test(typedValue)) {
+      return setPanelStatus(".lsa-image-status", "请输入英文，或清空恢复按原标题搜索", true);
+    }
     const button = q(".lsa-search-images");
     state.imageBusy = true;
     const revision = ++state.searchRevision;
@@ -1698,7 +1718,7 @@
             target.image = image;
             const liveInput = cleanText(q(".lsa-stock-query")?.value || "");
             const targetOriginal = cleanText(target.originalTitle || state.originalForSearch?.title || "");
-            if (LSAAssistantEngine.shouldStoreGeneratedQuery(liveInput, targetOriginal)) {
+            if (!liveInput || liveInput === targetOriginal) {
               target.imageQueryEn = state.imageQuery;
               target.imageQuerySourceTitle = target.originalTitle;
             }
@@ -1767,7 +1787,7 @@
           <div class="lsa-quick-grid">
             <label>标题词数上限<input data-setting="titleLimit" type="number" min="1" max="100"></label>
             <label>简介词数上限<input data-setting="summaryLimit" type="number" min="1" max="500"></label>
-            <label>生成方式<select data-setting="rewriteMode"><option value="ai">AI 阅读正文</option><option value="local">本地正文候选</option></select></label>
+            <label>改写方式<select data-setting="rewriteMode"><option value="ai">AI 改写</option><option value="local">本地候选</option></select></label>
             <label>思考强度<select data-setting="thinkingLevel"><option value="off">关闭</option><option value="low">低</option><option value="medium">中等</option><option value="high">高</option><option value="max">最高</option><option value="provider">提供商默认</option></select></label>
           </div><p class="lsa-status-text lsa-quick-status">只修改当前标签页。空格和标点不计词数，连字符词与缩写计 1 词。底部“设置”管理通用默认值与 API。</p>
         </div>
@@ -1786,13 +1806,6 @@
           <input class="lsa-import-file" type="file" accept=".json,application/json" hidden>
           <details class="lsa-restore"><summary>切换文件夹 / 恢复旧版批次</summary><button class="lsa-text-action lsa-list-saved" type="button">刷新文件夹列表</button><select class="lsa-saved-batches" aria-label="选择要恢复的批次"></select><button class="lsa-secondary-button lsa-restore-saved" type="button">打开选中文件夹</button></details>
           <p class="lsa-status-text lsa-transfer-status">只显示当前文件夹。导入或读取不同页面时先归档旧批次，不再追加；未知语言国家请手动补全。</p>
-        </div>
-      </details>`;
-    const recordPanel = `
-      <details class="lsa-record-fold lsa-section-card lsa-fold-card">
-        <summary class="lsa-record-fold-label">批次记录</summary>
-        <div class="lsa-fold-content">
-          <div class="lsa-record-list" role="listbox" aria-label="选择并跳转到批次记录"></div>
         </div>
       </details>`;
     root.innerHTML = `
@@ -1837,12 +1850,15 @@
           <div class="lsa-section-card">
             <div class="lsa-section-row"><h2 class="lsa-section-title">从批次填入当前编辑页</h2><button class="lsa-text-action lsa-refresh-record" type="button">重新匹配 ID</button></div>
             <p class="lsa-section-hint">优先按当前 URL 的 id 自动匹配；点击下面任一记录会立即跳转到对应编辑页。工具只填入标题和简介，图片由你手动上传，也不会点击后台最终保存。</p>
+            <details class="lsa-record-fold lsa-inner-fold"${getBatchItems().length ? " open" : ""}>
+              <summary class="lsa-record-fold-label">批次记录</summary>
+              <div class="lsa-record-list" role="listbox" aria-label="选择并跳转到批次记录"></div>
+            </details>
             <div class="lsa-selected-record"></div>
             <button class="lsa-primary-button lsa-apply-record" type="button" disabled>填入标题和简介</button>
             <p class="lsa-status-text lsa-edit-status">请先核对匹配记录；图片请在后台手动上传。</p>
           </div>
           ${transferPanel}
-          ${recordPanel}
           ${quickSettings}
         </section>
         <section class="lsa-tab-panel" data-panel="manual" hidden>
@@ -1851,14 +1867,14 @@
             <label class="lsa-field-label"><span>页面原稿</span><span>标题////简介</span></label><textarea class="lsa-assistant-textarea lsa-original-copy" placeholder="标题////简介"></textarea>
             <label class="lsa-field-label"><span>待填写文案</span><span><span class="lsa-counter lsa-title-count">标题 0 / 12</span> <span class="lsa-counter lsa-summary-count">简介 0 / 50</span></span></label><textarea class="lsa-assistant-textarea lsa-draft-copy" placeholder="第一行标题&#10;第二行起简介"></textarea>
             <div class="lsa-button-row"><button class="lsa-primary-button lsa-apply-draft" type="button">填写标题和简介</button><button class="lsa-secondary-button lsa-bind-fields" type="button">重新绑定字段</button></div><p class="lsa-status-text lsa-manual-status">不会自动点击后台保存。</p>
-            <button class="lsa-secondary-button lsa-rewrite-manual" type="button">读取正文并生成</button>
+            <button class="lsa-secondary-button lsa-rewrite-manual" type="button">按当前模式改写</button>
           </div>
         </section>`}
         <section class="lsa-tab-panel" data-panel="images" hidden>
           <div class="lsa-section-card">
             <div class="lsa-section-row"><h2 class="lsa-section-title">单条竖屏配图</h2><button class="lsa-text-action lsa-read-for-images" type="button">读取原标题</button></div>
-            <p class="lsa-section-hint">默认根据原标题生成英文视觉词；结果不准确时，可直接输入你自己的英文关键词搜索且不调用 AI。优先 Pexels，必要时回退 Pixabay。</p>
-            <div class="lsa-search-row"><input class="lsa-assistant-input lsa-stock-query" type="search" placeholder="默认原标题；可改为自定义英文关键词"><button class="lsa-secondary-button lsa-reset-stock-query" type="button">恢复原标题</button><button class="lsa-primary-button lsa-search-images" type="button">搜索图片</button></div>
+            <p class="lsa-section-hint">输入框为空或等于原标题时，自动按原标题生成英文视觉词；改成英文词则直接搜索、不调用 AI。简介、正文和改写标题不参与搜图。优先 Pexels，必要时回退 Pixabay。</p>
+            <div class="lsa-search-row"><input class="lsa-assistant-input lsa-stock-query" type="search" placeholder="原标题；也可输入英文关键词"><button class="lsa-primary-button lsa-search-images" type="button">搜索图片</button></div>
             <p class="lsa-status-text lsa-image-status">正脸与裸露检测存在局限，无法确定的图片会明确标为“需复核”。</p>
             <div class="lsa-image-pager"><button class="lsa-secondary-button lsa-images-prev" type="button" disabled>上一页</button><span class="lsa-images-page">第 1 页</span><button class="lsa-secondary-button lsa-images-next" type="button" disabled>下一页</button></div>
           </div>
@@ -2059,17 +2075,6 @@
       .catch((error) => setPanelStatus(".lsa-manual-status", error.message, true)));
     q(".lsa-draft-copy")?.addEventListener("input", updateManualCounts);
     q(".lsa-search-images")?.addEventListener("click", () => searchManualImages(1));
-    q(".lsa-reset-stock-query")?.addEventListener("click", () => {
-      const input = q(".lsa-stock-query");
-      if (input) input.value = manualSearchOriginalTitle();
-      state.manualResults = [];
-      state.imageQuery = "";
-      state.imagePage = 1;
-      state.imageHasNext = false;
-      renderManualImages();
-      renderImagePager();
-      setPanelStatus(".lsa-image-status", input?.value ? "已恢复原标题；点击“搜索图片”重新搜索。" : "尚未读取到原标题，请先点击“读取原标题”。", !input?.value);
-    });
     q(".lsa-images-prev")?.addEventListener("click", () => searchManualImages(state.imagePage - 1));
     q(".lsa-images-next")?.addEventListener("click", () => searchManualImages(state.imagePage + 1));
     q(".lsa-stock-query")?.addEventListener("input", () => {

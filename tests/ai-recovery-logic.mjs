@@ -61,13 +61,13 @@ function scenario(responses, settings = {}) {
     return typeof next === "function" ? next(options) : next;
   };
 }
-const item = {
-  id: "x", index: 1,
-  originalTitle: "How to care for cats",
-  originalSummary: "Keep cats comfortable at home",
-  articleText: "Cats need a quiet resting place, clean water, suitable food and regular veterinary care.",
-};
+const item = { id: "x", index: 1, originalTitle: "How to care for cats", originalSummary: "Keep cats comfortable at home",
+  articleText: "Cats stay comfortable when they have a warm quiet room, fresh water and a clean place to rest." };
 context.item = item;
+
+scenario([]);
+await assert.rejects(run("generateBatchItemWithAi({item:{originalTitle:'No body'},maxRetries:0})"),
+  (error) => error.code === "ARTICLE_REQUIRED");
 
 assert.equal(run("parseRetryAfter('120')"), 60000);
 assert.equal(run("retryDelayMs(0)"), 5000);
@@ -91,6 +91,10 @@ assert.deepEqual(context.retryWaits, [], "length 扩容不得等待");
 scenario([response({ message: "busy" }, 503), response({ message: "busy" }, 503), response(successPayload)]);
 const recovered = await run("generateBatchItemWithAi({item}, 7)");
 assert.equal(recovered.title, "Care for cats");
+assert.equal(recovered.summarySource, "article_body");
+assert.equal(recovered.titleSource, "generated_summary");
+assert.ok(context.requestBodies.at(-1).messages[0].content.includes("condense ONLY that generated summary"));
+assert.ok(context.requestBodies.at(-1).messages.at(-1).content.includes(item.articleText));
 assert.deepEqual(context.retryWaits, [5000, 15000]);
 assert.ok(progress.some((entry) => entry.status === "waiting" && entry.waitMs === 5000));
 

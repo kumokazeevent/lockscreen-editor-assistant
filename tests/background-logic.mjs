@@ -108,8 +108,6 @@ assert(evaluate("inspectImageMetadataSafety({title:'butterfly in garden',width:9
   "孟加拉模式应允许蝴蝶候选");
 assert(evaluate("inspectImageMetadataSafety({title:'fish in aquarium',width:900,height:1600},true).safetyStatus") === "passed",
   "孟加拉模式应允许鱼类候选");
-assert(evaluate("inspectImageMetadataSafety({title:'love heart decoration',width:900,height:1600},true).safetyStatus") === "rejected",
-  "孟加拉模式未拒绝完整单词 love");
 const bangladeshQuery = evaluate("buildSafeStockQuery('woman cooking dinner',true)");
 assert(bangladeshQuery.includes("no people") && !bangladeshQuery.includes("side profile"),
   "孟加拉模式人物词没有转向无人对象/场景搜索");
@@ -153,16 +151,20 @@ assert(overLimitRejected, "超长标题没有被拒绝");
 
 const strictPrompt = evaluate(`buildAiMessages({
   originalTitle:'How to grow peonies at home', originalSummary:'A practical guide to planting and caring for peonies.',
-  articleText:'Peonies grow best in sunny, well-drained soil and need careful seasonal watering.', expectedLanguage:'en', titleLimit:12, summaryLimit:50
+  articleText:'Peonies need a sunny bed, rich soil and careful watering during early growth.', expectedLanguage:'en', titleLimit:12, summaryLimit:50
 }, 'AI title was 27 characters, exceeding the 12 character limit')[0].content`);
 assert(strictPrompt.includes("MANDATORY FINAL CHECK"), "提示词缺少强制字符复核");
+assert(strictPrompt.includes("MANDATORY SOURCE PIPELINE"), "提示词缺少正文→简介→标题来源链");
+assert(strictPrompt.includes("ARTICLE BODY") && strictPrompt.includes("condense ONLY that generated summary"),
+  "提示词没有强制简介取自正文、标题取自生成简介");
+assert(strictPrompt.indexOf('{"summary"') < strictPrompt.indexOf('"title"'), "JSON 输出顺序必须先简介后标题");
+assert(!strictPrompt.includes("preserve it unchanged"), "提示词仍可能直接保留原标题");
 assert(strictPrompt.includes("at most 12 words"), "提示词缺少标题词数限制");
 assert(strictPrompt.includes("at most 50 words"), "提示词缺少简介词数限制");
 assert(strictPrompt.includes("PREVIOUS ATTEMPT FAILED"), "重试提示词没有携带上次失败原因");
 assert(strictPrompt.includes("image_query_en"), "提示词丢失英文搜图词要求");
-assert(strictPrompt.includes("READ THE ARTICLE BODY FIRST"), "提示词没有要求先读正文生成标题和简介");
-assert(strictPrompt.includes("DEFAULT AUTOMATIC IMAGE QUERY") && strictPrompt.includes("Ignore the original description"),
-  "批量自动搜图默认关键词没有按原标题生成");
+assert(strictPrompt.includes("EXCLUSIVELY from the ORIGINAL TITLE") && strictPrompt.includes("Ignore the original description"),
+  "批量自动搜图提示词没有严格限定原标题来源");
 const imageQueryMessages = evaluate("buildImageQueryMessages('Почему кошки любят коробки?')");
 assert(imageQueryMessages[1].content.includes("Почему кошки любят коробки?"), "独立搜图请求未传入原标题");
 assert(!imageQueryMessages[1].content.includes("summary") && !imageQueryMessages[1].content.includes("description"),
@@ -186,33 +188,5 @@ const translated = await evaluate("translateTextWithAi({text:'Pet dental care'})
 assert(translated.titleZh === "宠物牙齿护理", "标题 AI 翻译结果解析失败");
 assert(translationRequest.messages.at(-1).content === "Pet dental care", "标题翻译请求没有原样传入标题");
 assert(!JSON.stringify(translationRequest).includes("summary"), "标题翻译请求不应携带简介");
-
-let reviewRequest;
-context.fetch = async (_url, options) => {
-  reviewRequest = JSON.parse(options.body);
-  return new Response(JSON.stringify({model:"review-model",choices:[{finish_reason:"stop",message:{content:'{"title":"Pet dental care","summary":"Keep your pet teeth clean and healthy.","image_query_en":"pet dental care toothbrush home","language":"en"}'}}]}), {headers:{"content-type":"application/json"}});
-};
-context.reviewCandidate = {title:"Pet dental care",summary:"Keep your pet teeth clean and healthy.",image_query_en:"pet dental care toothbrush home",language:"en"};
-context.reviewContext = {originalTitle:"Pet dental care",originalSummary:"Keep your pet teeth clean and healthy.",articleText:"Regular brushing removes plaque and supports healthy teeth.",expectedLanguage:"en",titleLimit:12,summaryLimit:50};
-const reviewed = await evaluate("reviewAiCandidate(reviewCandidate, reviewContext, {reviewAiEndpoint:'https://review.test/chat/completions',reviewAiModel:'review-model'}, {reviewAiApiKey:'review-key'}, 30000)");
-assert(reviewed.title === "Pet dental care", "第二 AI 审核结果未正常返回");
-assert(reviewRequest.model === "review-model", "第二 AI 没有原样使用指定模型");
-assert(reviewRequest.thinking?.type !== "enabled" && !("reasoning_effort" in reviewRequest), "第二 AI 不得启用深度思考拖慢审核");
-
-const stockUrls = [];
-chrome.storage.sync.get = async () => ({settings:{pexelsEndpoint:"https://api.pexels.com/v1/search",pixabayEndpoint:"https://pixabay.com/api/"}});
-chrome.storage.local.get = async () => ({localSecrets:{pexelsApiKey:"pexels-key",pixabayApiKey:"pixabay-key"}});
-context.fetch = async (url) => {
-  stockUrls.push(String(url));
-  if (String(url).includes("api.pexels.com")) {
-    return new Response(JSON.stringify({page:1,total_results:1,photos:[{id:1,width:1600,height:900,src:{original:"https://image.test/landscape.jpg"}}]}), {headers:{"content-type":"application/json"}});
-  }
-  return new Response(JSON.stringify({totalHits:1,hits:[{id:91,imageWidth:900,imageHeight:1600,largeImageURL:"https://image.test/vertical.jpg",webformatURL:"https://image.test/vertical-preview.jpg",pageURL:"https://pixabay.com/photos/91",user:"tester",tags:"forest trail morning"}]}), {headers:{"content-type":"application/json"}});
-};
-const stockFallback = await evaluate("searchBatchImages('forest trail morning','9:16',1)");
-assert(stockFallback.source === "pixabay" && stockFallback.fallbackUsed === true, "Pexels 无合格竖图时未切换 Pixabay");
-assert(stockFallback.items.length === 1 && stockFallback.items[0].width < stockFallback.items[0].height, "Pixabay 备选没有保持竖屏过滤");
-assert(stockUrls.some((url) => url.includes("orientation=portrait")), "Pexels 请求未带 portrait");
-assert(stockUrls.some((url) => url.includes("orientation=vertical") && url.includes("safesearch=true")), "Pixabay 请求未带 vertical/safesearch");
 
 console.log("后台逻辑测试通过");

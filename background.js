@@ -1,19 +1,8 @@
 const LSAWorkflow = globalThis.LSAWorkflow;
-const {
-  parseRetryAfter, retryDelayMs, classifyAiError,
-  supportsThinkingControl, enableMediumThinking, disableThinking, configureThinking,
-  normalizeAiContent, getAiResponseText, describeEmptyAiResponse,
-  isReasoningTruncated, isOutputTruncated,
-} = globalThis.LSABackgroundAi;
+const { parseRetryAfter, retryDelayMs, classifyAiError } = globalThis.LSABackgroundAi;
 const { PERSON_TERMS, containsWholeTerm, inspectImageMetadataSafety, buildSafeStockQuery } = globalThis.LSABackgroundStock;
-const {
-  extensionForMime, sanitizePathSegment, sanitizeFileName, fileNameForMime,
-  sanitizeRelativeFolder, joinDownloadPath, inferImageMime, chooseDownloadUrl,
-} = globalThis.LSABackgroundDownloads;
-const workLock = globalThis.LSABackgroundLocks.createWorkLock({
-  storage: chrome.storage.local,
-  getStorageKey: async (tabId) => (await getTabContext(tabId)).keys.workLease,
-});
+const { extensionForMime, fileNameForMime } = globalThis.LSABackgroundDownloads;
+const queueWorkLock = globalThis.LSABackgroundLocks.serialQueue();
 const SEARCH_ENGINES = {
   baidu: (query) =>
     `https://image.baidu.com/search/index?tn=baiduimage&word=${encodeURIComponent(query)}`,
@@ -731,6 +720,38 @@ function isBangladeshCountry(value) {
   return /(?:bangladesh|孟加拉|বাংলাদেশ)/iu.test(String(value || "").trim());
 }
 
+function supportsThinkingControl(model, endpoint = "") {
+  const value = String(model || "").trim();
+  let hostname = "";
+  try { hostname = new URL(endpoint).hostname; } catch {}
+  return /(^|\.)api\.deepseek\.com$/i.test(hostname) ||
+    /^glm[-_.\s]?5(?:\D|$)/i.test(value) || /^deepseek-v4(?:[-_.]|$)/i.test(value);
+}
+
+function enableMediumThinking(requestBody, model, endpoint = "") {
+  if (!supportsThinkingControl(model, endpoint)) return requestBody;
+  requestBody.thinking = { type: "enabled" };
+  requestBody.reasoning_effort = "medium";
+  return requestBody;
+}
+
+function disableThinking(requestBody, model, endpoint = "") {
+  if (!supportsThinkingControl(model, endpoint)) return requestBody;
+  requestBody.thinking = { type: "disabled" };
+  delete requestBody.reasoning_effort;
+  return requestBody;
+}
+
+function configureThinking(body, model, endpoint, level = "medium") {
+  if (level === "provider") return body;
+  if (level === "off") return disableThinking(body, model, endpoint);
+  if (supportsThinkingControl(model, endpoint)) {
+    body.thinking = { type: "enabled" };
+    body.reasoning_effort = ["low", "medium", "high", "max"].includes(level) ? level : "medium";
+  }
+  return body;
+}
+
 function aiHeaders(apiKey) {
   return {
     "Content-Type": "application/json",
@@ -798,6 +819,54 @@ function dominantScript(value) {
   return scripts[0][1] ? scripts[0][0] : "other";
 }
 
+function normalizeAiContent(content) {
+  if (typeof content === "string") return content;
+  if (Array.isArray(content)) {
+    return content.map((part) => typeof part === "string" ? part : part?.text || part?.content || "").join("");
+  }
+  return content?.text || "";
+}
+
+function getAiResponseText(data) {
+  const chatContent = data?.choices?.[0]?.message?.content;
+  if (chatContent != null) return normalizeAiContent(chatContent);
+  if (typeof data?.output_text === "string") return data.output_text;
+  if (Array.isArray(data?.output)) {
+    return data.output
+      .flatMap((item) => item?.content || [])
+      .map((part) => part?.text || part?.content || "")
+      .join("");
+  }
+  return "";
+}
+
+function describeEmptyAiResponse(data) {
+  const choice = data?.choices?.[0];
+  const reasoning = normalizeAiContent(choice?.message?.reasoning_content).trim();
+  let reason = "AI 返回内容为空";
+  if (reasoning) reason = "模型只返回了思考内容，没有生成最终正文";
+  else if (choice?.finish_reason === "length") reason = "模型输出达到 token 上限，没有生成最终正文";
+  else if (choice?.finish_reason === "content_filter") reason = "模型输出被内容安全策略过滤";
+  else if (choice?.finish_reason === "insufficient_system_resource") reason = "上游当前推理资源不足";
+  const details = [
+    `model=${String(data?.model || "未返回")}`,
+    `choices=${Array.isArray(data?.choices) ? data.choices.length : "无"}`,
+    `finish_reason=${String(choice?.finish_reason || "无")}`,
+    `reasoning_chars=${Array.from(reasoning).length}`,
+    `top_fields=${Object.keys(data || {}).slice(0, 8).join(",") || "无"}`,
+  ];
+  return `${reason}（${details.join("；")}）`;
+}
+
+function isReasoningTruncated(data) {
+  return data?.choices?.[0]?.finish_reason === "length";
+}
+
+
+function isOutputTruncated(data) {
+  return isReasoningTruncated(data);
+}
+
 function validateAiResult(raw, context) {
   const title = String(raw?.title || "").replace(/^['\"`]+|['\"`]+$/g, "").trim();
   const summary = String(raw?.summary || "").replace(/^['\"`]+|['\"`]+$/g, "").trim();
@@ -862,20 +931,21 @@ function buildAiMessages(context, correction = "") {
     : "Detect the title's original language first. The title and summary MUST stay in that language and MUST NOT default to Chinese or English.";
   const system = [
     "You are a professional lock-screen magazine title and description editor.",
-    "READ THE ARTICLE BODY FIRST. Generate both the title and summary from facts and the central topic contained in the article body.",
-    "The original title and original description are reference metadata for language and topic checking only. Do not use them as a substitute for missing article content.",
     LSAWorkflow.wordPrompt(context.rewritePrompt)
       .replaceAll("{titleLimit}", String(context.titleLimit)).replaceAll("{summaryLimit}", String(context.summaryLimit)),
-    "Write a concise, natural title and summary of the article. Do not merely truncate the original metadata.",
+    "MANDATORY SOURCE PIPELINE: follow these two steps in order. These source rules override any conflicting custom instruction above.",
+    `STEP 1 — SUMMARY: read the supplied ARTICLE BODY and create a faithful, natural summary of at most ${context.summaryLimit} words. The article body is the only factual source for summary. Do not summarize the original title or original description.`,
+    `STEP 2 — TITLE: after the summary is complete, condense ONLY that generated summary into a natural title of at most ${context.titleLimit} words. Do not rewrite, copy or shorten the original title.`,
+    "Generate the summary before the title. Every fact and proper noun in the title must be supported by the generated summary.",
     "KEEP THE ORIGINAL LANGUAGE: use exactly the same language as the input title. Never translate the title or summary.",
     `TITLE: at most ${context.titleLimit} words. Count written words, NOT letters or characters. Spaces and punctuation do not count. Hyphenated compounds and contractions are one word; numbers are words.`,
-    "Preserve the core topic, meaning and most important keywords. Keep important names, places and technical terms when possible.",
-    "You may preserve wording from the original title only when the article body clearly supports it.",
+    "Preserve the summary's core topic, meaning and most important keywords in the title. Keep important names, places and technical terms when possible.",
     "Never change a stated number of methods, steps, tips or items into a smaller or different number.",
-    `SUMMARY: at most ${context.summaryLimit} words. Preserve the original meaning and key information.`,
+    `SUMMARY: at most ${context.summaryLimit} words. Preserve the article body's meaning and key information.`,
     "Remove repetition, background details and excessive modifiers. Do not invent any information.",
     languageInstruction,
-    "DEFAULT AUTOMATIC IMAGE QUERY: image_query_en must be 5 to 12 concrete English visual keywords based on the ORIGINAL TITLE. Ignore the original description, article text and shortened title for this default query. The user may later replace it with a custom English query in the image-search UI.",
+    "The ORIGINAL TITLE is supplied only to identify language, verify the general topic and create image_query_en. The ORIGINAL DESCRIPTION is supplied only as a non-authoritative cross-check. Neither is a source for the summary or final title.",
+    "IMAGE QUERY SOURCE IS STRICT: image_query_en must be 5 to 12 concrete English visual keywords derived EXCLUSIVELY from the ORIGINAL TITLE. Ignore the original description, article text and shortened title for this field.",
     "For people, prefer side profile, back view, silhouette, fully clothed subjects or wide shots. Avoid frontal close-ups, selfies, swimwear, nudity, exposed skin and sexualized poses. Prefer objects or scenery when people are unnecessary.",
     context.bangladeshMode ? "BANGLADESH MODE: avoid religiously sensitive framing, storytelling narration, negative or sad wording, and romantic-love themes. Food content must never mention pork, pig, bacon or ham. Prefer neutral, practical and positive wording." : "",
     "LANGUAGE CODE: language must be the ISO 639-1 two-letter code of the original title: vi, es, en, ru, be, ar, it, zh, fa, ne, si, my, ky, tg, az, bn or id.",
@@ -883,14 +953,14 @@ function buildAiMessages(context, correction = "") {
     "Keep internal reasoning concise and reserve enough output budget for the final JSON answer.",
     `If title exceeds ${context.titleLimit} words, rewrite it shorter and count again. If summary exceeds ${context.summaryLimit} words, rewrite it shorter and count again.`,
     "Never exceed either limit. Further shortening is always preferable to exceeding a limit.",
-    "Return exactly one strict JSON object with no Markdown, labels, explanations, analysis or word counts:",
-    '{"title":"...","summary":"...","image_query_en":"...","language":"..."}',
+    "Return exactly one strict JSON object with keys in this exact order and no Markdown, labels, explanations, analysis or word counts:",
+    '{"summary":"...","title":"...","image_query_en":"...","language":"..."}',
     correction ? `PREVIOUS ATTEMPT FAILED: ${correction}. Correct this failure before returning the new JSON.` : "",
   ].filter(Boolean).join("\n");
   const user = [
-    `参考原标题（仅用于语言与主题核对）：${context.originalTitle}`,
-    `参考原简介（不得替代正文）：${context.originalSummary || "（无）"}`,
-    `文章正文（标题和简介的事实来源）：${context.articleText}`,
+    `原标题（仅用于语言、主题核对与搜图）：${context.originalTitle}`,
+    `原简介（仅用于核对，不得作为生成来源）：${context.originalSummary || "（无）"}`,
+    `文章正文（简介的唯一内容来源）：${context.articleText}`,
   ].join("\n\n");
   return [
     { role: "system", content: system },
@@ -919,17 +989,16 @@ async function reviewAiCandidate(candidate, context, settings, localSecrets, tim
         role: "system",
         content: [
           "You are the final quality reviewer for lock-screen magazine copy.",
-          "Read original_article first. It is the factual source for both the final title and final summary. Correct or reject claims that are not supported by it.",
-          "Use original_title and original_summary only to verify language and topic; they must not replace the article body.",
-          `The final title MUST use the original language and contain at most ${context.titleLimit} words. Count words, not letters. Spaces and punctuation do not count. Contractions and hyphenated words count as one.`,
-          `The final summary MUST use the original language and contain at most ${context.summaryLimit} words.`,
-          "Preserve the core meaning, important proper nouns and every stated number of methods, steps, tips or items. Do not invent facts.",
+          `First correct candidate.summary against original_article, its only factual source, and keep it within ${context.summaryLimit} words. Do not use original_title or original_summary as summary sources.`,
+          `Then replace candidate.title by condensing ONLY the corrected summary into at most ${context.titleLimit} words. Never rewrite, copy or shorten original_title for the final title.`,
+          "The summary and title MUST use the original title's language. Count words, not letters. Spaces and punctuation do not count. Contractions and hyphenated words count as one.",
+          "Preserve the article's core meaning, important proper nouns and every stated number of methods, steps, tips or items. Do not invent facts.",
           context.bangladeshMode ? "BANGLADESH MODE: remove religiously sensitive framing, storytelling narration, negative/sad wording, romantic-love themes and any pork-related food wording while preserving the factual core." : "",
-          "For the default automatic search, image_query_en must remain a concrete English stock-photo query based on original_title. Ignore original_summary and article text for this field; the user may later run a separate custom-keyword search.",
+          "image_query_en must remain a concrete English stock-photo query based EXCLUSIVELY on original_title. Ignore original_summary and article text for this field.",
           "Count the words in title and summary before replying. Rewrite and recount until both word limits are satisfied.",
           "Review quickly and directly. Do not provide analysis or explanations.",
-          "Return exactly one strict JSON object and nothing else:",
-          '{"title":"...","summary":"...","image_query_en":"...","language":"..."}',
+          "Return exactly one strict JSON object with summary before title and nothing else:",
+          '{"summary":"...","title":"...","image_query_en":"...","language":"..."}',
         ].join("\n"),
       },
       {
@@ -991,15 +1060,8 @@ async function generateBatchItemWithAi(payload = {}, tabId) {
     chrome.storage.local.get(["localSecrets", "rewritePrompt"]),
   ]);
   const settings = { ...DEFAULT_BATCH_SETTINGS, ...savedSettings, ...await tabOverrides(tabId) };
-  const articleText = String(item.articleText || "").replace(/\s+/g, " ").trim().slice(0, MAX_AI_ARTICLE_CHARS);
-  if (!articleText) {
-    throw new RequestError("未读取到文章正文，不能生成标题和简介", {
-      code: "ARTICLE_REQUIRED",
-      retryable: false,
-    });
-  }
   if (settings.rewriteMode === "local") {
-    const result = LSAWorkflow.localRewrite({ ...item, articleText }, settings);
+    const result = LSAWorkflow.localRewrite(item, settings);
     return { configured: true, result, ...result, attempts: 1 };
   }
   let endpoint = String(settings.aiEndpoint || "").trim();
@@ -1017,6 +1079,14 @@ async function generateBatchItemWithAi(payload = {}, tabId) {
   const originalTitle = String(item.originalTitle || item.title || "").trim();
   if (!originalTitle) throw new Error("没有读取到原标题，无法改写");
   const originalSummary = String(item.originalSummary || item.summary || "").trim().slice(0, 2000);
+  const articleText = String(item.articleText || "").replace(/\s+/g, " ").trim().slice(0, MAX_AI_ARTICLE_CHARS);
+  if (!articleText) {
+    throw new RequestError("未读取到文章正文，无法生成简介和标题；请确认原文链接有效后重试", {
+      code: "ARTICLE_REQUIRED",
+      retryable: false,
+      errorType: "ARTICLE_REQUIRED",
+    });
+  }
   const detected = detectSourceLanguage(`${originalTitle} ${originalSummary}`);
   const normalizedHint = normalizeLanguageCode(item.languageHint || item.language || item.pageLanguage || payload.languageHint);
   const hintedLanguage = SUPPORTED_LANGUAGE_CODES.has(normalizedHint) ? normalizedHint : "";
@@ -1147,6 +1217,9 @@ async function generateBatchItemWithAi(payload = {}, tabId) {
             configured: true, result, title: result.title, summary: result.summary,
             image_query_en: result.image_query_en, imageQueryEn: result.image_query_en,
             language: result.language, reviewed, reviewWarning, attempts: totalAttempts,
+            copySource: "article_body_to_summary_to_title",
+            summarySource: "article_body",
+            titleSource: "generated_summary",
             model: activeModel, usedFallbackModel, diagnostics: allDiagnostics,
           },
         };
@@ -1445,6 +1518,19 @@ function arrayBufferToBase64(arrayBuffer) {
   return btoa(binary);
 }
 
+function inferImageMime(url, contentType) {
+  const normalized = String(contentType || "").split(";")[0].trim().toLowerCase();
+  if (/^image\//.test(normalized)) return normalized;
+  const pathname = (() => {
+    try { return new URL(url).pathname.toLowerCase(); } catch { return ""; }
+  })();
+  if (/\.png$/.test(pathname)) return "image/png";
+  if (/\.webp$/.test(pathname)) return "image/webp";
+  if (/\.gif$/.test(pathname)) return "image/gif";
+  if (/\.avif$/.test(pathname)) return "image/avif";
+  return "image/jpeg";
+}
+
 async function normalizeDownloadedImage(buffer, sourceMime) {
   const mime = String(sourceMime || "").toLowerCase();
   if (["image/jpeg", "image/jpg", "image/png"].includes(mime)) {
@@ -1508,6 +1594,38 @@ async function fetchImageFile(payload = {}) {
   };
 }
 
+function sanitizePathSegment(value, fallback = "未命名") {
+  const cleaned = String(value || "")
+    .replace(/[<>:\"/\\|?*\u0000-\u001f]/g, "-")
+    .replace(/[. ]+$/g, "")
+    .replace(/^\.+/g, "")
+    .replace(/-{2,}/g, "-")
+    .trim();
+  return cleaned || fallback;
+}
+
+function sanitizeFileName(value, fallback = "file.txt") {
+  const raw = String(value || fallback).replace(/\\/g, "/").split("/").pop();
+  return sanitizePathSegment(raw, fallback).slice(0, 190);
+}
+
+function sanitizeRelativeFolder(value, fallback) {
+  const raw = String(value || fallback || "").trim().replace(/\\/g, "/");
+  if (!raw) return "";
+  if (raw.startsWith("/") || /^[a-z]:/i.test(raw) || raw.split("/").some((part) => part === "..")) {
+    throw new Error("下载目录必须是浏览器“下载”文件夹内的相对子目录，不能使用盘符、绝对路径或 ..");
+  }
+  return raw
+    .split("/")
+    .filter((part) => part && part !== ".")
+    .map((part) => sanitizePathSegment(part, "未命名目录"))
+    .join("/");
+}
+
+function joinDownloadPath(folder, fileName) {
+  return [folder, fileName].filter(Boolean).join("/");
+}
+
 function utf8ToBase64(text) {
   return arrayBufferToBase64(new TextEncoder().encode(text).buffer);
 }
@@ -1536,6 +1654,12 @@ async function saveTextFile(payload = {}) {
     saveAs: false,
   });
   return { downloadId, path, fileName, size };
+}
+
+function chooseDownloadUrl(image = {}, item = {}) {
+  const aspectLabel = image.aspectLabel || item.aspectLabel || "9:16";
+  return image.selectedUrl || image.uploadUrl || image.downloadUrl || image.originalUrl || image.imageUrl ||
+    image.cropUrls?.[aspectLabel] || item.imageUrl || "";
 }
 
 function buildFinalImageName(item = {}, image = {}) {
@@ -1887,6 +2011,23 @@ async function reconcileImageDownloads(tabId) {
     }
     await chrome.storage.local.set({ [storageKey]: history });
     return { completed, interrupted, history };
+  });
+}
+
+function workLock(action, token, tabId) {
+  return queueWorkLock(async () => {
+    const storageKey = (await getTabContext(tabId)).keys.workLease;
+    const workLease = (await chrome.storage.local.get(storageKey))[storageKey];
+    const active = workLease && workLease.expiresAt > Date.now();
+    const owns = active && workLease.token === token && workLease.tabId === tabId;
+    if (action === "status") return { active: Boolean(active), owns: Boolean(owns) };
+    if (action === "release") {
+      if (owns) await chrome.storage.local.set({ [storageKey]: null });
+      return { active: false };
+    }
+    if ((action === "renew" && !owns) || (active && !owns)) throw new Error("当前标签页仍有任务正在处理，请稍后重试；其他标签页可以独立运行");
+    await chrome.storage.local.set({ [storageKey]: { token, tabId, expiresAt: Date.now() + 30000 } });
+    return { active: true, owns: true };
   });
 }
 

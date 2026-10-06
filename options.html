@@ -12,7 +12,7 @@
         <div class="brand">锁</div>
         <div>
           <h1>锁屏编辑助手设置</h1>
-          <p>0.13.0 · 运行中局部刷新、后台与界面模块化、回归测试补强</p>
+          <p>0.14.0 · 基于 0.13.0：正文生成简介，简介再浓缩标题</p>
         </div>
       </header>
 
@@ -37,7 +37,7 @@
           <label>请求超时（秒）<input id="aiTimeoutSeconds" type="number" min="10" max="120" /></label>
           <label>并发任务数<input id="batchConcurrency" type="number" min="1" max="2" /></label>
           <label>每批读取 / 图片分组<select id="batchLimit"><option value="30">30 条 / 组</option><option value="40">40 条 / 组</option></select></label>
-          <label>生成方式<select id="rewriteMode"><option value="ai">AI 阅读正文生成</option><option value="local">本地正文候选（需人工核对）</option></select></label>
+          <label>改写方式<select id="rewriteMode"><option value="ai">AI 改写</option><option value="local">本地词语候选（需人工核对）</option></select></label>
           <label>AI 思考强度<select id="thinkingLevel"><option value="off">关闭</option><option value="low">低</option><option value="medium">中等</option><option value="high">高</option><option value="max">最高</option><option value="provider">跟随提供商默认</option></select></label>
         </div>
       </section>
@@ -60,7 +60,7 @@
         <p class="section-description">以上是通用默认值；悬浮窗的快捷设置只影响当前标签页。标题默认 12 词、简介 50 词，空格和标点不计，连字符词和缩写计 1 词，数字计 1 词；中文等无空格文本使用自然分词。图片仍只接受竖屏。</p>
         <label class="toggle-row"><input id="autoSearch" type="checkbox" />进入编辑页后自动读取原标题、简介并搜索图片</label>
         <label class="toggle-row"><input id="duplicateCheck" type="checkbox" />下载前检查重复图片（素材 ID、地址与文件内容）</label>
-        <p class="section-description">标题和简介必须先读取正文再生成；本地模式只截取正文词语，不调用 AI。搜图仍可自行输入英文关键词。DeepSeek 的 medium 会按官方规则映射至 high。</p>
+        <p class="section-description">本地模式不调用 AI，也不翻译搜索词；可自行输入英文关键词。原意需人工核对。DeepSeek 的 medium 会按官方规则映射至 high。</p>
         <label>简写提示词（支持 {titleLimit} 与 {summaryLimit}）<textarea id="rewritePrompt" rows="8" maxlength="12000"></textarea></label>
         <p class="section-description">提示词可调整写作风格；工具会补充同语言、当前词数上限、英文搜图词及 JSON 格式要求。留空使用内置提示词。</p>
         <button id="resetPrompt" class="secondary" type="button">恢复内置提示词</button>

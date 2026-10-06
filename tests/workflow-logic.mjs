@@ -64,8 +64,11 @@ for (const source of ['Care for cats at home', 'Как ухаживать за �
   assert.ok(run(`LSAWorkflow.count(${JSON.stringify(shortened)})`) <= 12);
   assert.ok(!/[\u3400-\u9fff]/.test(shortened));
 }
-await assert.rejects(run('generateBatchItemWithAi({item:{originalTitle:"Care for cats",originalSummary:"Keep cats comfortable in a warm quiet home"}})'), /文章正文/);
-await run('generateBatchItemWithAi({item:{originalTitle:"Care for cats",originalSummary:"Keep cats comfortable in a warm quiet home",articleText:"Cats need a warm quiet sleeping area and fresh water every day."}})');
+context.localCopy = await run('generateBatchItemWithAi({item:{originalTitle:"Care for cats",originalSummary:"Old summary must not be used",articleText:"Cats need a warm quiet room fresh water gentle daily care and a clean resting place"}})');
+assert.equal(context.localCopy.summarySource,'article_body');
+assert.equal(context.localCopy.titleSource,'generated_summary');
+assert.equal(context.localCopy.title,run('LSAWorkflow.localShorten(localCopy.summary,12)'),'本地标题必须从刚生成的简介再次浓缩');
+await assert.rejects(run('generateBatchItemWithAi({item:{originalTitle:"Care for cats",originalSummary:"Fallback is forbidden"}})'),/未读取到文章正文/);
 await run('generateImageQueryWithAi({title:"cat"})');
 assert.equal(fetches, 0, '本地模式必须完全跳过 AI 网络');
 for (const level of ['off','low','medium','high','max','provider']) {
@@ -73,7 +76,7 @@ for (const level of ['off','low','medium','high','max','provider']) {
   assert.equal(body.thinking?.type, level === 'provider' ? undefined : level === 'off' ? 'disabled' : 'enabled');
   assert.equal(body.reasoning_effort, ['off','provider'].includes(level) ? undefined : level);
 }
-assert.ok(run(`buildAiMessages({originalTitle:'Cat care',originalSummary:'Care for cats',articleText:'Cats need fresh water and a quiet home.',titleLimit:18,summaryLimit:60,rewritePrompt:'Use a calm tone within {titleLimit} and {summaryLimit} characters.'})[0].content`).includes('Use a calm tone within 18 and 60 words.'));
+assert.ok(run(`buildAiMessages({originalTitle:'Cat care',originalSummary:'Care for cats',articleText:'Cats need calm daily care.',titleLimit:18,summaryLimit:60,rewritePrompt:'Use a calm tone within {titleLimit} and {summaryLimit} characters.'})[0].content`).includes('Use a calm tone within 18 and 60 words.'));
 const exported = {version:3,batchId:'test',items:[{id:'1',pageKey:'a',pageLabel:'第1页',originalTitle:'Cat care', title:'Cat care',summary:'Gentle care for cats',imageQueryEn:'cat at home',image:{id:'1',source:'pexels',imageUrl:'https://images.pexels.com/photos/1/a.jpg',width:900,height:1600,safetyStatus:'passed'}}]};
 context.exported = exported;
 const batch = run('LSAWorkflow.importBatch(exported, {titleLimit:12,summaryLimit:50})');
@@ -84,6 +87,10 @@ exported.items[0].imageQuerySourceTitle='Cat care';
 assert.equal(run('LSAWorkflow.importBatch(exported).items[0].imageQuerySourceTitle'),'Cat care');
 exported.items[0].titleZh='猫咪护理';
 assert.equal(run('LSAWorkflow.importBatch(exported).items[0].titleZh'),'猫咪护理','导入批次必须保留标题中文缓存');
+exported.items[0].copySource='article_body_to_summary_to_title';
+exported.items[0].summarySource='article_body';
+exported.items[0].titleSource='generated_summary';
+assert.equal(run('LSAWorkflow.importBatch(exported).items[0].titleSource'),'generated_summary','导入批次必须保留标题来源标记');
 exported.items[0].title = 'A title with far more than twelve written words exceeds the newly configured limit';
 assert.equal(run('LSAWorkflow.importBatch(exported, {titleLimit:12,summaryLimit:50}).items[0].status'), 'error');
 context.failedImport={version:4,batchId:'failed-import',items:[

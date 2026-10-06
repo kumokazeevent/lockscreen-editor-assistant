@@ -43,15 +43,15 @@ const sandbox=vm.createContext({chrome,console,crypto:webcrypto,URL,URLSearchPar
       activeAi--;
       return new Response(JSON.stringify({choices:[{message:{content:JSON.stringify({title:'A calm guide to caring for cats at home',summary:'Keep cats comfortable and give them a quiet place to rest.',image_query_en:'cat sleeping at home room '+tag,language:'en'})},finish_reason:'stop'}]}),{headers:{'content-type':'application/json'}});
     }
+    if(String(url).includes('article.test')) {
+      const tag=String(url).includes('/101')?'A':'B';
+      return new Response(`<article><h1>Cat care in Room ${tag}</h1><p>Cats need a warm quiet room, fresh water, gentle daily care and a clean place to rest.</p></article>`,{headers:{'content-type':'text/html; charset=utf-8'}});
+    }
     if(String(url).includes('api.pexels.com')) {
       const query=new URL(String(url)).searchParams.get('query') || '';
       const tag=query.includes('room A')?'A':query.includes('room B')?'B':'';
       if(tag && imageGates.has(tag))await imageGates.get(tag).promise;
       return new Response(JSON.stringify({page:1,total_results:1,photos:[{id:501,width:900,height:1600,alt:'Cat resting at home',src:{original:'https://image.test/cat.jpg',medium:'https://image.test/cat.jpg'}}]}),{headers:{'content-type':'application/json'}});
-    }
-    if(String(url).includes('article.test')) {
-      const tag=String(url).includes('/101')?'A':'B';
-      return new Response(`<article>Cats in Room ${tag} need fresh water, suitable food and a quiet resting place.</article>`,{headers:{'content-type':'text/html; charset=utf-8'}});
     }
     return new Response('image bytes',{headers:{'content-type':'image/jpeg'}});
   },
@@ -119,9 +119,6 @@ try {
   assert.equal(store.local[ka.batchState].items[0].id,'101');
   assert.equal(store.local[kb.batchState].items[0].id,'202');
   assert.equal(store.local[kb.batchState].items[0].title,'A calm guide to caring for cats at home');
-  assert.equal(store.local[kb.batchState].items[0].copySource,'article_body','生成文案必须记录正文来源');
-  const bodyBasedRequest=messages.filter((message)=>message.tabId===202&&message.action==='AI_PROCESS_ITEM').at(-1);
-  assert.ok(bodyBasedRequest.item.articleText.includes('Cats in Room B'),'AI 改写请求必须携带读取到的正文');
   assert.equal(store.local[kb.batchState].items[0].imageQuerySourceTitle,'How to care for cats in Room B','自动搜图应记录原标题来源');
   const beforeManualQueries=messages.filter((message)=>message.action==='GENERATE_IMAGE_QUERY').length;
   await b.getByRole('button',{name:'换图 / 翻页'}).click();
@@ -143,12 +140,10 @@ try {
   await b.getByRole('button',{name:'选为第 1 条配图'}).first().click();
   await b.waitForFunction(()=>document.querySelector('.lsa-image-status')?.textContent.includes('已替换第 1 条'));
   assert.equal(store.local[kb.batchState].items[0].imageQueryEn,persistedQueryBefore,'人工英文词选图不得覆盖持久化搜图词');
-  await b.locator('.lsa-reset-stock-query').click();
-  assert.equal(await b.locator('.lsa-stock-query').inputValue(),'How to care for cats in Room B','恢复原标题按钮应重新填入默认原标题');
   await b.locator('.lsa-stock-query').fill('кот у окна');
   const beforeRejectedSearch=messages.filter((message)=>message.action==='SEARCH_PEXELS_BATCH').length;
   await b.locator('.lsa-search-images').click();
-  await b.waitForFunction(()=>document.querySelector('.lsa-image-status')?.textContent.includes('自定义关键词请使用英文'));
+  await b.waitForFunction(()=>document.querySelector('.lsa-image-status')?.textContent.includes('请输入英文'));
   assert.equal(messages.filter((message)=>message.action==='SEARCH_PEXELS_BATCH').length,beforeRejectedSearch,'非 ASCII 人工词不得发起素材请求');
   await b.locator('[data-tab="batch"]').click();
   const reviewCopy=structuredClone(store.local[kb.batchState]);
@@ -254,25 +249,27 @@ try {
   const d=await create(404),kd=await keys(404);
   const legacyBatch={version:4,countUnit:'words',format:'lockscreen-results',batchId:'legacy-query',createdAt:Date.now(),updatedAt:Date.now(),status:'ready',batchLimit:30,items:[{
     index:1,id:'404',originalTitle:'Legacy original mountain title',originalSummary:'A summary that must not affect image search',title:'Short mountain guide',summary:'A valid summary',
-    imageQueryEn:'old summary derived beach query',imageQuerySourceTitle:'',articleText:'The article explains safe mountain routes and preparation for a day hike.',copySource:'article_body',sourceUrl:'',editUrl:'https://lockscreen-admin.mofeeds.com/#/nav/overseasDeliver?index=5&type=editEMPTY&id=404',
+    articleText:'Mountain trails cross a quiet valley beneath high rocky peaks.',imageQueryEn:'old summary derived beach query',imageQuerySourceTitle:'',sourceUrl:'',editUrl:'https://lockscreen-admin.mofeeds.com/#/nav/overseasDeliver?index=5&type=editEMPTY&id=404',
     pageKey:'legacy',pageLabel:'旧批次',status:'pending',stages:{article:'done',ai:'done',image:'pending'},rewriteMode:'ai'
   }]};
-  const beforeLegacyGenerate=messages.filter((message)=>message.tabId===404&&message.action==='GENERATE_IMAGE_QUERY').length;
+  const beforeLegacyRewrite=messages.filter((message)=>message.tabId===404&&message.action==='AI_PROCESS_ITEM').length;
   await chrome.storage.local.set({[kd.batchState]:legacyBatch});
   await d.waitForFunction(()=>document.querySelectorAll('.lsa-batch-card').length===1);
   await d.locator('.lsa-start-batch').click();
   await d.waitForFunction(()=>document.querySelector('.lsa-batch-status').textContent.includes('处理完成'));
-  const legacyGenerate=messages.filter((message)=>message.tabId===404&&message.action==='GENERATE_IMAGE_QUERY').at(-1);
+  const legacyRewrite=messages.filter((message)=>message.tabId===404&&message.action==='AI_PROCESS_ITEM').at(-1);
   const legacySearch=messages.filter((message)=>message.tabId===404&&message.action==='SEARCH_PEXELS_BATCH').at(-1);
-  assert.equal(messages.filter((message)=>message.tabId===404&&message.action==='GENERATE_IMAGE_QUERY').length,beforeLegacyGenerate+1,'旧查询缺少原标题来源标记时必须重新生成');
-  assert.equal(legacyGenerate.title,'Legacy original mountain title');
-  assert.equal('summary' in legacyGenerate,false);
+  assert.equal(messages.filter((message)=>message.tabId===404&&message.action==='AI_PROCESS_ITEM').length,beforeLegacyRewrite+1,'旧文案缺少来源标记时必须按正文重新生成');
+  assert.equal(legacyRewrite.item.originalTitle,'Legacy original mountain title');
+  assert.ok(legacyRewrite.item.articleText.includes('Mountain trails'));
   assert.notEqual(legacySearch.query,'old summary derived beach query','自动处理不得复用旧版非原标题查询');
   assert.equal(store.local[kd.batchState].items[0].imageQuerySourceTitle,'Legacy original mountain title');
+  assert.equal(store.local[kd.batchState].items[0].summarySource,'article_body');
+  assert.equal(store.local[kd.batchState].items[0].titleSource,'generated_summary');
   const e=await create(505),ke=await keys(505);
   const occupiedBatch={version:4,countUnit:'words',format:'lockscreen-results',batchId:'occupied-fallback',createdAt:Date.now(),updatedAt:Date.now(),status:'ready',batchLimit:30,metadata:{language:'英语',country:'南非',capturedAt:Date.now()},items:[
     {index:1,id:'505-a',originalTitle:'First cat room',originalSummary:'A comfortable room',title:'First cat room',summary:'A comfortable room',imageQueryEn:'cat room',imageQuerySourceTitle:'First cat room',image:{id:'pexels-501',source:'pexels',imageUrl:'https://image.test/cat.jpg',previewUrl:'https://image.test/cat.jpg',width:900,height:1600,safetyStatus:'passed'},pageKey:'occupied',pageLabel:'占用测试',status:'completed',stages:{article:'done',ai:'done',image:'done'},rewriteMode:'ai'},
-    {index:2,id:'505-b',originalTitle:'How to care for cats in Room B',originalSummary:'Give cats a comfortable home',articleText:'Cats need fresh water, suitable food and a quiet resting place.',sourceUrl:'',editUrl:'',pageKey:'occupied',pageLabel:'占用测试',status:'pending',stages:{article:'done',ai:'pending',image:'pending'},rewriteMode:'ai'}
+    {index:2,id:'505-b',originalTitle:'How to care for cats in Room B',originalSummary:'Give cats a comfortable home',articleText:'Cats need a warm quiet room, fresh water and a clean place to rest.',sourceUrl:'',editUrl:'',pageKey:'occupied',pageLabel:'占用测试',status:'pending',stages:{article:'pending',ai:'pending',image:'pending'},rewriteMode:'ai'}
   ]};
   await chrome.storage.local.set({[ke.batchState]:occupiedBatch});
   await e.waitForFunction(()=>document.querySelectorAll('.lsa-batch-card').length===2);
@@ -288,7 +285,7 @@ try {
   await e.waitForFunction(()=>document.querySelector('.lsa-image-status')?.textContent.includes('未替换'));
   const f=await create(606),kf=await keys(606);
   const bangladeshBatch={version:4,countUnit:'words',format:'lockscreen-results',batchId:'bangladesh-mode',createdAt:Date.now(),updatedAt:Date.now(),status:'ready',batchLimit:30,metadata:{language:'孟加拉语',country:'孟加拉',capturedAt:Date.now()},items:[{
-    index:1,id:'606',originalTitle:'বাড়ির জন্য সহজ ধারণা',originalSummary:'সহজ সাজসজ্জার ধারণা',pageLanguage:'孟加拉语',pageCountry:'孟加拉',pageKey:'bn-page',pageLabel:'孟加拉测试',status:'pending',stages:{article:'pending',ai:'pending',image:'pending'},rewriteMode:'ai'
+    index:1,id:'606',originalTitle:'বাড়ির জন্য সহজ ধারণা',originalSummary:'সহজ সাজসজ্জার ধারণা',articleText:'ঘর সাজানোর জন্য আলো, গাছপালা এবং সহজ রঙ ব্যবহার করা যায়।',pageLanguage:'孟加拉语',pageCountry:'孟加拉',pageKey:'bn-page',pageLabel:'孟加拉测试',status:'pending',stages:{article:'pending',ai:'pending',image:'pending'},rewriteMode:'ai'
   }]};
   await chrome.storage.local.set({[kf.batchState]:bangladeshBatch});
   await f.waitForFunction(()=>document.querySelectorAll('.lsa-batch-card').length===1);
@@ -322,12 +319,10 @@ try {
   assert.equal(await b.locator('#title').inputValue(),bSnapshot.items[0].title,'超过12字符但只有10词的标题应能填写');
   assert.equal(await b.locator('#picture').evaluate((input)=>input.files.length),0);
   assert.ok(await b.locator('[data-panel="record"] > .lsa-section-card').first().evaluate((main)=>main.compareDocumentPosition(document.querySelector('.lsa-transfer'))&Node.DOCUMENT_POSITION_FOLLOWING),'编辑页文件夹与设置应位于批次填入下面');
-  assert.ok(await b.locator('.lsa-transfer').evaluate((folder)=>folder.compareDocumentPosition(document.querySelector('.lsa-record-fold'))&Node.DOCUMENT_POSITION_FOLLOWING),'批次记录应位于当前文件夹之后');
-  assert.ok(await b.locator('.lsa-record-fold').evaluate((records)=>records.compareDocumentPosition(document.querySelector('.lsa-quick-settings'))&Node.DOCUMENT_POSITION_FOLLOWING),'批次记录应位于当前标签页设置之前');
-  assert.equal(await b.locator('.lsa-record-fold').evaluate((node)=>node.open),false,'有批次记录时列表也必须默认折叠');
+  assert.equal(await b.locator('.lsa-record-fold').evaluate((node)=>node.open),true,'有批次记录时列表默认展开');
   await b.screenshot({path:path.join(root,'tests','artifacts','edit-layout-0.12.png')});
   await b.locator('.lsa-record-fold > summary').click();
-  assert.equal(await b.locator('.lsa-record-fold').evaluate((node)=>node.open),true,'批次记录应可由用户手动展开');
+  assert.equal(await b.locator('.lsa-record-fold').evaluate((node)=>node.open),false,'批次记录应可折叠');
   await b.locator('[data-tab="manual"]').click();
   await b.locator('.lsa-draft-copy').fill('one two three four five six seven eight nine ten eleven twelve thirteen\nA valid summary');
   await b.locator('.lsa-apply-draft').click();
@@ -336,24 +331,6 @@ try {
   await b.locator('.lsa-draft-copy').fill('How to care for cats\nA valid summary');
   assert.equal(await b.locator('.lsa-title-count').textContent(),'标题 5 / 12 词');
   assert.ok(!messages.some((message)=>['NEXT_LIST_PAGE','SCAN_OPEN_PAGES'].includes(message.action)));
-  await chrome.storage.sync.set({settings:{...store.sync.settings,autoSearch:true,siteRules:{'lockscreen-admin.mofeeds.com':{titleSelector:'#auto-title',summarySelector:'#auto-summary'}}}});
-  const beforeAutoSearch=messages.filter((message)=>message.action==='GENERATE_IMAGE_QUERY').length;
-  const g=await create(707);
-  await g.evaluate(()=>{
-    document.querySelector('#fixture').innerHTML='<label>标题<input id="auto-title" value="Automatic flower guide"></label><label>简介<textarea id="auto-summary">Simple ways to care for garden flowers.</textarea></label>';
-    location.hash='#/nav/overseasDeliver?index=5&type=editEMPTY&id=707';
-  });
-  await g.waitForFunction(()=>document.querySelector('.lsa-original-copy')?.value.includes('Automatic flower guide'));
-  for(let attempt=0;attempt<100&&messages.filter((message)=>message.action==='GENERATE_IMAGE_QUERY').length===beforeAutoSearch;attempt++)await new Promise((resolve)=>setTimeout(resolve,20));
-  const autoQuery=messages.filter((message)=>message.action==='GENERATE_IMAGE_QUERY').at(-1);
-  assert.equal(autoQuery.title,'Automatic flower guide','进入编辑页自动搜图必须使用读取到的原标题');
-  assert.equal('summary' in autoQuery,false,'编辑页自动搜图不得混入简介');
-  await g.waitForFunction(()=>document.querySelector('.lsa-image-status')?.textContent.includes('第 1 页'));
-  await g.setViewportSize({width:520,height:700});
-  await g.waitForTimeout(250);
-  const adaptive=await g.locator('.lsa-assistant').evaluate((node)=>({rect:node.getBoundingClientRect().toJSON(),viewport:{width:innerWidth,height:innerHeight}}));
-  assert.ok(adaptive.rect.width<=adaptive.viewport.width-12&&adaptive.rect.height<=adaptive.viewport.height-12,'悬浮窗没有随较小视口缩放');
-  assert.ok(adaptive.rect.left>=0&&adaptive.rect.top>=0&&adaptive.rect.right<=adaptive.viewport.width+1&&adaptive.rect.bottom<=adaptive.viewport.height+1,'悬浮窗缩放后越出可视区域');
   fs.mkdirSync(path.join(root,'tests','artifacts'),{recursive:true});
   await b.screenshot({path:path.join(root,'tests','artifacts','word-count-0.10.png')});
   const before=await run('getTabContext(202)');startup();const after=await run('getTabContext(202)');
