@@ -41,6 +41,16 @@
     ["环保", "environment"], ["能源", "energy"], ["动物", "wildlife"], ["宠物", "pets"],
   ];
 
+  const LANGUAGE_NAMES = {
+    vi: "越南语 / Vietnamese",
+    es: "西班牙语 / Spanish",
+    ru: "俄语 / Russian",
+    be: "白俄罗斯语 / Belarusian",
+    en: "英语 / English",
+    ar: "阿拉伯语 / Arabic",
+    zh: "中文 / Chinese",
+  };
+
   const state = {
     root: null,
     settings: { ...DEFAULT_SETTINGS },
@@ -53,6 +63,7 @@
     dragging: null,
     originalCopy: { title: "", summary: "" },
     hasRewritten: false,
+    sourceLanguage: { code: "und", label: "原稿语言" },
   };
 
   function graphemes(value = "") {
@@ -76,6 +87,47 @@
       .trim();
   }
 
+  function normalizeLanguageCode(code = "") {
+    const base = String(code).toLowerCase().split(/[-_]/)[0];
+    if (base === "iw") return "he";
+    return base || "und";
+  }
+
+  function fallbackLanguageDetection(value) {
+    const text = cleanText(value);
+    if (/[\u0600-\u06ff]/.test(text)) return "ar";
+    if (/[ăâđêôơưĂÂĐÊÔƠƯàáạảãầấậẩẫằắặẳẵèéẹẻẽềếệểễìíịỉĩòóọỏõồốộổỗờớợởỡùúụủũừứựửữỳýỵỷỹ]/i.test(text)) return "vi";
+    if (/[ñ¿¡]/i.test(text) || /\b(?:el|la|los|las|una|para|con|por|del|que)\b/i.test(text)) return "es";
+    if (/[\u0400-\u04ff]/.test(text)) return "ru";
+    if (/[A-Za-z]/.test(text)) return "en";
+    if (/[\u3400-\u9fff]/.test(text)) return "zh";
+    return "und";
+  }
+
+  async function detectTextLanguage(value) {
+    const text = cleanText(value).slice(0, 1000);
+    let code = fallbackLanguageDetection(text);
+    let reliable = false;
+    let confidence = 0;
+    try {
+      const result = await chrome.i18n.detectLanguage(text);
+      const primary = result?.languages?.[0];
+      if (primary?.language) {
+        code = normalizeLanguageCode(primary.language);
+        confidence = Number(primary.percentage) || 0;
+        reliable = Boolean(result.isReliable) || confidence >= 65;
+      }
+    } catch {
+      // The script-based fallback above covers the editorial languages in use.
+    }
+    return {
+      code,
+      label: LANGUAGE_NAMES[code] || code.toUpperCase() || "原稿语言",
+      reliable,
+      confidence,
+    };
+  }
+
   function stripEditorialFiller(value = "") {
     return cleanText(value)
       .replace(/^(?:重磅|速看|必看|刚刚|最新消息|记者获悉|据了解|据悉|近日|今日)[！!：:\s]*/g, "")
@@ -88,8 +140,22 @@
   function segmentWords(value) {
     if (typeof Intl.Segmenter !== "function") return graphemes(value);
     return [...new Intl.Segmenter("zh-CN", { granularity: "word" }).segment(value)]
-      .filter((part) => part.isWordLike || /^[，。！？：；、]$/.test(part.segment))
+      .filter((part) => part.isWordLike || /^[，。！？：；、,.!?:;،؛؟]$/.test(part.segment))
       .map((part) => part.segment);
+  }
+
+  function usesWordSpaces() {
+    return !["zh", "ja", "ko"].includes(state.sourceLanguage.code);
+  }
+
+  function sentenceTerminator() {
+    return state.sourceLanguage.code === "zh" ? "。" : ".";
+  }
+
+  function clauseSeparator() {
+    if (state.sourceLanguage.code === "zh") return "，";
+    if (state.sourceLanguage.code === "ar") return "، ";
+    return ", ";
   }
 
   function fitAtBoundary(value, limit) {
@@ -99,12 +165,17 @@
     const output = [];
     let size = 0;
     for (const word of words) {
+      const previous = output.at(-1) || "";
+      const punctuation = /^[，。！？：；、,.!?:;،؛؟]$/.test(word);
+      const previousPunctuation = /^[，。！？：；、,.!?:;،؛؟]$/.test(previous);
+      const spacer = usesWordSpaces() && output.length && !punctuation && !previousPunctuation ? " " : "";
       const wordSize = textLength(word);
-      if (size + wordSize > limit) break;
+      if (size + textLength(spacer) + wordSize > limit) break;
+      if (spacer) output.push(spacer);
       output.push(word);
-      size += wordSize;
+      size += textLength(spacer) + wordSize;
     }
-    let result = output.join("").replace(/[，、：；的和与及将把被在于]$/g, "");
+    let result = output.join("").replace(/[，、：；,;،؛的和与及将把被在于\s]$/g, "");
     if (!result) result = graphemes(cleaned).slice(0, limit).join("");
     return result;
   }
@@ -117,11 +188,11 @@
       .trim();
     if (textLength(source) <= limit) return source;
 
-    const clauses = source.split(/[：:，,；;。！？!?｜|]/).map(cleanText).filter(Boolean);
+    const clauses = source.split(/[：:，,،；;؛。！？!?؟｜|]/).map(cleanText).filter(Boolean);
     const complete = clauses.find((clause) => textLength(clause) >= 5 && textLength(clause) <= limit);
     if (complete) return complete;
 
-    const joined = clauses.slice(0, 2).join("").replace(/的最新消息|相关情况|有关内容/g, "");
+    const joined = clauses.slice(0, 2).join(usesWordSpaces() ? " " : "").replace(/的最新消息|相关情况|有关内容/g, "");
     return fitAtBoundary(joined || source, limit);
   }
 
@@ -131,13 +202,15 @@
       .replace(/(?:对此|同时|此外|另外)[，,]/g, "")
       .replace(/([。！？])\1+/g, "$1");
     if (textLength(source) <= limit) {
-      return /[。！？]$/.test(source) || textLength(source) === limit ? source : `${source}。`;
+      return /[。！？.!?؟]$/.test(source) || textLength(source) === limit
+        ? source
+        : `${source}${sentenceTerminator()}`;
     }
 
     const titleTerms = new Set(segmentWords(title).filter((word) => textLength(word) >= 2));
     const clauses = source
-      .split(/[。！？；;]/)
-      .flatMap((sentence) => sentence.split(/[，,]/))
+      .split(/[。！？.!?؟；;؛]/)
+      .flatMap((sentence) => sentence.split(/[，,،]/))
       .map(cleanText)
       .filter((clause) => textLength(clause) >= 3)
       .map((clause, index) => ({
@@ -150,17 +223,17 @@
     const selected = [];
     let used = 1;
     for (const item of clauses) {
-      const separator = selected.length ? 1 : 0;
+      const separator = selected.length ? textLength(clauseSeparator()) : 0;
       if (used + separator + textLength(item.clause) <= limit) {
         selected.push(item);
         used += separator + textLength(item.clause);
       }
     }
     selected.sort((left, right) => left.index - right.index);
-    let result = selected.map((item) => item.clause).join("，");
+    let result = selected.map((item) => item.clause).join(clauseSeparator());
     if (!result) result = fitAtBoundary(source, Math.max(1, limit - 1));
-    result = result.replace(/[，、：；的和与及将把被在于]$/g, "");
-    if (textLength(result) < limit && !/[。！？]$/.test(result)) result += "。";
+    result = result.replace(/[，、：；,;،؛的和与及将把被在于\s]$/g, "");
+    if (textLength(result) < limit && !/[。！？.!?؟]$/.test(result)) result += sentenceTerminator();
     return fitAtBoundary(result, limit);
   }
 
@@ -187,6 +260,11 @@
     const terms = [];
     const latinTerms = source.match(/[A-Za-z][A-Za-z0-9.+#_-]{1,24}/g) || [];
     for (const term of latinTerms) {
+      if (
+        state.sourceLanguage.code !== "en" &&
+        !/\d/.test(term) &&
+        !/^[A-Z]{2,}$/.test(term)
+      ) continue;
       const normalized = term.toLowerCase();
       if (!terms.includes(normalized)) terms.push(normalized);
     }
@@ -218,16 +296,27 @@
       return "";
     }
 
+    if (state.sourceLanguage.code === "und") {
+      state.sourceLanguage = await detectTextLanguage(source);
+    }
+
+    if (state.sourceLanguage.code === "en") {
+      const englishQuery = extractEnglishKeywords(source) || "editorial documentary photography";
+      applyEnglishQuery(englishQuery);
+      setSearchStatus("原标题和原简介为英语，已直接提取英文视觉关键词");
+      return englishQuery;
+    }
+
     setSearchStatus("正在从原标题和原简介生成英文视觉关键词…");
     if ("Translator" in globalThis) {
       try {
         const availability = await globalThis.Translator.availability({
-          sourceLanguage: "zh",
+          sourceLanguage: state.sourceLanguage.code,
           targetLanguage: "en",
         });
         if (availability !== "unavailable") {
           const translator = await globalThis.Translator.create({
-            sourceLanguage: "zh",
+            sourceLanguage: state.sourceLanguage.code,
             targetLanguage: "en",
             monitor(monitor) {
               monitor.addEventListener("downloadprogress", (event) => {
@@ -382,12 +471,15 @@
         };
         state.hasRewritten = false;
       }
+      state.sourceLanguage = await detectTextLanguage(
+        `${state.originalCopy.title} ${state.originalCopy.summary}`,
+      );
       const host = query(".lsa-assistant-host");
       if (host) host.textContent = state.pageContext.hostname || "当前网页";
       updateCounts();
       refreshKeywords(false);
       scheduleDraftSave();
-      setStatus("已读取页面原文；可点击智能改写生成合规文案");
+      setStatus(`已读取页面原文，识别为${state.sourceLanguage.label}；改写将保持原语言`);
     } catch (error) {
       setStatus(error.message || "读取页面失败", true);
     }
@@ -403,6 +495,9 @@
     if (!state.hasRewritten) {
       state.originalCopy = { title: titleInput.value.trim(), summary: summaryInput.value.trim() };
     }
+    state.sourceLanguage = await detectTextLanguage(
+      `${state.originalCopy.title} ${state.originalCopy.summary}`,
+    );
     button.disabled = true;
     button.textContent = "正在改写…";
     setStatus("正在根据关键信息重写标题和简介");
@@ -415,12 +510,25 @@
         type: "REWRITE_COPY",
         title: state.originalCopy.title,
         summary: state.originalCopy.summary,
-        context: [state.pageContext.heading, state.pageContext.description].filter(Boolean).join("；"),
+        context: state.pageContext.boundTitle || state.pageContext.boundSummary
+          ? ""
+          : [state.pageContext.heading, state.pageContext.description].filter(Boolean).join("；"),
         titleLimit: state.settings.titleLimit,
         summaryLimit: state.settings.summaryLimit,
+        sourceLanguage: state.sourceLanguage.code,
+        sourceLanguageLabel: state.sourceLanguage.label,
       });
       if (!response?.ok) throw new Error(response?.error || "AI 改写失败");
       if (response.configured) {
+        const outputLanguage = await detectTextLanguage(`${response.title} ${response.summary}`);
+        if (
+          state.sourceLanguage.code !== "und" &&
+          outputLanguage.code !== "und" &&
+          state.sourceLanguage.code !== outputLanguage.code &&
+          (outputLanguage.reliable || outputLanguage.confidence >= 70)
+        ) {
+          throw new Error(`AI 返回了${outputLanguage.label}，与原稿${state.sourceLanguage.label}不一致`);
+        }
         result = localRewrite(response.title, response.summary);
         usedAi = true;
         aiImageQuery = response.imageQueryEn || "";
@@ -441,7 +549,9 @@
     if (aiImageQuery) applyEnglishQuery(aiImageQuery);
     else await generateEnglishQuery();
     if (!query(".lsa-copy-status")?.classList.contains("is-error")) {
-      setStatus(usedAi ? "AI 语义改写完成，已校验 12/50 字限制" : "本地智能精简完成；配置 AI 接口后可获得更自然的语义改写");
+      setStatus(usedAi
+        ? `AI 语义改写完成，已保持${state.sourceLanguage.label}并校验 12/50 字限制`
+        : `本地智能精简完成，内容保持${state.sourceLanguage.label}`);
     }
     button.disabled = false;
     button.textContent = "智能改写";

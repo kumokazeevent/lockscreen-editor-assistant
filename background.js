@@ -233,14 +233,18 @@ async function rewriteWithAi(payload) {
 
   const titleLimit = Number(payload.titleLimit) || 12;
   const summaryLimit = Number(payload.summaryLimit) || 50;
+  const sourceLanguage = payload.sourceLanguage || "und";
+  const sourceLanguageLabel = payload.sourceLanguageLabel || "the dominant language of the source";
   const systemPrompt = [
-    "你是中文杂志锁屏内容编辑。将原文改写成自然、准确、完整且有吸引力的标题和简介。",
-    `标题最多${titleLimit}个Unicode字符，简介最多${summaryLimit}个Unicode字符。`,
-    "不要机械截断，不要添加省略号，不要编造原文没有的事实。优先保留人物、事件、地点、数字等关键信息。",
-    "同时根据原文生成适合英文图片素材库的搜索词：5到10个英文视觉关键词，优先人物、地点、物体、场景和氛围，不要抽象新闻套话。",
-    "只输出严格JSON，格式为：{\"title\":\"...\",\"summary\":\"...\",\"image_query_en\":\"...\"}",
+    "You are a multilingual magazine lock-screen editor.",
+    `The source language is ${sourceLanguageLabel} (BCP-47 base code: ${sourceLanguage}).`,
+    `The rewritten title and summary MUST remain in exactly ${sourceLanguageLabel}. Never translate them into Chinese, English, or another language unless that is the source language. Preserve the source writing system and natural regional spelling.`,
+    `The title must contain no more than ${titleLimit} Unicode characters. The summary must contain no more than ${summaryLimit} Unicode characters.`,
+    "Rewrite naturally and completely. Do not mechanically truncate, add an ellipsis, or invent facts. Preserve key people, events, places, and numbers.",
+    "Separately generate image_query_en as 5 to 10 concise ENGLISH visual search keywords based on the original source. Prefer people, places, objects, scenes, and atmosphere over abstract news language.",
+    "Return strict JSON only: {\"title\":\"...\",\"summary\":\"...\",\"image_query_en\":\"...\",\"language\":\"...\"}",
   ].join("\n");
-  const userPrompt = `原标题：${payload.title || "（空）"}\n原简介：${payload.summary || "（空）"}\n页面补充：${payload.context || "（无）"}`;
+  const userPrompt = `SOURCE_LANGUAGE: ${sourceLanguageLabel} (${sourceLanguage})\nORIGINAL_TITLE: ${payload.title || "(empty)"}\nORIGINAL_SUMMARY: ${payload.summary || "(empty)"}\nPAGE_CONTEXT: ${payload.context || "(none)"}`;
   const data = await fetchJson(endpoint, {
     method: "POST",
     headers: {
