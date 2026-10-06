@@ -49,6 +49,10 @@ const sandbox=vm.createContext({chrome,console,crypto:webcrypto,URL,URLSearchPar
       if(tag && imageGates.has(tag))await imageGates.get(tag).promise;
       return new Response(JSON.stringify({page:1,total_results:1,photos:[{id:501,width:900,height:1600,alt:'Cat resting at home',src:{original:'https://image.test/cat.jpg',medium:'https://image.test/cat.jpg'}}]}),{headers:{'content-type':'application/json'}});
     }
+    if(String(url).includes('article.test')) {
+      const tag=String(url).includes('/101')?'A':'B';
+      return new Response(`<article>Cats in Room ${tag} need fresh water, suitable food and a quiet resting place.</article>`,{headers:{'content-type':'text/html; charset=utf-8'}});
+    }
     return new Response('image bytes',{headers:{'content-type':'image/jpeg'}});
   },
 });
@@ -82,7 +86,7 @@ try {
     for(const file of ['workflow.js','content.js','assistant-engine.js','assistant-ui.js'])await page.addScriptTag({path:path.join(root,file)});
     await page.evaluate(()=>{
       window.realPageSnapshot = window.__lsaPageTools.scanPageSnapshot;
-      window.__lsaPageTools.scanPageSnapshot=async()=>({ok:true,pageLabel:'当前页',sourcePage:location.href,items:[{id:String(window.fixtureId),originalTitle:'How to care for cats in Room '+(window.fixtureId===101?'A':'B'),originalSummary:'Give your cats a comfortable home',editUrl:'https://lockscreen-admin.mofeeds.com/#/nav/overseasDeliver?index=5&type=editEMPTY&id='+window.fixtureId}]});
+      window.__lsaPageTools.scanPageSnapshot=async()=>({ok:true,pageLabel:'当前页',sourcePage:location.href,items:[{id:String(window.fixtureId),originalTitle:'How to care for cats in Room '+(window.fixtureId===101?'A':'B'),originalSummary:'Give your cats a comfortable home',sourceUrl:'https://article.test/'+window.fixtureId,editUrl:'https://lockscreen-admin.mofeeds.com/#/nav/overseasDeliver?index=5&type=editEMPTY&id='+window.fixtureId}]});
     });
     await page.addScriptTag({path:path.join(root,'assistant.js')});
     await page.locator('.lsa-assistant').waitFor();
@@ -115,6 +119,9 @@ try {
   assert.equal(store.local[ka.batchState].items[0].id,'101');
   assert.equal(store.local[kb.batchState].items[0].id,'202');
   assert.equal(store.local[kb.batchState].items[0].title,'A calm guide to caring for cats at home');
+  assert.equal(store.local[kb.batchState].items[0].copySource,'article_body','生成文案必须记录正文来源');
+  const bodyBasedRequest=messages.filter((message)=>message.tabId===202&&message.action==='AI_PROCESS_ITEM').at(-1);
+  assert.ok(bodyBasedRequest.item.articleText.includes('Cats in Room B'),'AI 改写请求必须携带读取到的正文');
   assert.equal(store.local[kb.batchState].items[0].imageQuerySourceTitle,'How to care for cats in Room B','自动搜图应记录原标题来源');
   const beforeManualQueries=messages.filter((message)=>message.action==='GENERATE_IMAGE_QUERY').length;
   await b.getByRole('button',{name:'换图 / 翻页'}).click();
@@ -247,7 +254,7 @@ try {
   const d=await create(404),kd=await keys(404);
   const legacyBatch={version:4,countUnit:'words',format:'lockscreen-results',batchId:'legacy-query',createdAt:Date.now(),updatedAt:Date.now(),status:'ready',batchLimit:30,items:[{
     index:1,id:'404',originalTitle:'Legacy original mountain title',originalSummary:'A summary that must not affect image search',title:'Short mountain guide',summary:'A valid summary',
-    imageQueryEn:'old summary derived beach query',imageQuerySourceTitle:'',sourceUrl:'',editUrl:'https://lockscreen-admin.mofeeds.com/#/nav/overseasDeliver?index=5&type=editEMPTY&id=404',
+    imageQueryEn:'old summary derived beach query',imageQuerySourceTitle:'',articleText:'The article explains safe mountain routes and preparation for a day hike.',copySource:'article_body',sourceUrl:'',editUrl:'https://lockscreen-admin.mofeeds.com/#/nav/overseasDeliver?index=5&type=editEMPTY&id=404',
     pageKey:'legacy',pageLabel:'旧批次',status:'pending',stages:{article:'done',ai:'done',image:'pending'},rewriteMode:'ai'
   }]};
   const beforeLegacyGenerate=messages.filter((message)=>message.tabId===404&&message.action==='GENERATE_IMAGE_QUERY').length;
@@ -265,7 +272,7 @@ try {
   const e=await create(505),ke=await keys(505);
   const occupiedBatch={version:4,countUnit:'words',format:'lockscreen-results',batchId:'occupied-fallback',createdAt:Date.now(),updatedAt:Date.now(),status:'ready',batchLimit:30,metadata:{language:'英语',country:'南非',capturedAt:Date.now()},items:[
     {index:1,id:'505-a',originalTitle:'First cat room',originalSummary:'A comfortable room',title:'First cat room',summary:'A comfortable room',imageQueryEn:'cat room',imageQuerySourceTitle:'First cat room',image:{id:'pexels-501',source:'pexels',imageUrl:'https://image.test/cat.jpg',previewUrl:'https://image.test/cat.jpg',width:900,height:1600,safetyStatus:'passed'},pageKey:'occupied',pageLabel:'占用测试',status:'completed',stages:{article:'done',ai:'done',image:'done'},rewriteMode:'ai'},
-    {index:2,id:'505-b',originalTitle:'How to care for cats in Room B',originalSummary:'Give cats a comfortable home',sourceUrl:'',editUrl:'',pageKey:'occupied',pageLabel:'占用测试',status:'pending',stages:{article:'pending',ai:'pending',image:'pending'},rewriteMode:'ai'}
+    {index:2,id:'505-b',originalTitle:'How to care for cats in Room B',originalSummary:'Give cats a comfortable home',articleText:'Cats need fresh water, suitable food and a quiet resting place.',sourceUrl:'',editUrl:'',pageKey:'occupied',pageLabel:'占用测试',status:'pending',stages:{article:'done',ai:'pending',image:'pending'},rewriteMode:'ai'}
   ]};
   await chrome.storage.local.set({[ke.batchState]:occupiedBatch});
   await e.waitForFunction(()=>document.querySelectorAll('.lsa-batch-card').length===2);

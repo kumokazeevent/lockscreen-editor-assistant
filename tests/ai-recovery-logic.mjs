@@ -61,7 +61,12 @@ function scenario(responses, settings = {}) {
     return typeof next === "function" ? next(options) : next;
   };
 }
-const item = { id: "x", index: 1, originalTitle: "How to care for cats", originalSummary: "Keep cats comfortable at home" };
+const item = {
+  id: "x", index: 1,
+  originalTitle: "How to care for cats",
+  originalSummary: "Keep cats comfortable at home",
+  articleText: "Cats need a quiet resting place, clean water, suitable food and regular veterinary care.",
+};
 context.item = item;
 
 assert.equal(run("parseRetryAfter('120')"), 60000);

@@ -140,6 +140,11 @@ assert(background.includes("BANGLADESH_RESTRICTED_THEME_TERMS") && background.in
 assert(background.includes("createWorkLock") && background.includes("sanitizeRelativeFolder")
   && background.includes("describeEmptyAiResponse") && assistant.includes("manualImageSearchPlan"),
   "后台或悬浮窗核心职责未接入拆分模块");
+assert(background.includes("READ THE ARTICLE BODY FIRST")
+  && background.includes('code: "ARTICLE_REQUIRED"')
+  && assistant.includes('item.copySource = "article_body"')
+  && !assistant.includes("articleTextFromResponse(articleResponse) || item.originalSummary || item.originalTitle"),
+  "标题和简介仍可能在未读取正文时生成，或缺少正文来源标记");
 assert(assistant.includes("globalThis.Translator?.availability")
   && assistant.includes("离线翻译不可用")
   && assistant.includes("lsa-ai-translate-title")

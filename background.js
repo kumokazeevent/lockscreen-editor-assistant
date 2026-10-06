@@ -862,13 +862,15 @@ function buildAiMessages(context, correction = "") {
     : "Detect the title's original language first. The title and summary MUST stay in that language and MUST NOT default to Chinese or English.";
   const system = [
     "You are a professional lock-screen magazine title and description editor.",
+    "READ THE ARTICLE BODY FIRST. Generate both the title and summary from facts and the central topic contained in the article body.",
+    "The original title and original description are reference metadata for language and topic checking only. Do not use them as a substitute for missing article content.",
     LSAWorkflow.wordPrompt(context.rewritePrompt)
       .replaceAll("{titleLimit}", String(context.titleLimit)).replaceAll("{summaryLimit}", String(context.summaryLimit)),
-    "Shorten the supplied title and description by rewriting them naturally. Do not merely cut off the text.",
+    "Write a concise, natural title and summary of the article. Do not merely truncate the original metadata.",
     "KEEP THE ORIGINAL LANGUAGE: use exactly the same language as the input title. Never translate the title or summary.",
     `TITLE: at most ${context.titleLimit} words. Count written words, NOT letters or characters. Spaces and punctuation do not count. Hyphenated compounds and contractions are one word; numbers are words.`,
     "Preserve the core topic, meaning and most important keywords. Keep important names, places and technical terms when possible.",
-    "If the original title is already within the limit and reads naturally, preserve it unchanged.",
+    "You may preserve wording from the original title only when the article body clearly supports it.",
     "Never change a stated number of methods, steps, tips or items into a smaller or different number.",
     `SUMMARY: at most ${context.summaryLimit} words. Preserve the original meaning and key information.`,
     "Remove repetition, background details and excessive modifiers. Do not invent any information.",
@@ -886,9 +888,9 @@ function buildAiMessages(context, correction = "") {
     correction ? `PREVIOUS ATTEMPT FAILED: ${correction}. Correct this failure before returning the new JSON.` : "",
   ].filter(Boolean).join("\n");
   const user = [
-    `原始标题：${context.originalTitle}`,
-    `原始简介：${context.originalSummary || "（无）"}`,
-    `原始文章正文：${context.articleText || "（未抓取到正文，请仅依据原始标题和原始简介）"}`,
+    `参考原标题（仅用于语言与主题核对）：${context.originalTitle}`,
+    `参考原简介（不得替代正文）：${context.originalSummary || "（无）"}`,
+    `文章正文（标题和简介的事实来源）：${context.articleText}`,
   ].join("\n\n");
   return [
     { role: "system", content: system },
@@ -917,7 +919,8 @@ async function reviewAiCandidate(candidate, context, settings, localSecrets, tim
         role: "system",
         content: [
           "You are the final quality reviewer for lock-screen magazine copy.",
-          "Compare the candidate with the original title and description. Correct the candidate whenever needed.",
+          "Read original_article first. It is the factual source for both the final title and final summary. Correct or reject claims that are not supported by it.",
+          "Use original_title and original_summary only to verify language and topic; they must not replace the article body.",
           `The final title MUST use the original language and contain at most ${context.titleLimit} words. Count words, not letters. Spaces and punctuation do not count. Contractions and hyphenated words count as one.`,
           `The final summary MUST use the original language and contain at most ${context.summaryLimit} words.`,
           "Preserve the core meaning, important proper nouns and every stated number of methods, steps, tips or items. Do not invent facts.",
@@ -988,8 +991,15 @@ async function generateBatchItemWithAi(payload = {}, tabId) {
     chrome.storage.local.get(["localSecrets", "rewritePrompt"]),
   ]);
   const settings = { ...DEFAULT_BATCH_SETTINGS, ...savedSettings, ...await tabOverrides(tabId) };
+  const articleText = String(item.articleText || "").replace(/\s+/g, " ").trim().slice(0, MAX_AI_ARTICLE_CHARS);
+  if (!articleText) {
+    throw new RequestError("未读取到文章正文，不能生成标题和简介", {
+      code: "ARTICLE_REQUIRED",
+      retryable: false,
+    });
+  }
   if (settings.rewriteMode === "local") {
-    const result = LSAWorkflow.localRewrite(item, settings);
+    const result = LSAWorkflow.localRewrite({ ...item, articleText }, settings);
     return { configured: true, result, ...result, attempts: 1 };
   }
   let endpoint = String(settings.aiEndpoint || "").trim();
@@ -1016,7 +1026,7 @@ async function generateBatchItemWithAi(payload = {}, tabId) {
   const context = {
     originalTitle,
     originalSummary,
-    articleText: String(item.articleText || "").replace(/\s+/g, " ").trim().slice(0, MAX_AI_ARTICLE_CHARS),
+    articleText,
     expectedLanguage,
     rewritePrompt,
     titleLimit: clampNumber(payload.titleLimit ?? settings.titleLimit, 12, 1, 100),

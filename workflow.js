@@ -31,7 +31,7 @@
     for (const [code, pattern] of rules) if (pattern.test(text)) return code;
     return text.slice(0, 12);
   }
-  const DEFAULT_PROMPT = "Preserve the original language and core meaning. Rewrite naturally within {titleLimit} words for the title and {summaryLimit} words for the description. Count written words, not letters or characters. Spaces and punctuation are not words. Hyphenated words and contractions count as one word. Preserve an already suitable text if it fits. Keep important proper nouns. Never change a stated number of methods or steps to a different number. Remove repetition and excessive modifiers. Do not invent facts. Check both word counts before answering.";
+  const DEFAULT_PROMPT = "Read the article body first and generate both the title and description from its facts and central topic. Preserve the original language. Write naturally within {titleLimit} words for the title and {summaryLimit} words for the description. Count written words, not letters or characters. Spaces and punctuation are not words. Hyphenated words and contractions count as one word. Keep important proper nouns and numbers supported by the article. Remove repetition and excessive modifiers. Do not invent facts. Check both word counts before answering.";
   function wordPrompt(value) {
     return String(value || DEFAULT_PROMPT)
       .replace(/counting spaces and punctuation/gi, "counting words, excluding standalone punctuation")
@@ -152,6 +152,7 @@
         pageLanguage: clean(raw.pageLanguage, 40), pageCountry: clean(raw.pageCountry, 40),
         sourcePage: httpUrl(raw.sourcePage || data.sourcePage), pageOrder: number(raw.pageOrder, 0, 600, index),
         articleText: clean(raw.articleText), title: clean(raw.title, 12000), titleZh: clean(raw.titleZh, 4000), summary: clean(raw.summary, 32000),
+        copySource: raw.copySource === "article_body" ? "article_body" : "",
         imageQueryEn: clean(raw.imageQueryEn || raw.image_query_en, 500), imageQuerySourceTitle: clean(raw.imageQuerySourceTitle, 2000), language: clean(raw.language, 20),
         image: safeImage(raw.image), rewriteMode: raw.rewriteMode === "local" ? "local" : "ai",
         reviewWarning: clean(raw.reviewWarning, 1000), error: clean(raw.error, 2000), attempts: 0,
@@ -202,11 +203,14 @@
     return best;
   }
   function localRewrite(item, settings) {
-    const summary = item.originalSummary || item.articleText || item.originalTitle;
-    return { title: localShorten(item.originalTitle, settings.titleLimit || 12),
-      summary: localShorten(summary, settings.summaryLimit || 50), imageQueryEn: item.originalTitle,
+    const article = clean(item.articleText);
+    if (!article) throw new Error("未读取到文章正文，不能生成本地候选");
+    const firstSentence = article.split(/(?<=[.!?。！？])\s+/u).find(Boolean) || article;
+    return { title: localShorten(firstSentence, settings.titleLimit || 12),
+      summary: localShorten(article, settings.summaryLimit || 50), imageQueryEn: item.originalTitle,
       imageQuerySourceTitle: item.originalTitle,
-      rewriteMode: "local", reviewWarning: "本地词语候选：未做语义理解或翻译，请人工核对原意与专有名词。" };
+      rewriteMode: "local", copySource: "article_body",
+      reviewWarning: "本地正文候选：仅从正文截取词语，未做语义理解或翻译，请人工核对原意与专有名词。" };
   }
   function failureTypeCounts(items = []) {
     return (Array.isArray(items) ? items : []).reduce((counts, item) => {

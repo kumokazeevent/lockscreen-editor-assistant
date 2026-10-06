@@ -639,7 +639,8 @@
       await persistBatch({ item, progressOnly: true });
       const articleResponse = !item.articleText && item.sourceUrl
         ? await sendRuntime("FETCH_ARTICLE", { url: item.sourceUrl, sourceUrl: item.sourceUrl }) : {};
-      const articleText = item.articleText || articleTextFromResponse(articleResponse) || item.originalSummary || item.originalTitle;
+      const articleText = cleanText(item.articleText || articleTextFromResponse(articleResponse));
+      if (!articleText) throw new Error("未读取到文章正文，已停止生成标题和简介；请检查文章链接后重试");
       item.articleText = articleText;
       item.articleTitle = cleanText(articleResponse.title || articleResponse.article?.title || "");
       setItemStage(item, "article", "done");
@@ -648,7 +649,7 @@
       setItemStage(item, "ai", "working");
       item.status = "rewriting";
       await persistBatch({ item, progressOnly: true });
-      const reusedExistingCopy = !item.forceRewrite && item.title && item.summary && textLength(item.title) <= state.settings.titleLimit
+      const reusedExistingCopy = !item.forceRewrite && item.copySource === "article_body" && item.title && item.summary && textLength(item.title) <= state.settings.titleLimit
         && textLength(item.summary) <= state.settings.summaryLimit;
       const priorQuerySource = cleanText(item.imageQuerySourceTitle || "");
       const aiResponse = reusedExistingCopy ? { result: item } : await sendRuntime("AI_PROCESS_ITEM", {
@@ -668,6 +669,7 @@
       }
       validateAiResult(ai);
       Object.assign(item, ai);
+      item.copySource = "article_body";
       item.forceRewrite = false;
       item.imageQueryEn ||= item.originalTitle;
       item.imageQuerySourceTitle = item.originalTitle;
@@ -1519,18 +1521,36 @@
 
   async function rewriteManual() {
     const source = parseOriginal(q(".lsa-original-copy")?.value || "");
+    const matched = getBatchItems().find(recordMatchesRoute) || selectedRecord();
     const root = state.root;
     const button = q(".lsa-rewrite-manual");
     if (button) button.disabled = true;
     try {
-      setPanelStatus(".lsa-manual-status", state.settings.rewriteMode === "local" ? "正在生成本地候选…" : "正在调用 AI 改写…");
-      const response = await sendRuntime("AI_PROCESS_ITEM", { item: { originalTitle: source.title, originalSummary: source.summary } });
+      setPanelStatus(".lsa-manual-status", "正在读取正文并生成标题和简介…");
+      let articleText = cleanText(matched?.articleText || "");
+      if (!articleText && matched?.sourceUrl) {
+        const articleResponse = await sendRuntime("FETCH_ARTICLE", { url: matched.sourceUrl, sourceUrl: matched.sourceUrl });
+        articleText = articleTextFromResponse(articleResponse);
+        if (articleText) {
+          matched.articleText = articleText;
+          await persistBatch({ render: false });
+        }
+      }
+      if (!articleText) throw new Error("当前记录没有可读取的文章正文，不能生成标题和简介；请先从列表页读取并处理该记录");
+      const response = await sendRuntime("AI_PROCESS_ITEM", { item: {
+        originalTitle: source.title,
+        originalSummary: source.summary,
+        articleText,
+        sourceUrl: matched?.sourceUrl || "",
+        pageLanguage: matched?.pageLanguage || "",
+        pageCountry: matched?.pageCountry || "",
+      } });
       if (state.root !== root) return;
       const result = normalizeAiResult(response);
       validateAiResult(result);
       q(".lsa-draft-copy").value = `${result.title}\n${result.summary}`;
       updateManualCounts();
-      setPanelStatus(".lsa-manual-status", result.reviewWarning || "改写完成，请核对后填写");
+      setPanelStatus(".lsa-manual-status", result.reviewWarning || "已根据正文生成，请核对后填写");
     } catch (error) { if (state.root === root) setPanelStatus(".lsa-manual-status", error.message, true); }
     finally { if (button) button.disabled = false; }
   }
@@ -1747,7 +1767,7 @@
           <div class="lsa-quick-grid">
             <label>标题词数上限<input data-setting="titleLimit" type="number" min="1" max="100"></label>
             <label>简介词数上限<input data-setting="summaryLimit" type="number" min="1" max="500"></label>
-            <label>改写方式<select data-setting="rewriteMode"><option value="ai">AI 改写</option><option value="local">本地候选</option></select></label>
+            <label>生成方式<select data-setting="rewriteMode"><option value="ai">AI 阅读正文</option><option value="local">本地正文候选</option></select></label>
             <label>思考强度<select data-setting="thinkingLevel"><option value="off">关闭</option><option value="low">低</option><option value="medium">中等</option><option value="high">高</option><option value="max">最高</option><option value="provider">提供商默认</option></select></label>
           </div><p class="lsa-status-text lsa-quick-status">只修改当前标签页。空格和标点不计词数，连字符词与缩写计 1 词。底部“设置”管理通用默认值与 API。</p>
         </div>
@@ -1831,7 +1851,7 @@
             <label class="lsa-field-label"><span>页面原稿</span><span>标题////简介</span></label><textarea class="lsa-assistant-textarea lsa-original-copy" placeholder="标题////简介"></textarea>
             <label class="lsa-field-label"><span>待填写文案</span><span><span class="lsa-counter lsa-title-count">标题 0 / 12</span> <span class="lsa-counter lsa-summary-count">简介 0 / 50</span></span></label><textarea class="lsa-assistant-textarea lsa-draft-copy" placeholder="第一行标题&#10;第二行起简介"></textarea>
             <div class="lsa-button-row"><button class="lsa-primary-button lsa-apply-draft" type="button">填写标题和简介</button><button class="lsa-secondary-button lsa-bind-fields" type="button">重新绑定字段</button></div><p class="lsa-status-text lsa-manual-status">不会自动点击后台保存。</p>
-            <button class="lsa-secondary-button lsa-rewrite-manual" type="button">按当前模式改写</button>
+            <button class="lsa-secondary-button lsa-rewrite-manual" type="button">读取正文并生成</button>
           </div>
         </section>`}
         <section class="lsa-tab-panel" data-panel="images" hidden>

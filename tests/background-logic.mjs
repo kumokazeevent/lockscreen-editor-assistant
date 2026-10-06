@@ -153,13 +153,14 @@ assert(overLimitRejected, "超长标题没有被拒绝");
 
 const strictPrompt = evaluate(`buildAiMessages({
   originalTitle:'How to grow peonies at home', originalSummary:'A practical guide to planting and caring for peonies.',
-  articleText:'', expectedLanguage:'en', titleLimit:12, summaryLimit:50
+  articleText:'Peonies grow best in sunny, well-drained soil and need careful seasonal watering.', expectedLanguage:'en', titleLimit:12, summaryLimit:50
 }, 'AI title was 27 characters, exceeding the 12 character limit')[0].content`);
 assert(strictPrompt.includes("MANDATORY FINAL CHECK"), "提示词缺少强制字符复核");
 assert(strictPrompt.includes("at most 12 words"), "提示词缺少标题词数限制");
 assert(strictPrompt.includes("at most 50 words"), "提示词缺少简介词数限制");
 assert(strictPrompt.includes("PREVIOUS ATTEMPT FAILED"), "重试提示词没有携带上次失败原因");
 assert(strictPrompt.includes("image_query_en"), "提示词丢失英文搜图词要求");
+assert(strictPrompt.includes("READ THE ARTICLE BODY FIRST"), "提示词没有要求先读正文生成标题和简介");
 assert(strictPrompt.includes("DEFAULT AUTOMATIC IMAGE QUERY") && strictPrompt.includes("Ignore the original description"),
   "批量自动搜图默认关键词没有按原标题生成");
 const imageQueryMessages = evaluate("buildImageQueryMessages('Почему кошки любят коробки?')");
@@ -192,7 +193,7 @@ context.fetch = async (_url, options) => {
   return new Response(JSON.stringify({model:"review-model",choices:[{finish_reason:"stop",message:{content:'{"title":"Pet dental care","summary":"Keep your pet teeth clean and healthy.","image_query_en":"pet dental care toothbrush home","language":"en"}'}}]}), {headers:{"content-type":"application/json"}});
 };
 context.reviewCandidate = {title:"Pet dental care",summary:"Keep your pet teeth clean and healthy.",image_query_en:"pet dental care toothbrush home",language:"en"};
-context.reviewContext = {originalTitle:"Pet dental care",originalSummary:"Keep your pet teeth clean and healthy.",articleText:"",expectedLanguage:"en",titleLimit:12,summaryLimit:50};
+context.reviewContext = {originalTitle:"Pet dental care",originalSummary:"Keep your pet teeth clean and healthy.",articleText:"Regular brushing removes plaque and supports healthy teeth.",expectedLanguage:"en",titleLimit:12,summaryLimit:50};
 const reviewed = await evaluate("reviewAiCandidate(reviewCandidate, reviewContext, {reviewAiEndpoint:'https://review.test/chat/completions',reviewAiModel:'review-model'}, {reviewAiApiKey:'review-key'}, 30000)");
 assert(reviewed.title === "Pet dental care", "第二 AI 审核结果未正常返回");
 assert(reviewRequest.model === "review-model", "第二 AI 没有原样使用指定模型");
