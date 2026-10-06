@@ -60,10 +60,12 @@
     searchPage: 1,
     searchHasNext: false,
     saveTimer: null,
+    resizeSaveTimer: null,
+    resizeObserver: null,
     dragging: null,
     originalCopy: { title: "", summary: "" },
-    hasRewritten: false,
     sourceLanguage: { code: "und", label: "原稿语言" },
+    lastAutoSearchKey: "",
   };
 
   function graphemes(value = "") {
@@ -85,6 +87,33 @@
       .replace(/[\u200b-\u200d\ufeff]/g, "")
       .replace(/\s+/g, " ")
       .trim();
+  }
+
+  function formatOriginalCopy(title = "", summary = "") {
+    if (!title && !summary) return "";
+    return `${cleanText(title)}////${cleanText(summary)}`;
+  }
+
+  function parseOriginalCopy(value = "") {
+    const separatorIndex = String(value).indexOf("////");
+    if (separatorIndex < 0) return { title: cleanText(value), summary: "" };
+    return {
+      title: cleanText(String(value).slice(0, separatorIndex)),
+      summary: cleanText(String(value).slice(separatorIndex + 4)),
+    };
+  }
+
+  function formatDraftCopy(title = "", summary = "") {
+    if (!title && !summary) return "";
+    return `${String(title).trim()}\n${String(summary).trim()}`.trim();
+  }
+
+  function parseDraftCopy(value = "") {
+    const lines = String(value).replace(/\r\n?/g, "\n").split("\n");
+    while (lines.length && !lines[0].trim()) lines.shift();
+    const title = cleanText(lines.shift() || "");
+    const summary = cleanText(lines.join(" "));
+    return { title, summary };
   }
 
   function normalizeLanguageCode(code = "") {
@@ -128,186 +157,14 @@
     };
   }
 
-  function stripEditorialFiller(value = "") {
-    return cleanText(value)
-      .replace(/^(?:重磅|速看|必看|刚刚|最新消息|记者获悉|据了解|据悉|近日|今日)[！!：:\s]*/g, "")
-      .replace(/(?:值得注意的是|众所周知|不难发现|可以看到|有消息称|相关消息显示)[，,：:]*/g, "")
-      .replace(/[“”‘’]/g, "")
-      .replace(/\s*[-_|｜]\s*[^，。！？]{1,18}$/g, "")
-      .trim();
-  }
-
-  function trimMethodTitleCore(value = "") {
-    return cleanText(value)
-      .replace(/^[：:，,；;、|｜\-–—\s]+|[：:，,；;、|｜\-–—\s]+$/g, "")
-      .replace(/^(?:how\s+to|cómo|como|如何|怎样|怎么|cách|как|як|كيفية)\s*/iu, "")
-      .replace(/^(?:to|for|of|para|por|de|để|giúp|nhằm|для|чтобы|каб|لأجل|من\s+أجل)\s+/iu, "")
-      .replace(/的$/u, "")
-      .trim();
-  }
-
-  function isGenericMethodTitle(value = "") {
-    const title = cleanText(value).replace(/[.!?。！？]/g, "").trim();
-    if (!title) return false;
-    const patterns = [
-      /^(?:这)?(?:\d+|[一二三四五六七八九十百几多]+)?\s*(?:种|个|条|大)?\s*(?:(?:最|简单|有效|实用|最佳|常用|快速|重要|关键|轻松|自然|健康|安全|免费|科学|正确|聪明|基本|主要|好用|必要|新颖|全新|新)的?\s*)*(?:方法|方式|技巧|步骤|窍门|建议|秘诀|办法)$/u,
-      /^(?:(?:top|these|the)\s+)?(?:\d+|several|some|many|a\s+few)?\s*(?:(?:simple|easy|effective|best|useful|practical|quick|important|key|smart|essential|new|proven|natural)\s+)*(?:methods?|ways?|tips?|steps?|tricks?|techniques?|strategies?|approaches?|hacks?)$/iu,
-      /^(?:\d+|varios|varias|algunos|algunas|muchos|muchas|pocos|pocas)?\s*(?:(?:simples?|sencillos?|sencillas?|fáciles?|eficaces?|efectivos?|útiles?|prácticos?|rápidos?|mejores?|importantes?|nuevos?)\s+)*(?:formas?|métodos?|maneras?|consejos?|pasos?|técnicas?|estrategias?)(?:\s+(?:simples?|sencillos?|sencillas?|fáciles?|eficaces?|efectivos?|útiles?|prácticos?|rápidos?|mejores?|importantes?|nuevos?))*$/iu,
-      /^(?:\d+|vài|nhiều|một\s+số)?\s*(?:cách|phương\s+pháp|mẹo|bước|bí\s+quyết)(?:\s+(?:đơn\s+giản|hiệu\s+quả|hữu\s+ích|thiết\s+thực|nhanh|quan\s+trọng|tốt\s+nhất|mới))*$/iu,
-      /^(?:\d+|несколько|некоторые|шмат|некалькі|топ[- ]?\d+)?\s*(?:(?:прост\p{L}*|эффективн\p{L}*|эфектыўн\p{L}*|полезн\p{L}*|лепш\p{L}*|быстр\p{L}*|важн\p{L}*|нов\p{L}*)\s+)*(?:способ\p{L}*|метод\p{L}*|совет\p{L}*|шаг\p{L}*|прием\p{L}*|прыём\p{L}*|подход\p{L}*|парада\p{L}*)$/iu,
-      /^(?:\d+|عدة|بعض|أفضل)?\s*(?:(?:بسيطة|فعالة|سهلة|عملية|سريعة|مهمة|جديدة)\s+)*(?:طرق|طريقة|أساليب|نصائح|خطوات|وسائل)(?:\s+(?:بسيطة|فعالة|سهلة|عملية|سريعة|مهمة|جديدة))*$/u,
-    ];
-    return patterns.some((pattern) => pattern.test(title));
-  }
-
-  function isMeaningfulMethodCore(value = "") {
-    const core = trimMethodTitleCore(value);
-    if (textLength(core) < 2 || isGenericMethodTitle(core)) return false;
-    return !/^(?:简单|有效|实用|最佳|快速|重要|关键|easy|simple|effective|best|useful|quick|fácil|simple|eficaz|đơn\s+giản|hiệu\s+quả|بسيطة|فعالة)$/iu.test(core);
-  }
-
-  function extractMethodTitleCore(value = "") {
-    const title = cleanText(value).replace(/[.!?。！？]$/g, "").trim();
-    if (!title) return "";
-
-    const zhCount = "(?:\\d+|[一二三四五六七八九十百几多]+)";
-    const zhAdjectives = "(?:(?:最|简单|有效|实用|最佳|常用|快速|重要|关键|轻松|自然|健康|安全|免费|科学|正确|聪明|基本|主要|好用|必要|新颖|全新|新)的?\\s*)*";
-    const zhNoun = "(?:方法|方式|技巧|步骤|窍门|建议|秘诀|办法)";
-    const patterns = [
-      new RegExp(`^${zhCount}\\s*(?:种|个|条|大)?\\s*${zhAdjectives}(.+?)\\s*的?${zhNoun}$`, "u"),
-      new RegExp(`^(.+?)的?${zhCount}\\s*(?:种|个|条|大)?\\s*${zhAdjectives}${zhNoun}$`, "u"),
-      new RegExp(`^${zhCount}\\s*(?:种|个|条|大)?\\s*${zhAdjectives}${zhNoun}(?:可以|可|来|能|帮你|助你|让你|教你)?(.+)$`, "u"),
-      /^(?:\d+|several|some|many|a\s+few|top\s+\d+)\s+(?:(?:simple|easy|effective|best|useful|practical|quick|important|key|smart|essential|new|proven|natural)\s+)*(?:methods?|ways?|tips?|steps?|tricks?|techniques?|strategies?|approaches?|hacks?)\s+(?:to|for|that|which|of)\s+(.+)$/iu,
-      /^(.+?)[：:，,;；\-–—]\s*(?:\d+|several|some|many|a\s+few|top\s+\d+)\s+(?:(?:simple|easy|effective|best|useful|practical|quick|important|key|smart|essential|new|proven|natural)\s+)*(?:methods?|ways?|tips?|steps?|tricks?|techniques?|strategies?|approaches?|hacks?)$/iu,
-      /^(?:\d+|several|some|many|a\s+few)\s+(?:(?:simple|easy|effective|best|useful|practical|quick|important|key|smart|essential|new|proven|natural)\s+)*(.+?)\s+(?:methods?|ways?|tips?|steps?|tricks?|techniques?|strategies?|approaches?|hacks?)$/iu,
-      /^(?:\d+|varios|varias|algunos|algunas|muchos|muchas|pocos|pocas)\s+(?:formas?|métodos?|maneras?|consejos?|pasos?|técnicas?|estrategias?)(?:\s+(?:simples?|sencillos?|sencillas?|fáciles?|eficaces?|efectivos?|útiles?|prácticos?|rápidos?|mejores?|importantes?|nuevos?))*\s+(?:de|para)\s+(.+)$/iu,
-      /^(.+?)[：:，,;；\-–—]\s*(?:\d+|varios|varias|algunos|algunas|muchos|muchas|pocos|pocas)\s+(?:(?:simples?|sencillos?|sencillas?|fáciles?|eficaces?|efectivos?|útiles?|prácticos?|rápidos?|mejores?|importantes?|nuevos?)\s+)*(?:formas?|métodos?|maneras?|consejos?|pasos?|técnicas?|estrategias?)(?:\s+(?:simples?|sencillos?|sencillas?|fáciles?|eficaces?|efectivos?|útiles?|prácticos?|rápidos?|mejores?|importantes?|nuevos?))*$/iu,
-      /^(?:\d+|vài|nhiều|một\s+số)\s+(?:cách|phương\s+pháp|mẹo|bước|bí\s+quyết)(?:\s+(?:đơn\s+giản|hiệu\s+quả|hữu\s+ích|thiết\s+thực|nhanh|quan\s+trọng|tốt\s+nhất|mới))*\s+(?:để|giúp|nhằm)\s+(.+)$/iu,
-      /^(.+?)[：:，,;；\-–—]\s*(?:\d+|vài|nhiều|một\s+số)\s+(?:cách|phương\s+pháp|mẹo|bước|bí\s+quyết)(?:\s+(?:đơn\s+giản|hiệu\s+quả|hữu\s+ích|thiết\s+thực|nhanh|quan\s+trọng|tốt\s+nhất|mới))*$/iu,
-      /^(?:\d+|несколько|некоторые|шмат|некалькі)\s+(?:\p{L}+\s+){0,4}(?:способ\p{L}*|метод\p{L}*|совет\p{L}*|шаг\p{L}*|прием\p{L}*|прыём\p{L}*|подход\p{L}*|парада\p{L}*)\s+(?:для|чтобы|каб)?\s*(.+)$/iu,
-      /^(?:\d+|عدة|بعض)\s+(?:(?:بسيطة|فعالة|سهلة|عملية|سريعة|مهمة|جديدة)\s+)*(?:طرق|طريقة|أساليب|نصائح|خطوات|وسائل)(?:\s+(?:بسيطة|فعالة|سهلة|عملية|سريعة|مهمة|جديدة))*\s+(?:ل|لـ|لأجل|من\s+أجل)?\s*(.+)$/u,
-    ];
-
-    for (const pattern of patterns) {
-      const match = title.match(pattern);
-      const core = trimMethodTitleCore(match?.[1] || "");
-      if (isMeaningfulMethodCore(core)) return core;
-    }
-    return "";
-  }
-
-  function segmentWords(value) {
+ function segmentWords(value) {
     if (typeof Intl.Segmenter !== "function") return graphemes(value);
     return [...new Intl.Segmenter("zh-CN", { granularity: "word" }).segment(value)]
       .filter((part) => part.isWordLike || /^[，。！？：；、,.!?:;،؛؟]$/.test(part.segment))
       .map((part) => part.segment);
   }
 
-  function usesWordSpaces() {
-    return !["zh", "ja", "ko"].includes(state.sourceLanguage.code);
-  }
-
-  function sentenceTerminator() {
-    return state.sourceLanguage.code === "zh" ? "。" : ".";
-  }
-
-  function clauseSeparator() {
-    if (state.sourceLanguage.code === "zh") return "，";
-    if (state.sourceLanguage.code === "ar") return "، ";
-    return ", ";
-  }
-
-  function fitAtBoundary(value, limit) {
-    const cleaned = cleanText(value);
-    if (textLength(cleaned) <= limit) return cleaned;
-    const words = segmentWords(cleaned);
-    const output = [];
-    let size = 0;
-    for (const word of words) {
-      const previous = output.at(-1) || "";
-      const punctuation = /^[，。！？：；、,.!?:;،؛؟]$/.test(word);
-      const previousPunctuation = /^[，。！？：；、,.!?:;،؛؟]$/.test(previous);
-      const spacer = usesWordSpaces() && output.length && !punctuation && !previousPunctuation ? " " : "";
-      const wordSize = textLength(word);
-      if (size + textLength(spacer) + wordSize > limit) break;
-      if (spacer) output.push(spacer);
-      output.push(word);
-      size += textLength(spacer) + wordSize;
-    }
-    let result = output.join("").replace(/[，、：；,;،؛的和与及将把被在于\s]$/g, "");
-    if (!result) result = graphemes(cleaned).slice(0, limit).join("");
-    return result;
-  }
-
-  function rewriteTitleLocally(title, summary, limit) {
-    let source = stripEditorialFiller(title || summary.split(/[。！？]/)[0]);
-    source = source
-      .replace(/全新|最新|重磅|正式|首次曝光|震撼|火速|赶紧|即将|已经|正在/g, "")
-      .replace(/[！!。.]$/g, "")
-      .trim();
-    const methodCore = extractMethodTitleCore(source);
-    if (methodCore) source = methodCore;
-    else if (isGenericMethodTitle(source) && summary) {
-      source = stripEditorialFiller(summary).split(/[。！？.!?؟；;؛，,،]/)[0].trim();
-    }
-    if (textLength(source) <= limit) return source;
-
-    const clauses = source.split(/[：:，,،；;؛。！？!?؟｜|]/).map(cleanText).filter(Boolean);
-    const complete = clauses.find((clause) => textLength(clause) >= 5 && textLength(clause) <= limit);
-    if (complete) return complete;
-
-    const joined = clauses.slice(0, 2).join(usesWordSpaces() ? " " : "").replace(/的最新消息|相关情况|有关内容/g, "");
-    return fitAtBoundary(joined || source, limit);
-  }
-
-  function rewriteSummaryLocally(summary, title, limit) {
-    let source = stripEditorialFiller(summary || title);
-    source = source
-      .replace(/(?:对此|同时|此外|另外)[，,]/g, "")
-      .replace(/([。！？])\1+/g, "$1");
-    if (textLength(source) <= limit) {
-      return /[。！？.!?؟]$/.test(source) || textLength(source) === limit
-        ? source
-        : `${source}${sentenceTerminator()}`;
-    }
-
-    const titleTerms = new Set(segmentWords(title).filter((word) => textLength(word) >= 2));
-    const clauses = source
-      .split(/[。！？.!?؟；;؛]/)
-      .flatMap((sentence) => sentence.split(/[，,،]/))
-      .map(cleanText)
-      .filter((clause) => textLength(clause) >= 3)
-      .map((clause, index) => ({
-        clause,
-        index,
-        score: (index === 0 ? 5 : 0) + segmentWords(clause).filter((word) => titleTerms.has(word)).length * 4,
-      }))
-      .sort((left, right) => right.score - left.score || left.index - right.index);
-
-    const selected = [];
-    let used = 1;
-    for (const item of clauses) {
-      const separator = selected.length ? textLength(clauseSeparator()) : 0;
-      if (used + separator + textLength(item.clause) <= limit) {
-        selected.push(item);
-        used += separator + textLength(item.clause);
-      }
-    }
-    selected.sort((left, right) => left.index - right.index);
-    let result = selected.map((item) => item.clause).join(clauseSeparator());
-    if (!result) result = fitAtBoundary(source, Math.max(1, limit - 1));
-    result = result.replace(/[，、：；,;،؛的和与及将把被在于\s]$/g, "");
-    if (textLength(result) < limit && !/[。！？.!?؟]$/.test(result)) result += sentenceTerminator();
-    return fitAtBoundary(result, limit);
-  }
-
-  function localRewrite(title, summary) {
-    const nextTitle = rewriteTitleLocally(title, summary, state.settings.titleLimit);
-    const nextSummary = rewriteSummaryLocally(summary, nextTitle, state.settings.summaryLimit);
-    return { title: nextTitle, summary: nextSummary };
-  }
-
-  function extractEnglishKeywords(value) {
+ function extractEnglishKeywords(value) {
     const words = cleanText(value).match(/[A-Za-z][A-Za-z'-]{1,30}|\d{2,4}/g) || [];
     const selected = [];
     for (const word of words) {
@@ -352,11 +209,10 @@
   }
 
   async function generateEnglishQuery() {
-    const title = state.originalCopy.title || query(".lsa-floating-title")?.value || "";
-    const summary = state.originalCopy.summary || query(".lsa-floating-summary")?.value || "";
-    const source = cleanText(`${title}。${summary}`);
-    if (!source.replace(/[。\s]/g, "")) {
-      setSearchStatus("请先读取原标题和原简介", true);
+    const title = state.originalCopy.title;
+    const source = cleanText(title);
+    if (!source) {
+      setSearchStatus("请先读取原标题", true);
       return "";
     }
 
@@ -364,14 +220,28 @@
       state.sourceLanguage = await detectTextLanguage(source);
     }
 
+    setSearchStatus("正在从原标题生成英文视觉关键词…");
+    try {
+      const response = await chrome.runtime.sendMessage({
+        type: "GENERATE_IMAGE_QUERY",
+        title: source,
+      });
+      if (response?.ok && response.configured && response.imageQueryEn) {
+        const queryText = applyEnglishQuery(response.imageQueryEn);
+        setSearchStatus("已由 AI 根据原标题生成英文视觉关键词");
+        return queryText;
+      }
+    } catch {
+      // Continue with Chrome's local translator and the built-in dictionary.
+    }
+
     if (state.sourceLanguage.code === "en") {
       const englishQuery = extractEnglishKeywords(source) || "editorial documentary photography";
       applyEnglishQuery(englishQuery);
-      setSearchStatus("原标题和原简介为英语，已直接提取英文视觉关键词");
+      setSearchStatus("AI 未配置或暂不可用，已直接从英文原标题提取视觉关键词");
       return englishQuery;
     }
 
-    setSearchStatus("正在从原标题和原简介生成英文视觉关键词…");
     if ("Translator" in globalThis) {
       try {
         const availability = await globalThis.Translator.availability({
@@ -391,7 +261,7 @@
           const translated = await translator.translate(source);
           translator.destroy?.();
           const queryText = applyEnglishQuery(translated);
-          setSearchStatus("已根据改写前原稿生成英文素材关键词（Chrome 本地翻译）");
+          setSearchStatus("已根据原标题生成英文素材关键词（Chrome 本地翻译）");
           return queryText;
         }
       } catch (error) {
@@ -399,12 +269,23 @@
       }
     }
 
-    const fallback = dictionaryEnglishQuery(title, summary);
+    const fallback = dictionaryEnglishQuery(title, "");
     applyEnglishQuery(fallback);
     if (!query(".lsa-search-status")?.classList.contains("is-error")) {
       setSearchStatus("当前浏览器没有本地翻译模型，已使用内置视觉词典生成英文关键词");
     }
     return fallback;
+  }
+
+  async function autoSearchFromOriginalTitle(force = false) {
+    const title = cleanText(state.originalCopy.title);
+    const source = query(".lsa-source-select")?.value || "openverse";
+    if (!title) return;
+    const searchKey = `${source}|${title}`;
+    if (!force && state.lastAutoSearchKey === searchKey) return;
+    state.lastAutoSearchKey = searchKey;
+    const englishQuery = await generateEnglishQuery();
+    if (englishQuery) await searchStock(1, { ensureQuery: false });
   }
 
   function create(tag, className, text) {
@@ -426,16 +307,15 @@
   }
 
   function updateCounts() {
-    const title = query(".lsa-floating-title")?.value || "";
-    const summary = query(".lsa-floating-summary")?.value || "";
+    const { title, summary } = parseDraftCopy(query(".lsa-draft-copy")?.value || "");
     const titleCount = query(".lsa-title-count");
     const summaryCount = query(".lsa-summary-count");
     if (titleCount) {
-      titleCount.textContent = `${textLength(title)} / ${state.settings.titleLimit}`;
+      titleCount.textContent = `标题 ${textLength(title)} / ${state.settings.titleLimit}`;
       titleCount.classList.toggle("is-over", textLength(title) > state.settings.titleLimit);
     }
     if (summaryCount) {
-      summaryCount.textContent = `${textLength(summary)} / ${state.settings.summaryLimit}`;
+      summaryCount.textContent = `简介 ${textLength(summary)} / ${state.settings.summaryLimit}`;
       summaryCount.classList.toggle("is-over", textLength(summary) > state.settings.summaryLimit);
     }
   }
@@ -445,12 +325,13 @@
     state.saveTimer = setTimeout(() => {
       chrome.storage.local.set({
         draft: {
-          title: query(".lsa-floating-title")?.value || "",
-          summary: query(".lsa-floating-summary")?.value || "",
+          sourceCopy: query(".lsa-original-copy")?.value || "",
+          draftCopy: query(".lsa-draft-copy")?.value || "",
+          title: parseDraftCopy(query(".lsa-draft-copy")?.value || "").title,
+          summary: parseDraftCopy(query(".lsa-draft-copy")?.value || "").summary,
           query: query(".lsa-stock-query")?.value || "",
           originalTitle: state.originalCopy.title,
           originalSummary: state.originalCopy.summary,
-          hasRewritten: state.hasRewritten,
           pageUrl: location.href,
           updatedAt: Date.now(),
         },
@@ -477,15 +358,15 @@
 
   function refreshKeywords(updateSearch = true) {
     const scores = new Map();
-    tokenize(query(".lsa-floating-title")?.value, 7, scores);
-    tokenize(query(".lsa-floating-summary")?.value, 3, scores);
+    tokenize(state.originalCopy.title, 7, scores);
+    tokenize(state.originalCopy.summary, 3, scores);
     tokenize(state.pageContext.selectedText, 5, scores);
     state.keywords = [...scores.entries()]
       .sort((left, right) => right[1] - left[1])
       .map(([word]) => word)
       .filter((word, index, all) => !all.slice(0, index).some((prior) => prior.includes(word)))
       .slice(0, 8);
-    if (!state.keywords.length) state.keywords = ["新闻配图", "高清横图", "杂志锁屏"];
+    if (!state.keywords.length) state.keywords = ["新闻配图", "竖屏配图", "杂志锁屏"];
     state.selectedKeywords = new Set(state.keywords.slice(0, 3));
     renderKeywords();
     if (updateSearch) updateSearchFromKeywords();
@@ -524,16 +405,15 @@
         state.pageContext.heading || state.pageContext.title;
       const sourceSummary = state.pageContext.boundSummary || state.pageContext.description ||
         state.pageContext.selectedText;
-      const titleInput = query(".lsa-floating-title");
-      const summaryInput = query(".lsa-floating-summary");
-      if (force || !titleInput.value) titleInput.value = cleanText(sourceTitle);
-      if (force || !summaryInput.value) summaryInput.value = cleanText(sourceSummary);
+      const originalInput = query(".lsa-original-copy");
+      if (force || !originalInput.value) {
+        originalInput.value = formatOriginalCopy(sourceTitle, sourceSummary);
+      }
       if (force || (!state.originalCopy.title && !state.originalCopy.summary)) {
         state.originalCopy = {
           title: cleanText(sourceTitle),
           summary: cleanText(sourceSummary),
         };
-        state.hasRewritten = false;
       }
       state.sourceLanguage = await detectTextLanguage(
         `${state.originalCopy.title} ${state.originalCopy.summary}`,
@@ -543,111 +423,49 @@
       updateCounts();
       refreshKeywords(false);
       scheduleDraftSave();
-      setStatus(`已读取页面原文，识别为${state.sourceLanguage.label}；改写将保持原语言`);
+      setStatus("已按“标题////简介”读取页面原文，并自动搜索原标题配图");
+      try {
+        await autoSearchFromOriginalTitle(force);
+      } catch (error) {
+        setSearchStatus(error.message || "自动搜索图片失败", true);
+      }
     } catch (error) {
       setStatus(error.message || "读取页面失败", true);
     }
   }
 
-  async function rewriteCopy() {
-    const titleInput = query(".lsa-floating-title");
-    const summaryInput = query(".lsa-floating-summary");
-    if (!titleInput.value.trim() && !summaryInput.value.trim()) {
-      return setStatus("请先输入或读取原文", true);
-    }
-    const button = query(".lsa-rewrite-button");
-    if (!state.hasRewritten) {
-      state.originalCopy = { title: titleInput.value.trim(), summary: summaryInput.value.trim() };
-    }
-    state.sourceLanguage = await detectTextLanguage(
-      `${state.originalCopy.title} ${state.originalCopy.summary}`,
-    );
-    const originalMethodCore = extractMethodTitleCore(state.originalCopy.title);
-    button.disabled = true;
-    button.textContent = "正在改写…";
-    setStatus("正在根据关键信息重写标题和简介");
-
-    let result;
-    let usedAi = false;
-    let aiImageQuery = "";
-    try {
-      const response = await chrome.runtime.sendMessage({
-        type: "REWRITE_COPY",
-        title: state.originalCopy.title,
-        summary: state.originalCopy.summary,
-        context: state.pageContext.boundTitle || state.pageContext.boundSummary
-          ? ""
-          : [state.pageContext.heading, state.pageContext.description].filter(Boolean).join("；"),
-        titleLimit: state.settings.titleLimit,
-        summaryLimit: state.settings.summaryLimit,
-        sourceLanguage: state.sourceLanguage.code,
-        sourceLanguageLabel: state.sourceLanguage.label,
-        titleCore: originalMethodCore,
-      });
-      if (!response?.ok) throw new Error(response?.error || "AI 改写失败");
-      if (response.configured) {
-        const outputLanguage = await detectTextLanguage(`${response.title} ${response.summary}`);
-        if (
-          state.sourceLanguage.code !== "und" &&
-          outputLanguage.code !== "und" &&
-          state.sourceLanguage.code !== outputLanguage.code &&
-          (outputLanguage.reliable || outputLanguage.confidence >= 70)
-        ) {
-          throw new Error(`AI 返回了${outputLanguage.label}，与原稿${state.sourceLanguage.label}不一致`);
-        }
-        const rawTitleHook = cleanText(response.titleHook || "");
-        const originalTitleLower = cleanText(state.originalCopy.title).toLocaleLowerCase();
-        const titleHook = rawTitleHook && originalTitleLower.includes(rawTitleHook.toLocaleLowerCase())
-          ? rawTitleHook
-          : "";
-        const preferredTitle = originalMethodCore && textLength(originalMethodCore) <= state.settings.titleLimit
-          ? originalMethodCore
-          : isGenericMethodTitle(response.title) && titleHook && textLength(titleHook) <= state.settings.titleLimit
-            ? titleHook
-            : response.title;
-        result = localRewrite(preferredTitle, response.summary);
-        if (isGenericMethodTitle(result.title)) {
-          result.title = rewriteTitleLocally(
-            originalMethodCore || titleHook || state.originalCopy.title,
-            response.summary || state.originalCopy.summary,
-            state.settings.titleLimit,
-          );
-        }
-        usedAi = true;
-        aiImageQuery = response.imageQueryEn || "";
-      } else {
-        result = localRewrite(state.originalCopy.title, state.originalCopy.summary);
-      }
-    } catch (error) {
-      result = localRewrite(state.originalCopy.title, state.originalCopy.summary);
-      setStatus(`在线改写不可用，已改用本地智能精简：${error.message}`, true);
-    }
-
-    titleInput.value = result.title;
-    summaryInput.value = result.summary;
-    state.hasRewritten = true;
-    updateCounts();
-    refreshKeywords(false);
-    scheduleDraftSave();
-    if (aiImageQuery) applyEnglishQuery(aiImageQuery);
-    else await generateEnglishQuery();
-    if (!query(".lsa-copy-status")?.classList.contains("is-error")) {
-      setStatus(usedAi
-        ? `AI 语义改写完成，已保持${state.sourceLanguage.label}并校验 12/50 字限制`
-        : `本地智能精简完成，内容保持${state.sourceLanguage.label}`);
-    }
-    button.disabled = false;
-    button.textContent = "智能改写";
-  }
-
   async function applyDraft() {
-    const title = query(".lsa-floating-title").value.trim();
-    const summary = query(".lsa-floating-summary").value.trim();
+    const draftValue = query(".lsa-draft-copy").value;
+    const { title, summary } = parseDraftCopy(draftValue);
+    if (!draftValue.includes("\n") || !title || !summary) {
+      return setStatus("请输入两部分文案：第一行标题，换行后填写简介", true);
+    }
     if (textLength(title) > state.settings.titleLimit || textLength(summary) > state.settings.summaryLimit) {
-      return setStatus("文案仍然超限，请先点击“智能改写”", true);
+      return setStatus(`文案超限：标题最多 ${state.settings.titleLimit} 字，简介最多 ${state.settings.summaryLimit} 字`, true);
     }
     const result = await globalThis.__lsaPageTools.applyDraft(title, summary);
     setStatus(result.message, !result.ok);
+  }
+
+  async function copyOriginalCopy() {
+    const input = query(".lsa-original-copy");
+    const value = input?.value || "";
+    if (!value) return setStatus("页面原稿为空，请先重新读取页面", true);
+
+    try {
+      await navigator.clipboard.writeText(value);
+    } catch {
+      const activeElement = document.activeElement;
+      const selectionStart = input.selectionStart;
+      const selectionEnd = input.selectionEnd;
+      input.focus();
+      input.select();
+      const copied = document.execCommand("copy");
+      input.setSelectionRange(selectionStart, selectionEnd);
+      if (activeElement && activeElement !== input) activeElement.focus?.();
+      if (!copied) return setStatus("复制失败，请手动选择页面原稿", true);
+    }
+    setStatus("页面原稿已复制");
   }
 
   function switchTab(tabName) {
@@ -689,29 +507,27 @@
       meta.append(document.createTextNode(`${item.creator} · `));
       meta.append(createLink(item.license || "查看许可", item.licenseUrl));
       const actions = create("div", "lsa-stock-actions");
-      const use = create("button", "lsa-image-action is-use", "上传到后台");
-      use.type = "button";
-      use.addEventListener("click", async () => {
-        use.disabled = true;
-        use.textContent = "正在上传…";
-        setSearchStatus("正在下载素材并写入后台图片上传控件…");
-        const result = await globalThis.__lsaPageTools.uploadStockImage(item.imageUrl, item.fileName);
-        setSearchStatus(result.message, !result.ok);
-        if (result.needsBinding) globalThis.__lsaPageTools.startBindingMode();
-        use.disabled = false;
-        use.textContent = "上传到后台";
+      const download = create("button", "lsa-image-action", "下载图片");
+      download.type = "button";
+      download.addEventListener("click", async () => {
+        download.disabled = true;
+        download.textContent = "下载中…";
+        try {
+          const response = await chrome.runtime.sendMessage({
+            type: "DOWNLOAD_IMAGE",
+            url: item.imageUrl,
+            fileName: item.fileName,
+          });
+          if (!response?.ok) throw new Error(response?.error || "图片下载失败");
+          setSearchStatus("图片已加入浏览器下载列表");
+        } catch (error) {
+          setSearchStatus(error.message || "图片下载失败", true);
+        } finally {
+          download.disabled = false;
+          download.textContent = "下载图片";
+        }
       });
-      const source = create("button", "lsa-image-action", "查看来源");
-      source.type = "button";
-      source.addEventListener("click", () => window.open(item.pageUrl, "_blank", "noopener"));
-      const credit = create("button", "lsa-image-action is-attribution", "复制署名信息");
-      credit.type = "button";
-      credit.addEventListener("click", async () => {
-        const attribution = item.attribution || `${item.title} — ${item.creator} · ${item.license} · ${item.pageUrl}`;
-        await navigator.clipboard.writeText(attribution);
-        setSearchStatus("作者、许可和来源信息已复制");
-      });
-      actions.append(use, source, credit);
+      actions.append(download);
       copy.append(meta, actions);
       card.append(image, copy);
       results.append(card);
@@ -724,10 +540,10 @@
     status.classList.toggle("is-error", isError);
   }
 
-  async function searchStock(page = 1) {
+  async function searchStock(page = 1, { ensureQuery = true } = {}) {
     let searchQuery = query(".lsa-stock-query").value.trim();
     const source = query(".lsa-source-select").value;
-    if (!searchQuery || /[\u3400-\u9fff]/.test(searchQuery)) {
+    if (ensureQuery && (!searchQuery || /[\u3400-\u9fff]/.test(searchQuery))) {
       searchQuery = await generateEnglishQuery();
     }
     if (!searchQuery) return setSearchStatus("请先生成英文图片关键词", true);
@@ -781,6 +597,37 @@
     state.root.style.right = "auto";
   }
 
+  function applySize(size) {
+    if (!state.root || !size) return;
+    const availableWidth = Math.max(240, window.innerWidth - 12);
+    const availableHeight = Math.max(220, window.innerHeight - 12);
+    const minWidth = Math.min(320, availableWidth);
+    const minHeight = Math.min(300, availableHeight);
+    const width = Math.max(minWidth, Math.min(availableWidth, Number(size.width) || 398));
+    const height = Math.max(minHeight, Math.min(availableHeight, Number(size.height) || 720));
+    state.root.style.width = `${width}px`;
+    state.root.style.height = `${height}px`;
+  }
+
+  function observeAssistantSize() {
+    if (!state.root || typeof ResizeObserver !== "function") return;
+    state.resizeObserver = new ResizeObserver(() => {
+      if (!state.root || state.root.classList.contains("is-minimized")) return;
+      clearTimeout(state.resizeSaveTimer);
+      state.resizeSaveTimer = setTimeout(() => {
+        if (!state.root || state.root.classList.contains("is-minimized")) return;
+        const rect = state.root.getBoundingClientRect();
+        const position = clampPosition(rect.left, rect.top);
+        applyPosition(position);
+        saveAssistantState({
+          size: { width: Math.round(rect.width), height: Math.round(rect.height) },
+          position,
+        });
+      }, 180);
+    });
+    state.resizeObserver.observe(state.root);
+  }
+
   function startDrag(event) {
     if (event.button !== 0 || event.target.closest("button")) return;
     const rect = state.root.getBoundingClientRect();
@@ -815,6 +662,9 @@
   }
 
   function closeAssistant() {
+    clearTimeout(state.resizeSaveTimer);
+    state.resizeObserver?.disconnect();
+    state.resizeObserver = null;
     state.root?.remove();
     state.root = null;
     saveAssistantState({ enabled: false });
@@ -833,30 +683,29 @@
         </div>
       </header>
       <nav class="lsa-assistant-nav">
-        <button class="lsa-tab-button is-active" data-tab="copy" type="button">文案改写</button>
+        <button class="lsa-tab-button is-active" data-tab="copy" type="button">文案填写</button>
         <button class="lsa-tab-button" data-tab="images" type="button">商用配图</button>
       </nav>
       <div class="lsa-assistant-body">
         <section class="lsa-tab-panel" data-panel="copy">
           <div class="lsa-section-card">
-            <div class="lsa-section-row"><h2 class="lsa-section-title">原稿与合规文案</h2><button class="lsa-text-action lsa-read-page" type="button">重新读取页面</button></div>
-            <p class="lsa-section-hint">可先保留长原稿；点击智能改写后生成完整、自然且不超限的内容。</p>
-            <label class="lsa-field-label"><span>标题</span><span class="lsa-counter lsa-title-count">0 / 12</span></label>
-            <input class="lsa-assistant-input lsa-floating-title" type="text" placeholder="输入原标题或从页面读取" />
-            <label class="lsa-field-label"><span>简介</span><span class="lsa-counter lsa-summary-count">0 / 50</span></label>
-            <textarea class="lsa-assistant-textarea lsa-floating-summary" placeholder="输入原简介，允许先超过 50 字"></textarea>
+            <div class="lsa-section-row"><h2 class="lsa-section-title">原稿与待填写文案</h2><button class="lsa-text-action lsa-read-page" type="button">重新读取页面</button></div>
+            <p class="lsa-section-hint">页面原稿按“标题////简介”合并显示；在下方粘贴第一行标题、换行后简介。</p>
+            <div class="lsa-field-label"><span>页面原稿</span><span class="lsa-field-tools"><span>标题////简介</span><button class="lsa-text-action lsa-copy-original" type="button">复制原稿</button></span></div>
+            <textarea class="lsa-assistant-textarea lsa-original-copy" placeholder="点击重新读取页面后显示：标题////简介"></textarea>
+            <label class="lsa-field-label"><span>待填写文案</span><span><span class="lsa-counter lsa-title-count">标题 0 / 12</span> <span class="lsa-counter lsa-summary-count">简介 0 / 50</span></span></label>
+            <textarea class="lsa-assistant-textarea lsa-draft-copy" placeholder="第一行输入标题&#10;换行后输入简介"></textarea>
             <div class="lsa-button-row">
-              <button class="lsa-primary-button lsa-rewrite-button" type="button">智能改写</button>
-              <button class="lsa-secondary-button lsa-apply-draft" type="button">填写后台</button>
+              <button class="lsa-primary-button lsa-apply-draft" type="button">填写后台</button>
               <button class="lsa-secondary-button lsa-bind-fields" type="button">绑定字段</button>
             </div>
-            <p class="lsa-status-text lsa-copy-status">标题限制 12 字，简介限制 50 字</p>
+            <p class="lsa-status-text lsa-copy-status">自动把第一行识别为标题，其余内容识别为简介</p>
           </div>
         </section>
         <section class="lsa-tab-panel" data-panel="images" hidden>
           <div class="lsa-section-card">
-            <div class="lsa-section-row"><h2 class="lsa-section-title">搜索可商用素材</h2><button class="lsa-text-action lsa-generate-english" type="button">生成英文关键词</button></div>
-            <p class="lsa-section-hint">从改写前原稿总结英文视觉关键词，并只搜索适合锁屏的竖向图片。</p>
+            <div class="lsa-section-row"><h2 class="lsa-section-title">搜索可商用素材</h2><button class="lsa-text-action lsa-generate-english" type="button">重新搜索原标题</button></div>
+            <p class="lsa-section-hint">读取原标题后自动总结英文视觉关键词并搜索；所有结果均为适合锁屏的竖向图片。</p>
             <div class="lsa-keyword-chips"></div>
             <div class="lsa-search-row">
               <select class="lsa-source-select" aria-label="素材来源"><option value="openverse">Openverse</option><option value="pexels">Pexels</option><option value="pixabay">Pixabay</option></select>
@@ -866,7 +715,7 @@
             <p class="lsa-license-note"><a href="https://openverse.org/" target="_blank" rel="noopener noreferrer">Openverse</a> 无需密钥；<a href="https://www.pexels.com/api/" target="_blank" rel="noopener noreferrer">Pexels</a> 和 <a href="https://pixabay.com/api/docs/" target="_blank" rel="noopener noreferrer">Pixabay</a> 的免费 API Key 可在设置中填写。所有来源仅显示竖图。</p>
             <p class="lsa-status-text lsa-search-status"></p>
           </div>
-          <div class="lsa-stock-results"><div class="lsa-empty-result">生成英文关键词后搜索，图片会在这里显示</div></div>
+          <div class="lsa-stock-results"><div class="lsa-empty-result">读取原标题后会自动搜索，图片将在这里显示</div></div>
           <div class="lsa-pagination">
             <button class="lsa-secondary-button lsa-prev-page" type="button" disabled>上一页</button>
             <span class="lsa-page-number">第 1 页</span>
@@ -874,7 +723,7 @@
           </div>
         </section>
       </div>
-      <footer class="lsa-assistant-footer"><span>悬浮于网页最上层 · 草稿自动保存</span><button class="lsa-text-action lsa-open-settings" type="button">设置</button></footer>
+      <footer class="lsa-assistant-footer"><span>拖动右下角调整大小 · 草稿自动保存</span><button class="lsa-text-action lsa-open-settings" type="button">设置</button></footer>
     `;
     return root;
   }
@@ -891,22 +740,27 @@
     state.settings = { ...DEFAULT_SETTINGS, ...savedSettings, siteRules: savedSettings.siteRules || {} };
     state.root = buildAssistant();
     document.documentElement.append(state.root);
+    if (assistantState.size) applySize(assistantState.size);
     if (assistantState.position) applyPosition(assistantState.position);
     if (assistantState.minimized) {
       state.root.classList.add("is-minimized");
       query(".lsa-restore").textContent = "□";
       query(".lsa-restore").title = "恢复";
     }
+    observeAssistantSize();
 
     const samePageDraft = draft.pageUrl === location.href;
-    query(".lsa-floating-title").value = samePageDraft ? draft.title || "" : "";
-    query(".lsa-floating-summary").value = samePageDraft ? draft.summary || "" : "";
+    query(".lsa-original-copy").value = samePageDraft
+      ? draft.sourceCopy || formatOriginalCopy(draft.originalTitle, draft.originalSummary)
+      : "";
+    query(".lsa-draft-copy").value = samePageDraft
+      ? draft.draftCopy || formatDraftCopy(draft.title, draft.summary)
+      : "";
     query(".lsa-stock-query").value = samePageDraft ? draft.query || "" : "";
     state.originalCopy = {
       title: samePageDraft ? draft.originalTitle || draft.title || "" : "",
       summary: samePageDraft ? draft.originalSummary || draft.summary || "" : "",
     };
-    state.hasRewritten = samePageDraft && Boolean(draft.hasRewritten);
     updateCounts();
 
     query(".lsa-assistant-header").addEventListener("pointerdown", startDrag);
@@ -918,34 +772,35 @@
     state.root.querySelectorAll(".lsa-tab-button").forEach((button) =>
       button.addEventListener("click", () => switchTab(button.dataset.tab)));
     query(".lsa-read-page").addEventListener("click", () => readPage(true));
-    query(".lsa-rewrite-button").addEventListener("click", rewriteCopy);
+    query(".lsa-copy-original").addEventListener("click", copyOriginalCopy);
     query(".lsa-apply-draft").addEventListener("click", applyDraft);
     query(".lsa-bind-fields").addEventListener("click", () => globalThis.__lsaPageTools.startBindingMode());
-    query(".lsa-generate-english").addEventListener("click", generateEnglishQuery);
+    query(".lsa-generate-english").addEventListener("click", () => autoSearchFromOriginalTitle(true));
     query(".lsa-search-button").addEventListener("click", () => searchStock(1));
     query(".lsa-stock-query").addEventListener("keydown", (event) => {
       if (event.key === "Enter") searchStock(1);
     });
     query(".lsa-prev-page").addEventListener("click", () => searchStock(Math.max(1, state.searchPage - 1)));
     query(".lsa-next-page").addEventListener("click", () => searchStock(state.searchPage + 1));
+    query(".lsa-source-select").addEventListener("change", () => autoSearchFromOriginalTitle(true));
     query(".lsa-open-settings").addEventListener("click", () => chrome.runtime.sendMessage({ type: "OPEN_OPTIONS" }));
-    for (const input of [query(".lsa-floating-title"), query(".lsa-floating-summary")]) {
-      input.addEventListener("input", () => {
-        if (!state.hasRewritten) {
-          state.originalCopy = {
-            title: query(".lsa-floating-title").value,
-            summary: query(".lsa-floating-summary").value,
-          };
-        }
-        updateCounts();
-        scheduleDraftSave();
-      });
-      input.addEventListener("change", () => refreshKeywords(false));
-    }
+    query(".lsa-original-copy").addEventListener("input", () => {
+      state.originalCopy = parseOriginalCopy(query(".lsa-original-copy").value);
+      refreshKeywords(false);
+      scheduleDraftSave();
+    });
+    query(".lsa-draft-copy").addEventListener("input", () => {
+      updateCounts();
+      scheduleDraftSave();
+    });
     query(".lsa-stock-query").addEventListener("input", scheduleDraftSave);
     window.addEventListener("resize", () => {
+      if (state.root?.classList.contains("is-minimized")) return;
       const rect = state.root?.getBoundingClientRect();
-      if (rect) applyPosition({ left: rect.left, top: rect.top });
+      if (rect) {
+        applySize({ width: rect.width, height: rect.height });
+        applyPosition({ left: rect.left, top: rect.top });
+      }
     });
 
     refreshKeywords(false);

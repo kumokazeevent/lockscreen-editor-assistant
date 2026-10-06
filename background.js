@@ -106,7 +106,7 @@ function normalizePexelsImage(item) {
     id: `pexels-${item.id}`,
     source: "pexels",
     previewUrl: item.src?.medium || item.src?.small,
-    imageUrl: item.src?.large2x || item.src?.large || item.src?.original,
+    imageUrl: item.src?.original || item.src?.large2x || item.src?.large,
     pageUrl: item.url,
     title: item.alt || "Pexels 图片",
     creator: item.photographer || "Pexels 摄影师",
@@ -256,65 +256,12 @@ function extractJson(text) {
     return JSON.parse(cleaned);
   } catch {
     const match = cleaned.match(/\{[\s\S]*\}/);
-    if (!match) throw new Error("AI 未返回可识别的改写结果");
+    if (!match) throw new Error("AI 未返回可识别的图片关键词结果");
     return JSON.parse(match[0]);
   }
 }
 
-function arrayBufferToBase64(buffer) {
-  const bytes = new Uint8Array(buffer);
-  let binary = "";
-  const chunkSize = 0x8000;
-  for (let offset = 0; offset < bytes.length; offset += chunkSize) {
-    binary += String.fromCharCode(...bytes.subarray(offset, offset + chunkSize));
-  }
-  return btoa(binary);
-}
-
-function safeFileName(value, contentType) {
-  const fallbackExtension = contentType.includes("png") ? "png" :
-    contentType.includes("webp") ? "webp" :
-    contentType.includes("gif") ? "gif" : "jpg";
-  const cleaned = String(value || "")
-    .split(/[?#]/)[0]
-    .split("/")
-    .pop()
-    .replace(/[^a-zA-Z0-9._-]/g, "-")
-    .replace(/-+/g, "-")
-    .slice(0, 100);
-  if (!cleaned || !/\.[a-zA-Z0-9]{2,5}$/.test(cleaned)) return `lockscreen-image.${fallbackExtension}`;
-  return cleaned;
-}
-
-async function fetchImageFile(imageUrl, suggestedName) {
-  if (!/^https?:\/\//i.test(imageUrl || "")) throw new Error("图片地址无效");
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 45000);
-  try {
-    const response = await fetch(imageUrl, { signal: controller.signal, redirect: "follow" });
-    if (!response.ok) throw new Error(`图片下载失败（${response.status}）`);
-    const contentType = (response.headers.get("content-type") || "image/jpeg").split(";")[0];
-    if (!contentType.startsWith("image/")) throw new Error("素材地址返回的不是图片文件");
-    const buffer = await response.arrayBuffer();
-    if (!buffer.byteLength) throw new Error("下载到的图片文件为空");
-    if (buffer.byteLength > 18 * 1024 * 1024) throw new Error("图片超过 18MB，请选择较小素材");
-    return {
-      dataUrl: `data:${contentType};base64,${arrayBufferToBase64(buffer)}`,
-      contentType,
-      fileName: safeFileName(suggestedName || imageUrl, contentType),
-      size: buffer.byteLength,
-    };
-  } catch (error) {
-    if (controller.signal.aborted || error?.name === "AbortError") {
-      throw new Error("图片下载超过 45 秒，请检查网络或选择另一张素材");
-    }
-    throw error;
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
-async function rewriteWithAi(payload) {
+async function generateImageQueryWithAi(payload) {
   const [{ settings = {} }, { localSecrets = {} }] = await Promise.all([
     chrome.storage.sync.get("settings"),
     chrome.storage.local.get("localSecrets"),
@@ -322,37 +269,26 @@ async function rewriteWithAi(payload) {
   const endpoint = settings.aiEndpoint?.trim();
   const model = settings.aiModel?.trim();
   const apiKey = localSecrets.aiApiKey?.trim();
-  if (!endpoint || !model || !apiKey) {
-    return { configured: false };
-  }
+  if (!endpoint || !model || !apiKey) return { configured: false };
 
-  const titleLimit = Number(payload.titleLimit) || 12;
-  const summaryLimit = Number(payload.summaryLimit) || 50;
-  const sourceLanguage = payload.sourceLanguage || "und";
-  const sourceLanguageLabel = payload.sourceLanguageLabel || "the dominant language of the source";
-  const systemPrompt = [
-    "You are a fast, accurate multilingual lock-screen copy editor.",
-    `Write title and summary only in ${sourceLanguageLabel} (${sourceLanguage}); keep its script and regional spelling.`,
-    `Limits: title <= ${titleLimit} Unicode characters; summary <= ${summaryLimit} Unicode characters.`,
-    "Preserve the central subject, action and outcome first, then essential names, places and numbers. Remove secondary detail and filler. Rewrite naturally; never truncate mid-word, add ellipses, translate, or invent facts.",
-    "For list/how-to titles in ANY language, never return only a count plus a generic word such as methods, ways, tips, steps or their translation. Remove the count and generic adjectives such as easy, effective, useful or best, then preserve the source's concrete object, goal or action. If that concrete original phrase already fits the title limit, copy it verbatim; otherwise shorten only that phrase.",
-    "Select title_hook as the most attention-grabbing FACTUAL word or short phrase copied exactly from the original title. Prefer a specific person, event, outcome, risk, change, place or unusual concrete object. Never choose generic clickbait, a list count, a method word, or vague adjectives. Use this hook in the title only when it fits naturally without changing the meaning or displacing the concrete core.",
-    "Create image_query_en from the ORIGINAL source as 5 to 8 concrete English visual keywords (people, place, object, scene, atmosphere).",
-    "Return strict JSON only: {\"title\":\"...\",\"summary\":\"...\",\"title_hook\":\"exact source phrase\",\"image_query_en\":\"...\",\"language\":\"...\"}",
-  ].join("\n");
-  const userPrompt = `TITLE: ${payload.title || "(empty)"}\nCONCRETE_TITLE_CORE: ${payload.titleCore || "(detect it from the title)"}\nSUMMARY: ${payload.summary || "(empty)"}`;
   const requestBody = {
     model,
     temperature: 0.1,
-    max_tokens: 256,
+    max_tokens: 80,
     messages: [
-      { role: "system", content: systemPrompt },
-      { role: "user", content: userPrompt },
+      {
+        role: "system",
+        content: [
+          "Convert the ORIGINAL article title into a precise stock-photo search query.",
+          "Return 5 to 8 concrete English visual keywords describing visible people, named place, object, action, scene and atmosphere.",
+          "Preserve important proper nouns when they are visually relevant. Do not use abstract editorial words such as news, article, report or photography.",
+          "Use only the original title, not a rewritten title or summary.",
+          "Return strict JSON only: {\"image_query_en\":\"...\"}",
+        ].join("\n"),
+      },
+      { role: "user", content: String(payload.title || "") },
     ],
   };
-
-  // GLM 5.x enables thinking by default. Short editorial rewrites are faster and
-  // more consistent when thinking is explicitly disabled.
   if (/^glm[-_.\s]?5(?:\D|$)/i.test(model)) {
     requestBody.thinking = { type: "disabled" };
   }
@@ -363,16 +299,27 @@ async function rewriteWithAi(payload) {
       Authorization: `Bearer ${apiKey}`,
     },
     body: JSON.stringify(requestBody),
-  }, 45000);
+  }, 30000);
   const content = data.choices?.[0]?.message?.content || data.output_text || "";
-  const rewritten = extractJson(content);
+  const generated = extractJson(content);
   return {
     configured: true,
-    title: String(rewritten.title || "").trim(),
-    summary: String(rewritten.summary || "").trim(),
-    titleHook: String(rewritten.title_hook || "").trim(),
-    imageQueryEn: String(rewritten.image_query_en || "").trim(),
+    imageQueryEn: String(generated.image_query_en || "").trim(),
   };
+}
+
+async function downloadImage(url, fileName) {
+  if (!/^https?:\/\//i.test(url || "")) throw new Error("图片下载地址无效");
+  const safeName = String(fileName || "stock-image.jpg")
+    .replace(/[<>:\"/\\|?*\u0000-\u001f]/g, "-")
+    .replace(/^\.+|\.+$/g, "")
+    .slice(0, 160) || "stock-image.jpg";
+  const downloadId = await chrome.downloads.download({
+    url,
+    filename: `锁屏素材/${safeName}`,
+    saveAs: false,
+  });
+  return { downloadId };
 }
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
@@ -398,17 +345,17 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     return true;
   }
 
-  if (message.type === "REWRITE_COPY") {
-    rewriteWithAi(message)
+  if (message.type === "DOWNLOAD_IMAGE") {
+    downloadImage(message.url, message.fileName)
       .then((result) => sendResponse({ ok: true, ...result }))
-      .catch((error) => sendResponse({ ok: false, error: error.message || "AI 改写失败" }));
+      .catch((error) => sendResponse({ ok: false, error: error.message || "图片下载失败" }));
     return true;
   }
 
-  if (message.type === "FETCH_IMAGE_FILE") {
-    fetchImageFile(message.imageUrl, message.fileName)
+  if (message.type === "GENERATE_IMAGE_QUERY") {
+    generateImageQueryWithAi(message)
       .then((result) => sendResponse({ ok: true, ...result }))
-      .catch((error) => sendResponse({ ok: false, error: error.message || "图片下载失败" }));
+      .catch((error) => sendResponse({ ok: false, error: error.message || "英文图片关键词生成失败" }));
     return true;
   }
 });
