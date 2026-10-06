@@ -12,7 +12,7 @@
         <div class="brand">锁</div>
         <div>
           <h1>锁屏编辑助手设置</h1>
-          <p>字数规则、商业配图与文案字段绑定</p>
+          <p>字数规则、语义改写、商用素材与文案字段绑定</p>
         </div>
       </header>
 
@@ -34,8 +34,8 @@
       </section>
 
       <section>
-        <h2>AI 图片关键词（可选）</h2>
-        <p class="section-description">用于把原标题总结为英文视觉关键词并自动搜索商业配图；不配置时使用浏览器本地翻译或内置视觉词典。密钥仅保存在本机。</p>
+        <h2>AI 语义改写（可选）</h2>
+        <p class="section-description">不配置时使用免费的本地智能精简。若需要真正的语义重写，可填写任意兼容 OpenAI Chat Completions 格式的接口；密钥仅保存在本机。</p>
         <div class="form-grid ai-grid">
           <label>Chat Completions 完整地址<input id="aiEndpoint" type="url" placeholder="https://example.com/v1/chat/completions" /></label>
           <label>模型名称<input id="aiModel" type="text" placeholder="模型 ID" /></label>
@@ -67,7 +67,7 @@
 
       <section class="privacy-note">
         <h2>数据与隐私</h2>
-        <p>页面原稿、待填写文案和 API Key 只保存在本机浏览器中；站点绑定、接口地址和偏好保存在浏览器同步存储中。配置 AI 后，原标题会用于生成图片关键词；素材搜索词会发送给所选的 Openverse、Pexels 或 Pixabay。</p>
+        <p>标题、简介草稿和 API Key 只保存在本机浏览器中；站点绑定、接口地址和偏好保存在浏览器同步存储中。只有点击“智能改写”时稿件才会发送到你配置的 AI 接口；素材搜索词会发送给所选的 Openverse、Pexels 或 Pixabay。</p>
       </section>
     </main>
     <script src="options.js"></script>

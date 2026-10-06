@@ -256,9 +256,69 @@ function extractJson(text) {
     return JSON.parse(cleaned);
   } catch {
     const match = cleaned.match(/\{[\s\S]*\}/);
-    if (!match) throw new Error("AI 未返回可识别的图片关键词结果");
+    if (!match) throw new Error("AI 未返回可识别的改写结果");
     return JSON.parse(match[0]);
   }
+}
+
+async function rewriteWithAi(payload) {
+  const [{ settings = {} }, { localSecrets = {} }] = await Promise.all([
+    chrome.storage.sync.get("settings"),
+    chrome.storage.local.get("localSecrets"),
+  ]);
+  const endpoint = settings.aiEndpoint?.trim();
+  const model = settings.aiModel?.trim();
+  const apiKey = localSecrets.aiApiKey?.trim();
+  if (!endpoint || !model || !apiKey) {
+    return { configured: false };
+  }
+
+  const titleLimit = Number(payload.titleLimit) || 12;
+  const summaryLimit = Number(payload.summaryLimit) || 50;
+  const sourceLanguage = payload.sourceLanguage || "und";
+  const sourceLanguageLabel = payload.sourceLanguageLabel || "the dominant language of the source";
+  const systemPrompt = [
+    "你是专业的标题优化专家。请将用户提供的文章标题缩短为不超过 12 个字符（包括空格和标点符号），同时满足以下要求：",
+    "1. 保持原意：缩简后必须准确传达原标题的核心含义，不改变原意。",
+    "2. 趣味性优先：在不改变事实和原意的前提下，缩简后的标题要有吸引力、有记忆点、能激发读者的好奇心和点击欲，可使用悬念、对比、疑问、感叹等手法增强吸引力。",
+    "3. 保留专有名词：如果原标题包含重要的专有名词（如地名、人物名、专业术语等），必须保留该名词（如：牡丹（пионы/paeonias）、莫斯科、海参崴、Dải Ngân hà/银河系等）。若该专有名词本身超过 12 个字符，先寻找通用公认缩写或昵称（如 Санкт-Петербург 可缩写为 СПб/Piter；Ленинградская область 可缩写为 Ленобласть），若无合适缩写则去掉修饰词，只保留名词核心部分。",
+    `4. 语言一致：标题和简介必须使用原标题的语言，即 ${sourceLanguageLabel} (${sourceLanguage})；保持原文字系统、地区拼写，不得翻译成中文或其他语言。`,
+    `5. 标题硬性上限为 ${titleLimit} 个 Unicode 字符（包括空格和标点），简介硬性上限为 ${summaryLimit} 个 Unicode 字符。`,
+    "简介沿用原来的智能精简规则：准确保留核心事实、主体、行动和结果，语言自然完整；不得截断单词、添加省略号或虚构信息。",
+    "插件会直接显示 title 字段，因此 title 中只放缩简后的标题，不要包含 Markdown 代码块、引号、标签或解释。",
+    "只返回严格 JSON：{\"title\":\"缩简后的标题\",\"summary\":\"精简后的简介\",\"language\":\"原标题语言代码\"}",
+  ].join("\n");
+  const userPrompt = `原标题：${payload.title || "(empty)"}\n原简介：${payload.summary || "(empty)"}`;
+  const requestBody = {
+    model,
+    temperature: 0.1,
+    max_tokens: 256,
+    messages: [
+      { role: "system", content: systemPrompt },
+      { role: "user", content: userPrompt },
+    ],
+  };
+
+  // GLM 5.x enables thinking by default. Short editorial rewrites are faster and
+  // more consistent when thinking is explicitly disabled.
+  if (/^glm[-_.\s]?5(?:\D|$)/i.test(model)) {
+    requestBody.thinking = { type: "disabled" };
+  }
+  const data = await fetchJson(endpoint, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${apiKey}`,
+    },
+    body: JSON.stringify(requestBody),
+  }, 45000);
+  const content = data.choices?.[0]?.message?.content || data.output_text || "";
+  const rewritten = extractJson(content);
+  return {
+    configured: true,
+    title: String(rewritten.title || "").trim(),
+    summary: String(rewritten.summary || "").trim(),
+  };
 }
 
 async function generateImageQueryWithAi(payload) {
@@ -308,20 +368,6 @@ async function generateImageQueryWithAi(payload) {
   };
 }
 
-async function downloadImage(url, fileName) {
-  if (!/^https?:\/\//i.test(url || "")) throw new Error("图片下载地址无效");
-  const safeName = String(fileName || "stock-image.jpg")
-    .replace(/[<>:\"/\\|?*\u0000-\u001f]/g, "-")
-    .replace(/^\.+|\.+$/g, "")
-    .slice(0, 160) || "stock-image.jpg";
-  const downloadId = await chrome.downloads.download({
-    url,
-    filename: `锁屏素材/${safeName}`,
-    saveAs: false,
-  });
-  return { downloadId };
-}
-
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message.type === "OPEN_IMAGE_SEARCH") {
     openImageSearch(message.engine, message.query);
@@ -345,10 +391,10 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     return true;
   }
 
-  if (message.type === "DOWNLOAD_IMAGE") {
-    downloadImage(message.url, message.fileName)
+  if (message.type === "REWRITE_COPY") {
+    rewriteWithAi(message)
       .then((result) => sendResponse({ ok: true, ...result }))
-      .catch((error) => sendResponse({ ok: false, error: error.message || "图片下载失败" }));
+      .catch((error) => sendResponse({ ok: false, error: error.message || "AI 改写失败" }));
     return true;
   }
 
