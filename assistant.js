@@ -664,9 +664,12 @@
       query(".lsa-page-number").textContent = `第 ${response.page || page} 页`;
       query(".lsa-prev-page").disabled = page <= 1;
       query(".lsa-next-page").disabled = !response.hasNext;
-      setSearchStatus(source === "pexels"
-        ? "图片由 Pexels 提供；署名非强制但建议保留作者与来源"
-        : "已按商业使用许可筛选；使用前请打开来源页核对署名和具体条款");
+      const sourceMessages = {
+        pexels: "图片由 Pexels 提供；已双重筛选为竖图，建议保留作者与来源",
+        pixabay: "图片由 Pixabay 提供；已双重筛选为竖图，建议保留作者与来源",
+        openverse: "Openverse 结果已筛选商业许可和竖向比例；使用前请核对具体条款",
+      };
+      setSearchStatus(sourceMessages[source] || "只显示实际高度大于宽度的竖向图片");
     } catch (error) {
       renderSearchMessage(error.message || "素材搜索失败");
       setSearchStatus(error.message || "素材搜索失败", true);
@@ -773,11 +776,11 @@
             <p class="lsa-section-hint">从改写前原稿总结英文视觉关键词，并只搜索适合锁屏的竖向图片。</p>
             <div class="lsa-keyword-chips"></div>
             <div class="lsa-search-row">
-              <select class="lsa-source-select" aria-label="素材来源"><option value="openverse">Openverse</option><option value="pexels">Pexels</option></select>
+              <select class="lsa-source-select" aria-label="素材来源"><option value="openverse">Openverse</option><option value="pexels">Pexels</option><option value="pixabay">Pixabay</option></select>
               <input class="lsa-assistant-input lsa-stock-query" type="search" placeholder="English image keywords" />
               <button class="lsa-primary-button lsa-search-button" type="button">搜索</button>
             </div>
-            <p class="lsa-license-note"><a href="https://openverse.org/" target="_blank" rel="noopener noreferrer">素材由 Openverse 提供</a>并默认筛选商业使用许可；<a href="https://www.pexels.com/api/" target="_blank" rel="noopener noreferrer">Pexels 免费 API Key</a> 可在设置中填写。</p>
+            <p class="lsa-license-note"><a href="https://openverse.org/" target="_blank" rel="noopener noreferrer">Openverse</a> 无需密钥；<a href="https://www.pexels.com/api/" target="_blank" rel="noopener noreferrer">Pexels</a> 和 <a href="https://pixabay.com/api/docs/" target="_blank" rel="noopener noreferrer">Pixabay</a> 的免费 API Key 可在设置中填写。所有来源仅显示竖图。</p>
             <p class="lsa-status-text lsa-search-status"></p>
           </div>
           <div class="lsa-stock-results"><div class="lsa-empty-result">生成英文关键词后搜索，图片会在这里显示</div></div>

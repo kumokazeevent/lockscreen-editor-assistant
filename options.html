@@ -44,10 +44,11 @@
       </section>
 
       <section>
-        <h2>Pexels 免费商用素材</h2>
-        <p class="section-description">Openverse 无需密钥即可使用。Pexels 需要一个免费 API Key，申请后可在悬浮窗中直接搜索高质量竖图。<a href="https://www.pexels.com/api/" target="_blank" rel="noopener noreferrer">申请 Pexels API Key</a></p>
+        <h2>免费商用素材接口</h2>
+        <p class="section-description">Openverse 无需密钥。Pexels 和 Pixabay 需要各自的免费 API Key；三个来源都会在接口筛选后再次检查实际宽高，只显示竖图。<a href="https://www.pexels.com/api/" target="_blank" rel="noopener noreferrer">申请 Pexels Key</a> · <a href="https://pixabay.com/api/docs/" target="_blank" rel="noopener noreferrer">申请 Pixabay Key</a></p>
         <div class="secret-row">
           <label>Pexels API Key<input id="pexelsApiKey" type="password" placeholder="留空则不修改现有密钥" autocomplete="new-password" /></label>
+          <label>Pixabay API Key<input id="pixabayApiKey" type="password" placeholder="留空则不修改现有密钥" autocomplete="new-password" /></label>
           <button id="clearSecrets" class="secondary" type="button">清除本机密钥</button>
         </div>
         <button id="saveConnections" class="primary connection-save" type="button">保存接口与密钥</button>
@@ -66,7 +67,7 @@
 
       <section class="privacy-note">
         <h2>数据与隐私</h2>
-        <p>标题、简介草稿和 API Key 只保存在本机浏览器中；站点绑定、接口地址和偏好保存在浏览器同步存储中。只有点击“智能改写”时稿件才会发送到你配置的 AI 接口；素材搜索词会发送给 Openverse 或 Pexels。</p>
+        <p>标题、简介草稿和 API Key 只保存在本机浏览器中；站点绑定、接口地址和偏好保存在浏览器同步存储中。只有点击“智能改写”时稿件才会发送到你配置的 AI 接口；素材搜索词会发送给所选的 Openverse、Pexels 或 Pixabay。</p>
       </section>
     </main>
     <script src="options.js"></script>

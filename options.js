@@ -12,6 +12,7 @@ const aiEndpoint = document.querySelector("#aiEndpoint");
 const aiModel = document.querySelector("#aiModel");
 const aiApiKey = document.querySelector("#aiApiKey");
 const pexelsApiKey = document.querySelector("#pexelsApiKey");
+const pixabayApiKey = document.querySelector("#pixabayApiKey");
 const ruleList = document.querySelector("#ruleList");
 const saveMessage = document.querySelector("#saveMessage");
 
@@ -28,6 +29,7 @@ async function loadSettings() {
   aiModel.value = settings.aiModel || "";
   aiApiKey.placeholder = localSecrets.aiApiKey ? "已保存；留空则保持不变" : "输入 API Key";
   pexelsApiKey.placeholder = localSecrets.pexelsApiKey ? "已保存；留空则保持不变" : "输入 Pexels API Key";
+  pixabayApiKey.placeholder = localSecrets.pixabayApiKey ? "已保存；留空则保持不变" : "输入 Pixabay API Key";
   renderRules(settings.siteRules);
   return settings;
 }
@@ -95,6 +97,7 @@ async function saveAllSettings() {
     ...savedSecrets,
     ...(aiApiKey.value.trim() ? { aiApiKey: aiApiKey.value.trim() } : {}),
     ...(pexelsApiKey.value.trim() ? { pexelsApiKey: pexelsApiKey.value.trim() } : {}),
+    ...(pixabayApiKey.value.trim() ? { pixabayApiKey: pixabayApiKey.value.trim() } : {}),
   };
   await Promise.all([
     chrome.storage.sync.set({ settings }),
@@ -104,8 +107,10 @@ async function saveAllSettings() {
   summaryLimit.value = settings.summaryLimit;
   aiApiKey.value = "";
   pexelsApiKey.value = "";
+  pixabayApiKey.value = "";
   aiApiKey.placeholder = localSecrets.aiApiKey ? "已保存；留空则保持不变" : "输入 API Key";
   pexelsApiKey.placeholder = localSecrets.pexelsApiKey ? "已保存；留空则保持不变" : "输入 Pexels API Key";
+  pixabayApiKey.placeholder = localSecrets.pixabayApiKey ? "已保存；留空则保持不变" : "输入 Pixabay API Key";
   saveMessage.textContent = "已保存";
   setTimeout(() => (saveMessage.textContent = ""), 1800);
 }
@@ -117,8 +122,10 @@ document.querySelector("#clearSecrets").addEventListener("click", async () => {
   await chrome.storage.local.set({ localSecrets: {} });
   aiApiKey.value = "";
   pexelsApiKey.value = "";
+  pixabayApiKey.value = "";
   aiApiKey.placeholder = "输入 API Key";
   pexelsApiKey.placeholder = "输入 Pexels API Key";
+  pixabayApiKey.placeholder = "输入 Pixabay API Key";
   saveMessage.textContent = "本机密钥已清除";
   setTimeout(() => (saveMessage.textContent = ""), 1800);
 });

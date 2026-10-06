@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "锁屏编辑助手",
-  "version": "0.4.3",
+  "version": "0.5.0",
   "description": "保持原稿语言改写文案、生成英文素材词并上传可商用配图的常驻助手。",
   "permissions": [
     "activeTab",

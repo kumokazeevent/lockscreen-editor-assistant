@@ -120,6 +120,52 @@ function normalizePexelsImage(item) {
   };
 }
 
+function normalizePixabayImage(item) {
+  return {
+    id: `pixabay-${item.id}`,
+    source: "pixabay",
+    previewUrl: item.webformatURL || item.previewURL,
+    imageUrl: item.largeImageURL || item.webformatURL,
+    pageUrl: item.pageURL,
+    title: item.tags || "Pixabay 图片",
+    creator: item.user || "Pixabay 创作者",
+    creatorUrl: item.user_id
+      ? `https://pixabay.com/users/${encodeURIComponent(item.user || "user")}-${item.user_id}/`
+      : item.pageURL,
+    license: "Pixabay Content License",
+    licenseUrl: "https://pixabay.com/service/license-summary/",
+    attribution: `Image by ${item.user || "creator"} via Pixabay`,
+    width: item.imageWidth || 0,
+    height: item.imageHeight || 0,
+    fileName: `pixabay-${item.id}.jpg`,
+  };
+}
+
+function isPortraitImage(item) {
+  return Number(item.height) > Number(item.width);
+}
+
+const PIXABAY_CACHE_TTL = 24 * 60 * 60 * 1000;
+const PIXABAY_CACHE_LIMIT = 100;
+
+async function getCachedPixabaySearch(cacheKey) {
+  const { pixabaySearchCache = {} } = await chrome.storage.local.get("pixabaySearchCache");
+  const cached = pixabaySearchCache[cacheKey];
+  return cached?.expiresAt > Date.now() ? cached.result : null;
+}
+
+async function cachePixabaySearch(cacheKey, result) {
+  const { pixabaySearchCache = {} } = await chrome.storage.local.get("pixabaySearchCache");
+  const now = Date.now();
+  const validEntries = Object.entries(pixabaySearchCache)
+    .filter(([, value]) => value?.expiresAt > now)
+    .sort((left, right) => left[1].expiresAt - right[1].expiresAt)
+    .slice(-(PIXABAY_CACHE_LIMIT - 1));
+  const nextCache = Object.fromEntries(validEntries);
+  nextCache[cacheKey] = { expiresAt: now + PIXABAY_CACHE_TTL, result };
+  await chrome.storage.local.set({ pixabaySearchCache: nextCache });
+}
+
 async function searchStockImages(source, query, page = 1) {
   if (!query?.trim()) throw new Error("请输入图片搜索词");
 
@@ -144,8 +190,43 @@ async function searchStockImages(source, query, page = 1) {
       hasNext: Boolean(data.next_page),
       items: (data.photos || [])
         .map(normalizePexelsImage)
-        .filter((item) => item.height > item.width),
+        .filter(isPortraitImage),
     };
+  }
+
+  if (source === "pixabay") {
+    const { localSecrets = {} } = await chrome.storage.local.get("localSecrets");
+    if (!localSecrets.pixabayApiKey) {
+      throw new Error("请先在扩展设置中填写免费的 Pixabay API Key");
+    }
+    const normalizedQuery = Array.from(query.trim()).slice(0, 100).join("");
+    const cacheKey = `v1|${normalizedQuery.toLowerCase()}|${page}`;
+    const cachedResult = await getCachedPixabaySearch(cacheKey);
+    if (cachedResult) return cachedResult;
+    const perPage = 20;
+    const url = new URL("https://pixabay.com/api/");
+    url.searchParams.set("key", localSecrets.pixabayApiKey);
+    url.searchParams.set("q", normalizedQuery);
+    url.searchParams.set("lang", "en");
+    url.searchParams.set("image_type", "photo");
+    url.searchParams.set("orientation", "vertical");
+    url.searchParams.set("safesearch", "true");
+    url.searchParams.set("order", "popular");
+    url.searchParams.set("per_page", String(perPage));
+    url.searchParams.set("page", String(page));
+    const data = await fetchJson(url.href);
+    const result = {
+      source,
+      page,
+      total: data.totalHits || data.total || 0,
+      hasNext: page * perPage < (data.totalHits || 0),
+      items: (data.hits || [])
+        .map(normalizePixabayImage)
+        .filter(isPortraitImage)
+        .slice(0, 12),
+    };
+    await cachePixabaySearch(cacheKey, result);
+    return result;
   }
 
   const url = new URL("https://api.openverse.org/v1/images/");
@@ -165,7 +246,7 @@ async function searchStockImages(source, query, page = 1) {
     hasNext: (data.page || page) < (data.page_count || 1),
     items: (data.results || [])
       .map(normalizeOpenverseImage)
-      .filter((item) => item.height > item.width),
+      .filter(isPortraitImage),
   };
 }
 
