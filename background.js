@@ -607,6 +607,13 @@ function enableMediumThinking(requestBody, model, endpoint = "") {
   return requestBody;
 }
 
+function disableThinking(requestBody, model, endpoint = "") {
+  if (!supportsThinkingControl(model, endpoint)) return requestBody;
+  requestBody.thinking = { type: "disabled" };
+  delete requestBody.reasoning_effort;
+  return requestBody;
+}
+
 function normalizeAiEndpoint(value) {
   const endpointUrl = validateHttpUrl(value, "AI 接口地址");
   endpointUrl.pathname = endpointUrl.pathname.replace(/\/+$/g, "");
@@ -820,7 +827,7 @@ async function reviewAiCandidate(candidate, context, settings, localSecrets, tim
   const requestBody = {
     model,
     temperature: 0,
-    max_tokens: 4096,
+    max_tokens: 800,
     stream: false,
     messages: [
       {
@@ -833,7 +840,7 @@ async function reviewAiCandidate(candidate, context, settings, localSecrets, tim
           "Preserve the core meaning, important proper nouns and every stated number of methods, steps, tips or items. Do not invent facts.",
           "image_query_en must remain a concrete English stock-photo query based on the original material.",
           "Count title and summary character by character before replying. Rewrite and recount until both limits are satisfied.",
-          "Keep internal reasoning concise and always reserve enough output budget for the final JSON answer.",
+          "Review quickly and directly. Do not provide analysis or explanations.",
           "Return exactly one strict JSON object and nothing else:",
           '{"title":"...","summary":"...","image_query_en":"...","language":"..."}',
         ].join("\n"),
@@ -849,26 +856,23 @@ async function reviewAiCandidate(candidate, context, settings, localSecrets, tim
       },
     ],
   };
-  enableMediumThinking(requestBody, model, endpoint);
-  for (let attempt = 0; attempt < 2; attempt += 1) {
-    requestBody.max_tokens = attempt === 0 ? 4096 : 8192;
-    const data = await fetchJson(endpoint, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${apiKey}`,
-      },
-      body: JSON.stringify(requestBody),
-    }, timeout, "审核 AI");
-    const content = getAiResponseText(data);
-    if (content) return validateAiResult(extractJson(content), context);
-    if (attempt === 0 && isReasoningTruncated(data)) continue;
+  disableThinking(requestBody, model, endpoint);
+  const data = await fetchJson(endpoint, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${apiKey}`,
+    },
+    body: JSON.stringify(requestBody),
+  }, timeout, "审核 AI");
+  const content = getAiResponseText(data);
+  if (!content) {
     throw new RequestError(describeEmptyAiResponse(data), {
-      code: isReasoningTruncated(data) ? "REASONING_TRUNCATED" : "REVIEW_AI_INVALID",
+      code: "REVIEW_AI_INVALID",
       retryable: false,
     });
   }
-  throw new RequestError("审核 AI 未生成最终正文", { code: "REVIEW_AI_INVALID", retryable: false });
+  return validateAiResult(extractJson(content), context);
 }
 
 function shouldRetry(error) {
@@ -947,9 +951,33 @@ async function generateBatchItemWithAi(payload = {}) {
         });
       }
       const candidate = extractJson(content);
-      const result = settings.reviewAiEnabled
-        ? await reviewAiCandidate(candidate, context, settings, localSecrets, timeout)
-        : validateAiResult(candidate, context);
+      let primaryResult;
+      let primaryError;
+      try {
+        primaryResult = validateAiResult(candidate, context);
+      } catch (error) {
+        primaryError = error;
+      }
+      let result = primaryResult;
+      let reviewed = false;
+      let reviewWarning = "";
+      if (settings.reviewAiEnabled) {
+        try {
+          result = await reviewAiCandidate(candidate, context, settings, localSecrets, timeout);
+          reviewed = true;
+        } catch (reviewError) {
+          if (!primaryResult) {
+            throw new RequestError(
+              `审核 AI 未能修正不合格的主 AI 结果：${cleanErrorMessage(reviewError, "审核失败")}；主 AI：${cleanErrorMessage(primaryError, "结果未通过校验")}`,
+              { code: reviewError?.code || "REVIEW_AI_FAILED", status: reviewError?.status, retryable: false },
+            );
+          }
+          result = primaryResult;
+          reviewWarning = `审核 AI 未完成，已使用通过本地校验的主 AI 结果：${cleanErrorMessage(reviewError, "审核失败")}`;
+        }
+      } else if (!primaryResult) {
+        throw primaryError;
+      }
       return {
         configured: true,
         result,
@@ -958,7 +986,8 @@ async function generateBatchItemWithAi(payload = {}) {
         image_query_en: result.image_query_en,
         imageQueryEn: result.image_query_en,
         language: result.language,
-        reviewed: Boolean(settings.reviewAiEnabled),
+        reviewed,
+        reviewWarning,
         attempts: attemptsMade,
       };
     } catch (error) {

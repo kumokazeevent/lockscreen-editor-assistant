@@ -734,6 +734,7 @@
 .lsa-item-image-copy p,
 .lsa-item-image-copy small,
 .lsa-item-error,
+.lsa-item-review-warning,
 .lsa-item-download {
   display: block;
   margin: 0;
@@ -791,6 +792,15 @@
   border-top: 1px solid #f1e2dd;
   color: #a3472b;
   background: #fff8f5;
+  font-size: 8px;
+  line-height: 1.5;
+}
+
+.lsa-item-review-warning {
+  padding: 7px 10px;
+  border-top: 1px solid #f0dfb5;
+  color: #8a5a13;
+  background: #fffaf0;
   font-size: 8px;
   line-height: 1.5;
 }

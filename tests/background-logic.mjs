@@ -53,6 +53,10 @@ assert(evaluate("enableMediumThinking({}, 'dsv4flash', 'https://api.deepseek.com
   "DeepSeek 思考模式未开启");
 assert(evaluate("enableMediumThinking({}, 'dsv4flash', 'https://api.deepseek.com/chat/completions').reasoning_effort") === "medium",
   "DeepSeek 推理档位不是 medium");
+assert(evaluate("disableThinking({reasoning_effort:'medium'}, 'deepseek-v4-flash', 'https://opencode.ai/zen/go/v1/chat/completions').thinking.type") === "disabled",
+  "审核 AI 未关闭思考模式");
+assert(evaluate("'reasoning_effort' in disableThinking({reasoning_effort:'medium'}, 'deepseek-v4-flash')") === false,
+  "审核 AI 仍携带推理档位");
 assert(evaluate("normalizeAiEndpoint('https://api.deepseek.com')") === "https://api.deepseek.com/chat/completions", "DeepSeek 根地址未补全");
 assert(evaluate("describeEmptyAiResponse({choices:[{finish_reason:'length',message:{reasoning_content:'thinking'}}]})").includes("思考内容"),
   "DeepSeek 空响应诊断不明确");

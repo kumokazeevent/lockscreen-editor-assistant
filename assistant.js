@@ -348,6 +348,7 @@
       summary: cleanText(data.summary || data.description || data.shortSummary || ""),
       imageQueryEn: cleanText(data.imageQueryEn || data.image_query_en || data.imageQuery || data.query || ""),
       language: cleanText(data.language || data.languageCode || ""),
+      reviewWarning: cleanText(response.reviewWarning || data.reviewWarning || ""),
     };
   }
 
@@ -443,6 +444,7 @@
     if (token !== state.runToken || state.pauseRequested) return;
     item.attempts = Number(item.attempts || 0) + 1;
     item.error = "";
+    item.reviewWarning = "";
     resetItemProgress(item);
     try {
       setItemStage(item, "article", "working");
@@ -744,6 +746,7 @@
         card.append(media);
       }
       if (item.error) card.append(create("p", "lsa-item-error", item.error));
+      if (item.reviewWarning) card.append(create("p", "lsa-item-review-warning", item.reviewWarning));
       if (item.downloadStatus === "completed") {
         card.append(create("p", "lsa-item-download", `已下载：${item.downloadFileName || "浏览器下载目录"}`));
       } else if (item.downloadError) {
