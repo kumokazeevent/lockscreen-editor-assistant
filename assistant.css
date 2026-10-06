@@ -246,6 +246,99 @@
   box-shadow: 0 0 0 3px rgba(77, 148, 112, .13);
 }
 
+.lsa-assistant-input[readonly] {
+  color: #284f3b;
+  background: #f1f7f2;
+}
+
+.lsa-title-alignment {
+  margin-top: 8px;
+  padding: 9px;
+  border: 1px solid #dce6de;
+  border-radius: 10px;
+  background: #f9fbf9;
+}
+
+.lsa-title-alignment[hidden] {
+  display: none;
+}
+
+.lsa-alignment-heading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  margin: 6px 1px 4px;
+  color: #53645a;
+  font-size: 9px;
+  font-weight: 800;
+}
+
+.lsa-alignment-heading:first-child {
+  margin-top: 0;
+}
+
+.lsa-alignment-heading small {
+  min-width: 0;
+  overflow: hidden;
+  color: #7a867f;
+  font-size: 8px;
+  font-weight: 500;
+  text-align: right;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.lsa-title-translation {
+  color: #3f7156 !important;
+}
+
+.lsa-alignment-token-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.lsa-alignment-token {
+  min-height: 25px;
+  padding: 3px 7px;
+  border: 1px solid #d7e0d9;
+  border-radius: 7px;
+  color: #526159;
+  background: white;
+  font-size: 9px;
+  line-height: 1.2;
+}
+
+.lsa-alignment-token.is-source {
+  cursor: default;
+}
+
+.lsa-alignment-token.is-zh {
+  border-color: #cbdccf;
+  color: #244d38;
+  cursor: pointer;
+}
+
+.lsa-alignment-token.is-zh:hover {
+  border-color: #77a98b;
+  background: #f0f7f2;
+}
+
+.lsa-alignment-token.is-selected {
+  border-color: #55906d;
+  color: #16472e;
+  background: #dff0e4;
+  font-weight: 800;
+}
+
+.lsa-alignment-selection {
+  margin: 7px 1px 0;
+  color: #617168;
+  font-size: 8px;
+  line-height: 1.45;
+}
+
 .lsa-button-row {
   flex-wrap: wrap;
   gap: 7px;
@@ -417,6 +510,16 @@
   color: #385948;
   background: #f9fbf9;
   font-size: 8px;
+}
+
+.lsa-image-action.is-use {
+  border-color: #2c6b4d;
+  color: white;
+  background: #2c6b4d;
+}
+
+.lsa-image-action.is-attribution {
+  grid-column: 1 / -1;
 }
 
 .lsa-loading,

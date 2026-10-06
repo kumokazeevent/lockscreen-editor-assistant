@@ -106,7 +106,7 @@ function normalizePexelsImage(item) {
     id: `pexels-${item.id}`,
     source: "pexels",
     previewUrl: item.src?.medium || item.src?.small,
-    imageUrl: item.src?.original || item.src?.large2x || item.src?.large,
+    imageUrl: item.src?.large2x || item.src?.large || item.src?.original,
     pageUrl: item.url,
     title: item.alt || "Pexels 图片",
     creator: item.photographer || "Pexels 摄影师",
@@ -261,6 +261,59 @@ function extractJson(text) {
   }
 }
 
+function arrayBufferToBase64(buffer) {
+  const bytes = new Uint8Array(buffer);
+  let binary = "";
+  const chunkSize = 0x8000;
+  for (let offset = 0; offset < bytes.length; offset += chunkSize) {
+    binary += String.fromCharCode(...bytes.subarray(offset, offset + chunkSize));
+  }
+  return btoa(binary);
+}
+
+function safeFileName(value, contentType) {
+  const fallbackExtension = contentType.includes("png") ? "png" :
+    contentType.includes("webp") ? "webp" :
+    contentType.includes("gif") ? "gif" : "jpg";
+  const cleaned = String(value || "")
+    .split(/[?#]/)[0]
+    .split("/")
+    .pop()
+    .replace(/[^a-zA-Z0-9._-]/g, "-")
+    .replace(/-+/g, "-")
+    .slice(0, 100);
+  if (!cleaned || !/\.[a-zA-Z0-9]{2,5}$/.test(cleaned)) return `lockscreen-image.${fallbackExtension}`;
+  return cleaned;
+}
+
+async function fetchImageFile(imageUrl, suggestedName) {
+  if (!/^https?:\/\//i.test(imageUrl || "")) throw new Error("图片地址无效");
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 45000);
+  try {
+    const response = await fetch(imageUrl, { signal: controller.signal, redirect: "follow" });
+    if (!response.ok) throw new Error(`图片下载失败（${response.status}）`);
+    const contentType = (response.headers.get("content-type") || "image/jpeg").split(";")[0];
+    if (!contentType.startsWith("image/")) throw new Error("素材地址返回的不是图片文件");
+    const buffer = await response.arrayBuffer();
+    if (!buffer.byteLength) throw new Error("下载到的图片文件为空");
+    if (buffer.byteLength > 18 * 1024 * 1024) throw new Error("图片超过 18MB，请选择较小素材");
+    return {
+      dataUrl: `data:${contentType};base64,${arrayBufferToBase64(buffer)}`,
+      contentType,
+      fileName: safeFileName(suggestedName || imageUrl, contentType),
+      size: buffer.byteLength,
+    };
+  } catch (error) {
+    if (controller.signal.aborted || error?.name === "AbortError") {
+      throw new Error("图片下载超过 45 秒，请检查网络或选择另一张素材");
+    }
+    throw error;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 async function rewriteWithAi(payload) {
   const [{ settings = {} }, { localSecrets = {} }] = await Promise.all([
     chrome.storage.sync.get("settings"),
@@ -273,26 +326,24 @@ async function rewriteWithAi(payload) {
     return { configured: false };
   }
 
-  const titleLimit = Number(payload.titleLimit) || 12;
   const summaryLimit = Number(payload.summaryLimit) || 50;
   const sourceLanguage = payload.sourceLanguage || "und";
   const sourceLanguageLabel = payload.sourceLanguageLabel || "the dominant language of the source";
   const systemPrompt = [
-    "你是专业的标题优化专家。请将用户提供的文章标题缩短为不超过 12 个字符（包括空格和标点符号），同时满足以下要求：",
-    "1. 保持原意：缩简后必须准确传达原标题的核心含义，不改变原意。",
-    "2. 趣味性优先：在不改变事实和原意的前提下，缩简后的标题要有吸引力、有记忆点、能激发读者的好奇心和点击欲，可使用悬念、对比、疑问、感叹等手法增强吸引力。",
-    "3. 保留专有名词：如果原标题包含重要的专有名词（如地名、人物名、专业术语等），必须保留该名词（如：牡丹（пионы/paeonias）、莫斯科、海参崴、Dải Ngân hà/银河系等）。若该专有名词本身超过 12 个字符，先寻找通用公认缩写或昵称（如 Санкт-Петербург 可缩写为 СПб/Piter；Ленинградская область 可缩写为 Ленобласть），若无合适缩写则去掉修饰词，只保留名词核心部分。",
-    `4. 语言一致：标题和简介必须使用原标题的语言，即 ${sourceLanguageLabel} (${sourceLanguage})；保持原文字系统、地区拼写，不得翻译成中文或其他语言。`,
-    `5. 标题硬性上限为 ${titleLimit} 个 Unicode 字符（包括空格和标点），简介硬性上限为 ${summaryLimit} 个 Unicode 字符。`,
-    "简介沿用原来的智能精简规则：准确保留核心事实、主体、行动和结果，语言自然完整；不得截断单词、添加省略号或虚构信息。",
-    "插件会直接显示 title 字段，因此 title 中只放缩简后的标题，不要包含 Markdown 代码块、引号、标签或解释。",
-    "只返回严格 JSON：{\"title\":\"缩简后的标题\",\"summary\":\"精简后的简介\",\"language\":\"原标题语言代码\"}",
+    "You are a fast, accurate sentence translator, word aligner, and multilingual lock-screen summary editor.",
+    `The original language is ${sourceLanguageLabel} (${sourceLanguage}). Rewrite ONLY the summary in that same language and script, within ${summaryLimit} Unicode characters. Preserve the central subject, action, outcome, names, places and numbers; remove secondary detail; never invent facts or truncate mid-word.`,
+    "DO NOT rewrite, shorten, paraphrase, or translate the title as a replacement title.",
+    "First understand and translate the COMPLETE original title into natural Simplified Chinese. Do not translate isolated words independently.",
+    "Split the original title into source_tokens in exact original order. Each token must be copied verbatim from the original title and should normally be one word (or one meaningful unit for languages without spaces). Exclude standalone punctuation and whitespace, but cover every meaningful original word.",
+    "Split the natural Chinese translation into meaningful Chinese word/short-phrase buttons. For each Chinese token, provide source_indices: the zero-based indices of all original source_tokens it aligns to in the context of the complete sentence. One Chinese token may align to multiple original tokens. Every source token must be referenced by at least one Chinese token.",
+    "Create image_query_en from the ORIGINAL source as 5 to 8 concrete English visual keywords (people, place, object, scene, atmosphere).",
+    "Return strict JSON only: {\"summary\":\"...\",\"title_translation_zh\":\"natural full Chinese translation\",\"source_tokens\":[\"exact\",\"original\",\"tokens\"],\"zh_tokens\":[{\"text\":\"中文词\",\"source_indices\":[0]}],\"image_query_en\":\"...\",\"language\":\"...\"}",
   ].join("\n");
-  const userPrompt = `原标题：${payload.title || "(empty)"}\n原简介：${payload.summary || "(empty)"}`;
+  const userPrompt = `ORIGINAL_TITLE: ${payload.title || "(empty)"}\nORIGINAL_SUMMARY: ${payload.summary || "(empty)"}`;
   const requestBody = {
     model,
     temperature: 0.1,
-    max_tokens: 256,
+    max_tokens: 512,
     messages: [
       { role: "system", content: systemPrompt },
       { role: "user", content: userPrompt },
@@ -316,55 +367,11 @@ async function rewriteWithAi(payload) {
   const rewritten = extractJson(content);
   return {
     configured: true,
-    title: String(rewritten.title || "").trim(),
     summary: String(rewritten.summary || "").trim(),
-  };
-}
-
-async function generateImageQueryWithAi(payload) {
-  const [{ settings = {} }, { localSecrets = {} }] = await Promise.all([
-    chrome.storage.sync.get("settings"),
-    chrome.storage.local.get("localSecrets"),
-  ]);
-  const endpoint = settings.aiEndpoint?.trim();
-  const model = settings.aiModel?.trim();
-  const apiKey = localSecrets.aiApiKey?.trim();
-  if (!endpoint || !model || !apiKey) return { configured: false };
-
-  const requestBody = {
-    model,
-    temperature: 0.1,
-    max_tokens: 80,
-    messages: [
-      {
-        role: "system",
-        content: [
-          "Convert the ORIGINAL article title into a precise stock-photo search query.",
-          "Return 5 to 8 concrete English visual keywords describing visible people, named place, object, action, scene and atmosphere.",
-          "Preserve important proper nouns when they are visually relevant. Do not use abstract editorial words such as news, article, report or photography.",
-          "Use only the original title, not a rewritten title or summary.",
-          "Return strict JSON only: {\"image_query_en\":\"...\"}",
-        ].join("\n"),
-      },
-      { role: "user", content: String(payload.title || "") },
-    ],
-  };
-  if (/^glm[-_.\s]?5(?:\D|$)/i.test(model)) {
-    requestBody.thinking = { type: "disabled" };
-  }
-  const data = await fetchJson(endpoint, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${apiKey}`,
-    },
-    body: JSON.stringify(requestBody),
-  }, 30000);
-  const content = data.choices?.[0]?.message?.content || data.output_text || "";
-  const generated = extractJson(content);
-  return {
-    configured: true,
-    imageQueryEn: String(generated.image_query_en || "").trim(),
+    titleTranslationZh: String(rewritten.title_translation_zh || "").trim(),
+    sourceTokens: Array.isArray(rewritten.source_tokens) ? rewritten.source_tokens : [],
+    zhTokens: Array.isArray(rewritten.zh_tokens) ? rewritten.zh_tokens : [],
+    imageQueryEn: String(rewritten.image_query_en || "").trim(),
   };
 }
 
@@ -398,10 +405,10 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     return true;
   }
 
-  if (message.type === "GENERATE_IMAGE_QUERY") {
-    generateImageQueryWithAi(message)
+  if (message.type === "FETCH_IMAGE_FILE") {
+    fetchImageFile(message.imageUrl, message.fileName)
       .then((result) => sendResponse({ ok: true, ...result }))
-      .catch((error) => sendResponse({ ok: false, error: error.message || "英文图片关键词生成失败" }));
+      .catch((error) => sendResponse({ ok: false, error: error.message || "图片下载失败" }));
     return true;
   }
 });

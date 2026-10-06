@@ -57,6 +57,8 @@ function renderRules(rules) {
     detail.textContent = [
       `标题：${rule.titleSelector || "未绑定"}`,
       `简介：${rule.summarySelector || "未绑定"}`,
+      `图片上传：${rule.imageUploadSelector || "未绑定"}`,
+      ...(rule.imageSelector ? [`旧版图片 URL：${rule.imageSelector}`] : []),
     ].join("\n");
     copy.append(hostElement, detail);
 

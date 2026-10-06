@@ -63,8 +63,8 @@
     dragging: null,
     originalCopy: { title: "", summary: "" },
     hasRewritten: false,
+    titleAlignment: null,
     sourceLanguage: { code: "und", label: "原稿语言" },
-    lastAutoSearchKey: "",
   };
 
   function graphemes(value = "") {
@@ -138,65 +138,6 @@
       .trim();
   }
 
-  function trimMethodTitleCore(value = "") {
-    return cleanText(value)
-      .replace(/^[：:，,；;、|｜\-–—\s]+|[：:，,；;、|｜\-–—\s]+$/g, "")
-      .replace(/^(?:how\s+to|cómo|como|如何|怎样|怎么|cách|как|як|كيفية)\s*/iu, "")
-      .replace(/^(?:to|for|of|para|por|de|để|giúp|nhằm|для|чтобы|каб|لأجل|من\s+أجل)\s+/iu, "")
-      .replace(/的$/u, "")
-      .trim();
-  }
-
-  function isGenericMethodTitle(value = "") {
-    const title = cleanText(value).replace(/[.!?。！？]/g, "").trim();
-    if (!title) return false;
-    const patterns = [
-      /^(?:这)?(?:\d+|[一二三四五六七八九十百几多]+)?\s*(?:种|个|条|大)?\s*(?:(?:最|简单|有效|实用|最佳|常用|快速|重要|关键|轻松|自然|健康|安全|免费|科学|正确|聪明|基本|主要|好用|必要|新颖|全新|新)的?\s*)*(?:方法|方式|技巧|步骤|窍门|建议|秘诀|办法)$/u,
-      /^(?:(?:top|these|the)\s+)?(?:\d+|several|some|many|a\s+few)?\s*(?:(?:simple|easy|effective|best|useful|practical|quick|important|key|smart|essential|new|proven|natural)\s+)*(?:methods?|ways?|tips?|steps?|tricks?|techniques?|strategies?|approaches?|hacks?)$/iu,
-      /^(?:\d+|varios|varias|algunos|algunas|muchos|muchas|pocos|pocas)?\s*(?:(?:simples?|sencillos?|sencillas?|fáciles?|eficaces?|efectivos?|útiles?|prácticos?|rápidos?|mejores?|importantes?|nuevos?)\s+)*(?:formas?|métodos?|maneras?|consejos?|pasos?|técnicas?|estrategias?)(?:\s+(?:simples?|sencillos?|sencillas?|fáciles?|eficaces?|efectivos?|útiles?|prácticos?|rápidos?|mejores?|importantes?|nuevos?))*$/iu,
-      /^(?:\d+|vài|nhiều|một\s+số)?\s*(?:cách|phương\s+pháp|mẹo|bước|bí\s+quyết)(?:\s+(?:đơn\s+giản|hiệu\s+quả|hữu\s+ích|thiết\s+thực|nhanh|quan\s+trọng|tốt\s+nhất|mới))*$/iu,
-      /^(?:\d+|несколько|некоторые|шмат|некалькі|топ[- ]?\d+)?\s*(?:(?:прост\p{L}*|эффективн\p{L}*|эфектыўн\p{L}*|полезн\p{L}*|лепш\p{L}*|быстр\p{L}*|важн\p{L}*|нов\p{L}*)\s+)*(?:способ\p{L}*|метод\p{L}*|совет\p{L}*|шаг\p{L}*|прием\p{L}*|прыём\p{L}*|подход\p{L}*|парада\p{L}*)$/iu,
-      /^(?:\d+|عدة|بعض|أفضل)?\s*(?:(?:بسيطة|فعالة|سهلة|عملية|سريعة|مهمة|جديدة)\s+)*(?:طرق|طريقة|أساليب|نصائح|خطوات|وسائل)(?:\s+(?:بسيطة|فعالة|سهلة|عملية|سريعة|مهمة|جديدة))*$/u,
-    ];
-    return patterns.some((pattern) => pattern.test(title));
-  }
-
-  function isMeaningfulMethodCore(value = "") {
-    const core = trimMethodTitleCore(value);
-    if (textLength(core) < 2 || isGenericMethodTitle(core)) return false;
-    return !/^(?:简单|有效|实用|最佳|快速|重要|关键|easy|simple|effective|best|useful|quick|fácil|simple|eficaz|đơn\s+giản|hiệu\s+quả|بسيطة|فعالة)$/iu.test(core);
-  }
-
-  function extractMethodTitleCore(value = "") {
-    const title = cleanText(value).replace(/[.!?。！？]$/g, "").trim();
-    if (!title) return "";
-
-    const zhCount = "(?:\\d+|[一二三四五六七八九十百几多]+)";
-    const zhAdjectives = "(?:(?:最|简单|有效|实用|最佳|常用|快速|重要|关键|轻松|自然|健康|安全|免费|科学|正确|聪明|基本|主要|好用|必要|新颖|全新|新)的?\\s*)*";
-    const zhNoun = "(?:方法|方式|技巧|步骤|窍门|建议|秘诀|办法)";
-    const patterns = [
-      new RegExp(`^${zhCount}\\s*(?:种|个|条|大)?\\s*${zhAdjectives}(.+?)\\s*的?${zhNoun}$`, "u"),
-      new RegExp(`^(.+?)的?${zhCount}\\s*(?:种|个|条|大)?\\s*${zhAdjectives}${zhNoun}$`, "u"),
-      new RegExp(`^${zhCount}\\s*(?:种|个|条|大)?\\s*${zhAdjectives}${zhNoun}(?:可以|可|来|能|帮你|助你|让你|教你)?(.+)$`, "u"),
-      /^(?:\d+|several|some|many|a\s+few|top\s+\d+)\s+(?:(?:simple|easy|effective|best|useful|practical|quick|important|key|smart|essential|new|proven|natural)\s+)*(?:methods?|ways?|tips?|steps?|tricks?|techniques?|strategies?|approaches?|hacks?)\s+(?:to|for|that|which|of)\s+(.+)$/iu,
-      /^(.+?)[：:，,;；\-–—]\s*(?:\d+|several|some|many|a\s+few|top\s+\d+)\s+(?:(?:simple|easy|effective|best|useful|practical|quick|important|key|smart|essential|new|proven|natural)\s+)*(?:methods?|ways?|tips?|steps?|tricks?|techniques?|strategies?|approaches?|hacks?)$/iu,
-      /^(?:\d+|several|some|many|a\s+few)\s+(?:(?:simple|easy|effective|best|useful|practical|quick|important|key|smart|essential|new|proven|natural)\s+)*(.+?)\s+(?:methods?|ways?|tips?|steps?|tricks?|techniques?|strategies?|approaches?|hacks?)$/iu,
-      /^(?:\d+|varios|varias|algunos|algunas|muchos|muchas|pocos|pocas)\s+(?:formas?|métodos?|maneras?|consejos?|pasos?|técnicas?|estrategias?)(?:\s+(?:simples?|sencillos?|sencillas?|fáciles?|eficaces?|efectivos?|útiles?|prácticos?|rápidos?|mejores?|importantes?|nuevos?))*\s+(?:de|para)\s+(.+)$/iu,
-      /^(.+?)[：:，,;；\-–—]\s*(?:\d+|varios|varias|algunos|algunas|muchos|muchas|pocos|pocas)\s+(?:(?:simples?|sencillos?|sencillas?|fáciles?|eficaces?|efectivos?|útiles?|prácticos?|rápidos?|mejores?|importantes?|nuevos?)\s+)*(?:formas?|métodos?|maneras?|consejos?|pasos?|técnicas?|estrategias?)(?:\s+(?:simples?|sencillos?|sencillas?|fáciles?|eficaces?|efectivos?|útiles?|prácticos?|rápidos?|mejores?|importantes?|nuevos?))*$/iu,
-      /^(?:\d+|vài|nhiều|một\s+số)\s+(?:cách|phương\s+pháp|mẹo|bước|bí\s+quyết)(?:\s+(?:đơn\s+giản|hiệu\s+quả|hữu\s+ích|thiết\s+thực|nhanh|quan\s+trọng|tốt\s+nhất|mới))*\s+(?:để|giúp|nhằm)\s+(.+)$/iu,
-      /^(.+?)[：:，,;；\-–—]\s*(?:\d+|vài|nhiều|một\s+số)\s+(?:cách|phương\s+pháp|mẹo|bước|bí\s+quyết)(?:\s+(?:đơn\s+giản|hiệu\s+quả|hữu\s+ích|thiết\s+thực|nhanh|quan\s+trọng|tốt\s+nhất|mới))*$/iu,
-      /^(?:\d+|несколько|некоторые|шмат|некалькі)\s+(?:\p{L}+\s+){0,4}(?:способ\p{L}*|метод\p{L}*|совет\p{L}*|шаг\p{L}*|прием\p{L}*|прыём\p{L}*|подход\p{L}*|парада\p{L}*)\s+(?:для|чтобы|каб)?\s*(.+)$/iu,
-      /^(?:\d+|عدة|بعض)\s+(?:(?:بسيطة|فعالة|سهلة|عملية|سريعة|مهمة|جديدة)\s+)*(?:طرق|طريقة|أساليب|نصائح|خطوات|وسائل)(?:\s+(?:بسيطة|فعالة|سهلة|عملية|سريعة|مهمة|جديدة))*\s+(?:ل|لـ|لأجل|من\s+أجل)?\s*(.+)$/u,
-    ];
-
-    for (const pattern of patterns) {
-      const match = title.match(pattern);
-      const core = trimMethodTitleCore(match?.[1] || "");
-      if (isMeaningfulMethodCore(core)) return core;
-    }
-    return "";
-  }
-
   function segmentWords(value) {
     if (typeof Intl.Segmenter !== "function") return graphemes(value);
     return [...new Intl.Segmenter("zh-CN", { granularity: "word" }).segment(value)]
@@ -240,27 +181,6 @@
     return result;
   }
 
-  function rewriteTitleLocally(title, summary, limit) {
-    let source = stripEditorialFiller(title || summary.split(/[。！？]/)[0]);
-    source = source
-      .replace(/全新|最新|重磅|正式|首次曝光|震撼|火速|赶紧|即将|已经|正在/g, "")
-      .replace(/[！!。.]$/g, "")
-      .trim();
-    const methodCore = extractMethodTitleCore(source);
-    if (methodCore) source = methodCore;
-    else if (isGenericMethodTitle(source) && summary) {
-      source = stripEditorialFiller(summary).split(/[。！？.!?؟；;؛，,،]/)[0].trim();
-    }
-    if (textLength(source) <= limit) return source;
-
-    const clauses = source.split(/[：:，,،；;؛。！？!?؟｜|]/).map(cleanText).filter(Boolean);
-    const complete = clauses.find((clause) => textLength(clause) >= 5 && textLength(clause) <= limit);
-    if (complete) return complete;
-
-    const joined = clauses.slice(0, 2).join(usesWordSpaces() ? " " : "").replace(/的最新消息|相关情况|有关内容/g, "");
-    return fitAtBoundary(joined || source, limit);
-  }
-
   function rewriteSummaryLocally(summary, title, limit) {
     let source = stripEditorialFiller(summary || title);
     source = source
@@ -300,12 +220,6 @@
     result = result.replace(/[，、：；,;،؛的和与及将把被在于\s]$/g, "");
     if (textLength(result) < limit && !/[。！？.!?؟]$/.test(result)) result += sentenceTerminator();
     return fitAtBoundary(result, limit);
-  }
-
-  function localRewrite(title, summary) {
-    const nextTitle = rewriteTitleLocally(title, summary, state.settings.titleLimit);
-    const nextSummary = rewriteSummaryLocally(summary, nextTitle, state.settings.summaryLimit);
-    return { title: nextTitle, summary: nextSummary };
   }
 
   function extractEnglishKeywords(value) {
@@ -354,9 +268,10 @@
 
   async function generateEnglishQuery() {
     const title = state.originalCopy.title || query(".lsa-floating-title")?.value || "";
-    const source = cleanText(title);
-    if (!source) {
-      setSearchStatus("请先读取原标题", true);
+    const summary = state.originalCopy.summary || query(".lsa-floating-summary")?.value || "";
+    const source = cleanText(`${title}。${summary}`);
+    if (!source.replace(/[。\s]/g, "")) {
+      setSearchStatus("请先读取原标题和原简介", true);
       return "";
     }
 
@@ -364,28 +279,14 @@
       state.sourceLanguage = await detectTextLanguage(source);
     }
 
-    setSearchStatus("正在从原标题生成英文视觉关键词…");
-    try {
-      const response = await chrome.runtime.sendMessage({
-        type: "GENERATE_IMAGE_QUERY",
-        title: source,
-      });
-      if (response?.ok && response.configured && response.imageQueryEn) {
-        const queryText = applyEnglishQuery(response.imageQueryEn);
-        setSearchStatus("已由 AI 根据原标题生成英文视觉关键词");
-        return queryText;
-      }
-    } catch {
-      // Continue with Chrome's local translator and the built-in dictionary.
-    }
-
     if (state.sourceLanguage.code === "en") {
       const englishQuery = extractEnglishKeywords(source) || "editorial documentary photography";
       applyEnglishQuery(englishQuery);
-      setSearchStatus("AI 未配置或暂不可用，已直接从英文原标题提取视觉关键词");
+      setSearchStatus("原标题和原简介为英语，已直接提取英文视觉关键词");
       return englishQuery;
     }
 
+    setSearchStatus("正在从原标题和原简介生成英文视觉关键词…");
     if ("Translator" in globalThis) {
       try {
         const availability = await globalThis.Translator.availability({
@@ -405,7 +306,7 @@
           const translated = await translator.translate(source);
           translator.destroy?.();
           const queryText = applyEnglishQuery(translated);
-          setSearchStatus("已根据原标题生成英文素材关键词（Chrome 本地翻译）");
+          setSearchStatus("已根据改写前原稿生成英文素材关键词（Chrome 本地翻译）");
           return queryText;
         }
       } catch (error) {
@@ -413,23 +314,12 @@
       }
     }
 
-    const fallback = dictionaryEnglishQuery(title, "");
+    const fallback = dictionaryEnglishQuery(title, summary);
     applyEnglishQuery(fallback);
     if (!query(".lsa-search-status")?.classList.contains("is-error")) {
       setSearchStatus("当前浏览器没有本地翻译模型，已使用内置视觉词典生成英文关键词");
     }
     return fallback;
-  }
-
-  async function autoSearchFromOriginalTitle(force = false) {
-    const title = cleanText(state.originalCopy.title || query(".lsa-floating-title")?.value || "");
-    const source = query(".lsa-source-select")?.value || "openverse";
-    if (!title) return;
-    const searchKey = `${source}|${title}`;
-    if (!force && state.lastAutoSearchKey === searchKey) return;
-    state.lastAutoSearchKey = searchKey;
-    const englishQuery = await generateEnglishQuery();
-    if (englishQuery) await searchStock(1, { ensureQuery: false });
   }
 
   function create(tag, className, text) {
@@ -465,6 +355,168 @@
     }
   }
 
+  function alignmentComparable(value = "") {
+    return String(value)
+      .normalize("NFKC")
+      .toLocaleLowerCase()
+      .replace(/[\p{P}\p{S}\s]+/gu, "");
+  }
+
+  function normalizeTitleAlignment(response, originalTitle) {
+    const original = cleanText(originalTitle);
+    const sourceTokens = (Array.isArray(response?.sourceTokens) ? response.sourceTokens : [])
+      .map((token) => String(token || "").trim())
+      .filter(Boolean);
+    if (!original || !sourceTokens.length || sourceTokens.length > 80) {
+      throw new Error("AI 未返回有效的原标题分词");
+    }
+    if (usesWordSpaces() && sourceTokens.some((token) => /\s/.test(token))) {
+      throw new Error("AI 未把原标题拆分为逐词按钮");
+    }
+    if (alignmentComparable(sourceTokens.join("")) !== alignmentComparable(original)) {
+      throw new Error("AI 返回的外语词并非完整来自原标题");
+    }
+    let cursor = 0;
+    for (const token of sourceTokens) {
+      const tokenPosition = original.indexOf(token, cursor);
+      if (tokenPosition < 0) throw new Error("AI 改动了原标题中的原词");
+      cursor = tokenPosition + token.length;
+    }
+
+    const zhTokens = (Array.isArray(response?.zhTokens) ? response.zhTokens : [])
+      .map((token) => {
+        const text = cleanText(token?.text || "");
+        const rawIndices = token?.source_indices || token?.sourceIndices || [];
+        const sourceIndices = [...new Set(rawIndices
+          .map(Number)
+          .filter((index) => Number.isInteger(index) && index >= 0 && index < sourceTokens.length))];
+        return { text, sourceIndices };
+      })
+      .filter((token) => token.text && token.sourceIndices.length);
+    if (!zhTokens.length || zhTokens.length > 80) throw new Error("AI 未返回有效的中文分词对照");
+    const coveredSourceIndices = new Set(zhTokens.flatMap((token) => token.sourceIndices));
+    if (coveredSourceIndices.size !== sourceTokens.length) {
+      throw new Error("AI 的中外词语对照不完整，请重新生成");
+    }
+
+    return {
+      originalTitle: original,
+      translationZh: cleanText(response.titleTranslationZh) || zhTokens.map((token) => token.text).join(""),
+      sourceTokens,
+      zhTokens,
+      selectedZhIndices: new Set(),
+    };
+  }
+
+  function selectedSourceIndices(alignment = state.titleAlignment, selectedZh = alignment?.selectedZhIndices) {
+    const selected = new Set();
+    if (!alignment || !selectedZh) return selected;
+    for (const zhIndex of selectedZh) {
+      for (const sourceIndex of alignment.zhTokens[zhIndex]?.sourceIndices || []) selected.add(sourceIndex);
+    }
+    return selected;
+  }
+
+  function composeAlignedTitle(alignment = state.titleAlignment, selectedZh = alignment?.selectedZhIndices) {
+    if (!alignment) return "";
+    const selectedSources = selectedSourceIndices(alignment, selectedZh);
+    if (!selectedSources.size) return "";
+    if (
+      selectedSources.size === alignment.sourceTokens.length &&
+      textLength(alignment.originalTitle) <= state.settings.titleLimit
+    ) {
+      return alignment.originalTitle;
+    }
+    return alignment.sourceTokens
+      .filter((_token, index) => selectedSources.has(index))
+      .join(usesWordSpaces() ? " " : "");
+  }
+
+  function serializeTitleAlignment() {
+    if (!state.titleAlignment) return null;
+    return {
+      originalTitle: state.titleAlignment.originalTitle,
+      translationZh: state.titleAlignment.translationZh,
+      sourceTokens: state.titleAlignment.sourceTokens,
+      zhTokens: state.titleAlignment.zhTokens,
+      selectedZhIndices: [...state.titleAlignment.selectedZhIndices],
+    };
+  }
+
+  function renderTitleAlignment() {
+    const panel = query(".lsa-title-alignment");
+    if (!panel) return;
+    const alignment = state.titleAlignment;
+    panel.hidden = !alignment;
+    if (!alignment) return;
+
+    const selectedSources = selectedSourceIndices(alignment);
+    const sourceWrap = query(".lsa-source-token-list");
+    const zhWrap = query(".lsa-zh-token-list");
+    const translation = query(".lsa-title-translation");
+    sourceWrap.replaceChildren();
+    zhWrap.replaceChildren();
+    translation.textContent = alignment.translationZh;
+
+    alignment.sourceTokens.forEach((token, index) => {
+      const button = create("button", "lsa-alignment-token is-source", token);
+      button.type = "button";
+      button.dir = "auto";
+      button.tabIndex = -1;
+      button.setAttribute("aria-disabled", "true");
+      button.classList.toggle("is-selected", selectedSources.has(index));
+      sourceWrap.append(button);
+    });
+
+    alignment.zhTokens.forEach((token, index) => {
+      const mappedWords = token.sourceIndices.map((sourceIndex) => alignment.sourceTokens[sourceIndex]).join(" ");
+      const button = create("button", "lsa-alignment-token is-zh", token.text);
+      button.type = "button";
+      button.dir = "auto";
+      button.title = `对应原标题：${mappedWords}`;
+      button.setAttribute("aria-pressed", String(alignment.selectedZhIndices.has(index)));
+      button.classList.toggle("is-selected", alignment.selectedZhIndices.has(index));
+      button.addEventListener("click", () => toggleChineseTitleToken(index));
+      zhWrap.append(button);
+    });
+
+    const selectedTitle = composeAlignedTitle(alignment);
+    query(".lsa-alignment-selection").textContent = selectedTitle
+      ? `已选外语原词：${selectedTitle}`
+      : "点击中文词，系统会按整句对齐关系选择外语原词";
+  }
+
+  function toggleChineseTitleToken(index) {
+    const alignment = state.titleAlignment;
+    if (!alignment) return;
+    const nextSelected = new Set(alignment.selectedZhIndices);
+    const isRemoving = nextSelected.has(index);
+    if (isRemoving) nextSelected.delete(index);
+    else nextSelected.add(index);
+    const nextTitle = composeAlignedTitle(alignment, nextSelected);
+    if (!isRemoving && textLength(nextTitle) > state.settings.titleLimit) {
+      setStatus(`加入该词后外语标题为 ${textLength(nextTitle)} 字符，超过 ${state.settings.titleLimit} 字符限制`, true);
+      return;
+    }
+    alignment.selectedZhIndices = nextSelected;
+    query(".lsa-floating-title").value = nextTitle;
+    renderTitleAlignment();
+    updateCounts();
+    refreshKeywords(false);
+    scheduleDraftSave();
+    setStatus(nextTitle
+      ? `已按原标题顺序选中外语原词（${textLength(nextTitle)} / ${state.settings.titleLimit}）`
+      : "已清空标题选择，请点击中文词重新组合");
+  }
+
+  function clearTitleAlignment() {
+    state.titleAlignment = null;
+    const panel = query(".lsa-title-alignment");
+    if (panel) panel.hidden = true;
+    const titleInput = query(".lsa-floating-title");
+    if (titleInput) titleInput.readOnly = false;
+  }
+
   function scheduleDraftSave() {
     clearTimeout(state.saveTimer);
     state.saveTimer = setTimeout(() => {
@@ -476,6 +528,7 @@
           originalTitle: state.originalCopy.title,
           originalSummary: state.originalCopy.summary,
           hasRewritten: state.hasRewritten,
+          titleAlignment: serializeTitleAlignment(),
           pageUrl: location.href,
           updatedAt: Date.now(),
         },
@@ -510,7 +563,7 @@
       .map(([word]) => word)
       .filter((word, index, all) => !all.slice(0, index).some((prior) => prior.includes(word)))
       .slice(0, 8);
-    if (!state.keywords.length) state.keywords = ["新闻配图", "竖屏配图", "杂志锁屏"];
+    if (!state.keywords.length) state.keywords = ["新闻配图", "高清横图", "杂志锁屏"];
     state.selectedKeywords = new Set(state.keywords.slice(0, 3));
     renderKeywords();
     if (updateSearch) updateSearchFromKeywords();
@@ -559,6 +612,7 @@
           summary: cleanText(sourceSummary),
         };
         state.hasRewritten = false;
+        clearTitleAlignment();
       }
       state.sourceLanguage = await detectTextLanguage(
         `${state.originalCopy.title} ${state.originalCopy.summary}`,
@@ -568,12 +622,7 @@
       updateCounts();
       refreshKeywords(false);
       scheduleDraftSave();
-      setStatus(`已读取页面原文，识别为${state.sourceLanguage.label}；改写将保持原语言`);
-      try {
-        await autoSearchFromOriginalTitle(force);
-      } catch (error) {
-        setSearchStatus(error.message || "自动搜索图片失败", true);
-      }
+      setStatus(`已读取页面原文，识别为${state.sourceLanguage.label}；可生成中外标题对照`);
     } catch (error) {
       setStatus(error.message || "读取页面失败", true);
     }
@@ -593,11 +642,19 @@
       `${state.originalCopy.title} ${state.originalCopy.summary}`,
     );
     button.disabled = true;
-    button.textContent = "正在改写…";
-    setStatus("正在根据关键信息重写标题和简介");
+    button.textContent = "正在翻译与对齐…";
+    setStatus("正在整句翻译原标题、建立中外词语对照并精简简介");
 
-    let result;
+    let rewrittenSummary = rewriteSummaryLocally(
+      state.originalCopy.summary,
+      state.originalCopy.title,
+      state.settings.summaryLimit,
+    );
     let usedAi = false;
+    let aiImageQuery = "";
+    let rewriteError = "";
+    const previousAlignment = state.titleAlignment;
+    const previousTitle = titleInput.value;
     try {
       const response = await chrome.runtime.sendMessage({
         type: "REWRITE_COPY",
@@ -613,13 +670,9 @@
       });
       if (!response?.ok) throw new Error(response?.error || "AI 改写失败");
       if (response.configured) {
-        const aiTitle = cleanText(response.title || "");
-        if (!aiTitle) throw new Error("AI 未返回标题");
-        if (textLength(aiTitle) > state.settings.titleLimit) {
-          throw new Error(`AI 标题为 ${textLength(aiTitle)} 字符，超过 ${state.settings.titleLimit} 字限制`);
-        }
-        const outputLanguage = await detectTextLanguage(`${response.title} ${response.summary}`);
+        const outputLanguage = response.summary ? await detectTextLanguage(response.summary) : { code: "und" };
         if (
+          response.summary &&
           state.sourceLanguage.code !== "und" &&
           outputLanguage.code !== "und" &&
           state.sourceLanguage.code !== outputLanguage.code &&
@@ -627,43 +680,73 @@
         ) {
           throw new Error(`AI 返回了${outputLanguage.label}，与原稿${state.sourceLanguage.label}不一致`);
         }
-        result = {
-          title: aiTitle,
-          summary: rewriteSummaryLocally(
-            response.summary || state.originalCopy.summary,
-            aiTitle,
-            state.settings.summaryLimit,
-          ),
-        };
+        rewrittenSummary = rewriteSummaryLocally(
+          response.summary || state.originalCopy.summary,
+          state.originalCopy.title,
+          state.settings.summaryLimit,
+        );
+        if (state.originalCopy.title) {
+          const alignment = normalizeTitleAlignment(response, state.originalCopy.title);
+          if (textLength(state.originalCopy.title) <= state.settings.titleLimit) {
+            alignment.selectedZhIndices = new Set(alignment.zhTokens.map((_token, index) => index));
+            titleInput.value = state.originalCopy.title;
+          } else {
+            titleInput.value = "";
+          }
+          state.titleAlignment = alignment;
+          titleInput.readOnly = true;
+          renderTitleAlignment();
+        } else {
+          clearTitleAlignment();
+          titleInput.value = "";
+        }
         usedAi = true;
+        aiImageQuery = response.imageQueryEn || "";
       } else {
-        result = localRewrite(state.originalCopy.title, state.originalCopy.summary);
+        clearTitleAlignment();
+        titleInput.value = state.originalCopy.title;
       }
     } catch (error) {
-      result = localRewrite(state.originalCopy.title, state.originalCopy.summary);
-      setStatus(`在线改写不可用，已改用本地智能精简：${error.message}`, true);
+      rewriteError = error.message || "AI 翻译对齐失败";
+      if (previousAlignment) {
+        state.titleAlignment = previousAlignment;
+        titleInput.value = previousTitle;
+        renderTitleAlignment();
+      } else {
+        clearTitleAlignment();
+        titleInput.value = state.originalCopy.title;
+      }
     }
 
-    titleInput.value = result.title;
-    summaryInput.value = result.summary;
+    summaryInput.value = rewrittenSummary;
     state.hasRewritten = true;
     updateCounts();
     refreshKeywords(false);
     scheduleDraftSave();
-    if (!query(".lsa-copy-status")?.classList.contains("is-error")) {
-      setStatus(usedAi
-        ? `AI 语义改写完成，已保持${state.sourceLanguage.label}并校验 12/50 字限制`
-        : `本地智能精简完成，内容保持${state.sourceLanguage.label}`);
+    if (aiImageQuery) applyEnglishQuery(aiImageQuery);
+    else await generateEnglishQuery();
+    if (rewriteError) {
+      setStatus(`标题翻译对齐不可用；简介已本地精简：${rewriteError}`, true);
+    } else if (usedAi) {
+      setStatus(textLength(state.originalCopy.title) <= state.settings.titleLimit
+        ? `原标题未超限，已原样保留并生成中文词语对照；简介保持${state.sourceLanguage.label}`
+        : `请点击中文词选择对应外语原词；简介已保持${state.sourceLanguage.label}并精简`);
+    } else {
+      setStatus("未配置 AI：简介已本地精简；标题双语分词对照需要配置 AI", true);
     }
     button.disabled = false;
-    button.textContent = "智能改写";
+    button.textContent = "翻译标题并精简简介";
   }
 
   async function applyDraft() {
     const title = query(".lsa-floating-title").value.trim();
     const summary = query(".lsa-floating-summary").value.trim();
+    if (!title) return setStatus("请先点击中文词，选择对应的外语原标题词", true);
     if (textLength(title) > state.settings.titleLimit || textLength(summary) > state.settings.summaryLimit) {
-      return setStatus("文案仍然超限，请先点击“智能改写”", true);
+      return setStatus(
+        `文案仍然超限：标题需不超过${state.settings.titleLimit}字符，简介需不超过${state.settings.summaryLimit}字符`,
+        true,
+      );
     }
     const result = await globalThis.__lsaPageTools.applyDraft(title, summary);
     setStatus(result.message, !result.ok);
@@ -708,6 +791,18 @@
       meta.append(document.createTextNode(`${item.creator} · `));
       meta.append(createLink(item.license || "查看许可", item.licenseUrl));
       const actions = create("div", "lsa-stock-actions");
+      const use = create("button", "lsa-image-action is-use", "上传到后台");
+      use.type = "button";
+      use.addEventListener("click", async () => {
+        use.disabled = true;
+        use.textContent = "正在上传…";
+        setSearchStatus("正在下载素材并写入后台图片上传控件…");
+        const result = await globalThis.__lsaPageTools.uploadStockImage(item.imageUrl, item.fileName);
+        setSearchStatus(result.message, !result.ok);
+        if (result.needsBinding) globalThis.__lsaPageTools.startBindingMode();
+        use.disabled = false;
+        use.textContent = "上传到后台";
+      });
       const source = create("button", "lsa-image-action", "查看来源");
       source.type = "button";
       source.addEventListener("click", () => window.open(item.pageUrl, "_blank", "noopener"));
@@ -718,7 +813,7 @@
         await navigator.clipboard.writeText(attribution);
         setSearchStatus("作者、许可和来源信息已复制");
       });
-      actions.append(source, credit);
+      actions.append(use, source, credit);
       copy.append(meta, actions);
       card.append(image, copy);
       results.append(card);
@@ -731,10 +826,10 @@
     status.classList.toggle("is-error", isError);
   }
 
-  async function searchStock(page = 1, { ensureQuery = true } = {}) {
+  async function searchStock(page = 1) {
     let searchQuery = query(".lsa-stock-query").value.trim();
     const source = query(".lsa-source-select").value;
-    if (ensureQuery && (!searchQuery || /[\u3400-\u9fff]/.test(searchQuery))) {
+    if (!searchQuery || /[\u3400-\u9fff]/.test(searchQuery)) {
       searchQuery = await generateEnglishQuery();
     }
     if (!searchQuery) return setSearchStatus("请先生成英文图片关键词", true);
@@ -840,20 +935,28 @@
         </div>
       </header>
       <nav class="lsa-assistant-nav">
-        <button class="lsa-tab-button is-active" data-tab="copy" type="button">文案改写</button>
+        <button class="lsa-tab-button is-active" data-tab="copy" type="button">标题与简介</button>
         <button class="lsa-tab-button" data-tab="images" type="button">商用配图</button>
       </nav>
       <div class="lsa-assistant-body">
         <section class="lsa-tab-panel" data-panel="copy">
           <div class="lsa-section-card">
-            <div class="lsa-section-row"><h2 class="lsa-section-title">原稿与合规文案</h2><button class="lsa-text-action lsa-read-page" type="button">重新读取页面</button></div>
-            <p class="lsa-section-hint">可先保留长原稿；点击智能改写后生成完整、自然且不超限的内容。</p>
-            <label class="lsa-field-label"><span>标题</span><span class="lsa-counter lsa-title-count">0 / 12</span></label>
-            <input class="lsa-assistant-input lsa-floating-title" type="text" placeholder="输入原标题或从页面读取" />
+            <div class="lsa-section-row"><h2 class="lsa-section-title">双语标题与合规简介</h2><button class="lsa-text-action lsa-read-page" type="button">重新读取页面</button></div>
+            <p class="lsa-section-hint">AI 整句翻译原标题并建立词级对照；点击中文词即可选择对应的外语原词。简介仍按原语言精简。</p>
+            <label class="lsa-field-label"><span>原标题 / 选择结果</span><span class="lsa-counter lsa-title-count">0 / 12</span></label>
+            <input class="lsa-assistant-input lsa-floating-title" type="text" dir="auto" placeholder="输入原标题或从页面读取" />
+            <div class="lsa-title-alignment" hidden>
+              <div class="lsa-alignment-heading"><span>原标题分词</span><small>绿色表示已选原词</small></div>
+              <div class="lsa-alignment-token-list lsa-source-token-list"></div>
+              <div class="lsa-alignment-heading"><span>中文整句</span><small class="lsa-title-translation"></small></div>
+              <div class="lsa-alignment-heading"><span>点击中文词选择</span><small>按整句语义对齐，不是逐词猜译</small></div>
+              <div class="lsa-alignment-token-list lsa-zh-token-list"></div>
+              <p class="lsa-alignment-selection">点击中文词，系统会按整句对齐关系选择外语原词</p>
+            </div>
             <label class="lsa-field-label"><span>简介</span><span class="lsa-counter lsa-summary-count">0 / 50</span></label>
-            <textarea class="lsa-assistant-textarea lsa-floating-summary" placeholder="输入原简介，允许先超过 50 字"></textarea>
+            <textarea class="lsa-assistant-textarea lsa-floating-summary" dir="auto" placeholder="输入原简介，允许先超过 50 字"></textarea>
             <div class="lsa-button-row">
-              <button class="lsa-primary-button lsa-rewrite-button" type="button">智能改写</button>
+              <button class="lsa-primary-button lsa-rewrite-button" type="button">翻译标题并精简简介</button>
               <button class="lsa-secondary-button lsa-apply-draft" type="button">填写后台</button>
               <button class="lsa-secondary-button lsa-bind-fields" type="button">绑定字段</button>
             </div>
@@ -862,8 +965,8 @@
         </section>
         <section class="lsa-tab-panel" data-panel="images" hidden>
           <div class="lsa-section-card">
-            <div class="lsa-section-row"><h2 class="lsa-section-title">搜索可商用素材</h2><button class="lsa-text-action lsa-generate-english" type="button">重新搜索原标题</button></div>
-            <p class="lsa-section-hint">读取原标题后自动总结英文视觉关键词并搜索；所有结果均为适合锁屏的竖向图片。</p>
+            <div class="lsa-section-row"><h2 class="lsa-section-title">搜索可商用素材</h2><button class="lsa-text-action lsa-generate-english" type="button">生成英文关键词</button></div>
+            <p class="lsa-section-hint">从改写前原稿总结英文视觉关键词，并只搜索适合锁屏的竖向图片。</p>
             <div class="lsa-keyword-chips"></div>
             <div class="lsa-search-row">
               <select class="lsa-source-select" aria-label="素材来源"><option value="openverse">Openverse</option><option value="pexels">Pexels</option><option value="pixabay">Pixabay</option></select>
@@ -873,7 +976,7 @@
             <p class="lsa-license-note"><a href="https://openverse.org/" target="_blank" rel="noopener noreferrer">Openverse</a> 无需密钥；<a href="https://www.pexels.com/api/" target="_blank" rel="noopener noreferrer">Pexels</a> 和 <a href="https://pixabay.com/api/docs/" target="_blank" rel="noopener noreferrer">Pixabay</a> 的免费 API Key 可在设置中填写。所有来源仅显示竖图。</p>
             <p class="lsa-status-text lsa-search-status"></p>
           </div>
-          <div class="lsa-stock-results"><div class="lsa-empty-result">读取原标题后会自动搜索，图片将在这里显示</div></div>
+          <div class="lsa-stock-results"><div class="lsa-empty-result">生成英文关键词后搜索，图片会在这里显示</div></div>
           <div class="lsa-pagination">
             <button class="lsa-secondary-button lsa-prev-page" type="button" disabled>上一页</button>
             <span class="lsa-page-number">第 1 页</span>
@@ -914,6 +1017,25 @@
       summary: samePageDraft ? draft.originalSummary || draft.summary || "" : "",
     };
     state.hasRewritten = samePageDraft && Boolean(draft.hasRewritten);
+    if (samePageDraft && draft.titleAlignment && state.originalCopy.title) {
+      try {
+        const restoredAlignment = normalizeTitleAlignment({
+          titleTranslationZh: draft.titleAlignment.translationZh,
+          sourceTokens: draft.titleAlignment.sourceTokens,
+          zhTokens: draft.titleAlignment.zhTokens,
+        }, state.originalCopy.title);
+        restoredAlignment.selectedZhIndices = new Set(
+          (draft.titleAlignment.selectedZhIndices || [])
+            .map(Number)
+            .filter((index) => Number.isInteger(index) && index >= 0 && index < restoredAlignment.zhTokens.length),
+        );
+        state.titleAlignment = restoredAlignment;
+        query(".lsa-floating-title").readOnly = true;
+        renderTitleAlignment();
+      } catch {
+        clearTitleAlignment();
+      }
+    }
     updateCounts();
 
     query(".lsa-assistant-header").addEventListener("pointerdown", startDrag);
@@ -928,14 +1050,13 @@
     query(".lsa-rewrite-button").addEventListener("click", rewriteCopy);
     query(".lsa-apply-draft").addEventListener("click", applyDraft);
     query(".lsa-bind-fields").addEventListener("click", () => globalThis.__lsaPageTools.startBindingMode());
-    query(".lsa-generate-english").addEventListener("click", () => autoSearchFromOriginalTitle(true));
+    query(".lsa-generate-english").addEventListener("click", generateEnglishQuery);
     query(".lsa-search-button").addEventListener("click", () => searchStock(1));
     query(".lsa-stock-query").addEventListener("keydown", (event) => {
       if (event.key === "Enter") searchStock(1);
     });
     query(".lsa-prev-page").addEventListener("click", () => searchStock(Math.max(1, state.searchPage - 1)));
     query(".lsa-next-page").addEventListener("click", () => searchStock(state.searchPage + 1));
-    query(".lsa-source-select").addEventListener("change", () => autoSearchFromOriginalTitle(true));
     query(".lsa-open-settings").addEventListener("click", () => chrome.runtime.sendMessage({ type: "OPEN_OPTIONS" }));
     for (const input of [query(".lsa-floating-title"), query(".lsa-floating-summary")]) {
       input.addEventListener("input", () => {

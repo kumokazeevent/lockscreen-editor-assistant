@@ -12,7 +12,7 @@
         <div class="brand">锁</div>
         <div>
           <h1>锁屏编辑助手设置</h1>
-          <p>字数规则、语义改写、商用素材与文案字段绑定</p>
+          <p>字数规则、语义改写、商用素材与后台站点绑定</p>
         </div>
       </header>
 
@@ -34,8 +34,8 @@
       </section>
 
       <section>
-        <h2>AI 语义改写（可选）</h2>
-        <p class="section-description">不配置时使用免费的本地智能精简。若需要真正的语义重写，可填写任意兼容 OpenAI Chat Completions 格式的接口；密钥仅保存在本机。</p>
+        <h2>AI 标题翻译对齐与简介精简</h2>
+        <p class="section-description">AI 负责整句翻译原标题、生成中外词级对齐，并按原语言精简简介。未配置时只能使用本地简介精简，无法生成标题双语按钮；密钥仅保存在本机。</p>
         <div class="form-grid ai-grid">
           <label>Chat Completions 完整地址<input id="aiEndpoint" type="url" placeholder="https://example.com/v1/chat/completions" /></label>
           <label>模型名称<input id="aiModel" type="text" placeholder="模型 ID" /></label>
@@ -58,7 +58,7 @@
         <div class="section-title">
           <div>
             <h2>已绑定网站</h2>
-            <p>在网页悬浮窗点击“绑定字段”，依次绑定标题和简介。</p>
+            <p>在网页悬浮窗点击“绑定字段”，依次绑定标题、简介和图片上传控件。</p>
           </div>
           <button id="refreshRules" class="secondary" type="button">刷新</button>
         </div>
@@ -67,7 +67,7 @@
 
       <section class="privacy-note">
         <h2>数据与隐私</h2>
-        <p>标题、简介草稿和 API Key 只保存在本机浏览器中；站点绑定、接口地址和偏好保存在浏览器同步存储中。只有点击“智能改写”时稿件才会发送到你配置的 AI 接口；素材搜索词会发送给所选的 Openverse、Pexels 或 Pixabay。</p>
+        <p>标题、简介草稿和 API Key 只保存在本机浏览器中；站点绑定、接口地址和偏好保存在浏览器同步存储中。只有点击“翻译标题并精简简介”时稿件才会发送到你配置的 AI 接口；素材搜索词会发送给所选的 Openverse、Pexels 或 Pixabay。</p>
       </section>
     </main>
     <script src="options.js"></script>
