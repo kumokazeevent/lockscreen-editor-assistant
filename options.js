@@ -7,9 +7,12 @@ const DEFAULT_SETTINGS = {
   thinkingLevel: "medium",
   autoSearch: true,
   duplicateCheck: true,
+  usageThreshold: 3,
+  usageWindowDays: 90,
   aiTimeoutMs: 30000,
   aiEndpoint: "https://api.deepseek.com/chat/completions",
   aiModel: "",
+  aiFallbackModel: "",
   reviewAiEnabled: false,
   reviewAiEndpoint: "",
   reviewAiModel: "",
@@ -27,6 +30,8 @@ const fields = {
   thinkingLevel: document.querySelector("#thinkingLevel"),
   autoSearch: document.querySelector("#autoSearch"),
   duplicateCheck: document.querySelector("#duplicateCheck"),
+  usageThreshold: document.querySelector("#usageThreshold"),
+  usageWindowDays: document.querySelector("#usageWindowDays"),
   rewritePrompt: document.querySelector("#rewritePrompt"),
   titleLimit: document.querySelector("#titleLimit"),
   summaryLimit: document.querySelector("#summaryLimit"),
@@ -35,6 +40,7 @@ const fields = {
   aiTimeoutSeconds: document.querySelector("#aiTimeoutSeconds"),
   aiEndpoint: document.querySelector("#aiEndpoint"),
   aiModel: document.querySelector("#aiModel"),
+  aiFallbackModel: document.querySelector("#aiFallbackModel"),
   reviewAiEnabled: document.querySelector("#reviewAiEnabled"),
   reviewAiEndpoint: document.querySelector("#reviewAiEndpoint"),
   reviewAiModel: document.querySelector("#reviewAiModel"),
@@ -51,6 +57,15 @@ const pexelsApiKey = document.querySelector("#pexelsApiKey");
 const pixabayApiKey = document.querySelector("#pixabayApiKey");
 const ruleList = document.querySelector("#ruleList");
 const saveMessage = document.querySelector("#saveMessage");
+const duplicateLibraryList = document.querySelector("#duplicateLibraryList");
+const duplicateLibraryStatus = document.querySelector("#duplicateLibraryStatus");
+const duplicateLibraryFile = document.querySelector("#duplicateLibraryFile");
+
+async function sendRuntime(type, payload = {}) {
+  const response = await chrome.runtime.sendMessage({ type, action: type, ...payload });
+  if (!response || response.ok === false) throw new Error(response?.error || `${type} 执行失败`);
+  return response;
+}
 
 function clamp(value, min, max, fallback) {
   const number = Number(value);
@@ -86,11 +101,14 @@ async function loadSettings() {
   fields.rewritePrompt.value = LSAWorkflow.wordPrompt(rewritePrompt);
   fields.titleLimit.value = settings.titleLimit;
   fields.summaryLimit.value = settings.summaryLimit;
+  fields.usageThreshold.value = settings.usageThreshold;
+  fields.usageWindowDays.value = settings.usageWindowDays;
   fields.batchLimit.value = LSAWorkflow.batchSize(settings.batchLimit);
   fields.batchConcurrency.value = settings.batchConcurrency;
   fields.aiTimeoutSeconds.value = Math.round(settings.aiTimeoutMs / 1000);
   fields.aiEndpoint.value = settings.aiEndpoint || "";
   fields.aiModel.value = settings.aiModel || "";
+  fields.aiFallbackModel.value = settings.aiFallbackModel || "";
   fields.reviewAiEnabled.checked = Boolean(settings.reviewAiEnabled);
   fields.reviewAiEndpoint.value = settings.reviewAiEndpoint || "";
   fields.reviewAiModel.value = settings.reviewAiModel || "";
@@ -106,6 +124,44 @@ async function loadSettings() {
   setSecretPlaceholder(pexelsApiKey, Boolean(localSecrets.pexelsApiKey), "Pexels API Key");
   setSecretPlaceholder(pixabayApiKey, Boolean(localSecrets.pixabayApiKey), "Pixabay API Key");
   renderRules(settings.siteRules);
+  loadDuplicateLibrary().catch((error) => { duplicateLibraryStatus.textContent = error.message; });
+}
+
+async function loadDuplicateLibrary() {
+  const library = await sendRuntime("GET_DUPLICATE_LIBRARY");
+  duplicateLibraryList.replaceChildren();
+  const heading = document.createElement("p");
+  heading.className = "section-description";
+  heading.textContent = `当前共 ${library.count || 0} 条全局手动重复标记`;
+  duplicateLibraryList.append(heading);
+  const sources = Object.entries(library.bySource || {}).sort((left, right) => right[1] - left[1]);
+  if (!sources.length) {
+    const empty = document.createElement("p");
+    empty.className = "empty";
+    empty.textContent = "暂无手动重复标记";
+    duplicateLibraryList.append(empty);
+    return;
+  }
+  for (const [source, count] of sources) {
+    const card = document.createElement("div");
+    card.className = "rule-card";
+    const label = document.createElement("span");
+    label.textContent = `${source}：${count} 条`;
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.className = "delete-rule";
+    remove.textContent = "解除此来源全部标记";
+    remove.addEventListener("click", async () => {
+      if (!confirm(`确认解除 ${source} 的 ${count} 条全局重复标记？下载历史会保留。`)) return;
+      try {
+        const result = await sendRuntime("REMOVE_DUPLICATES_BY_SOURCE", { source });
+        duplicateLibraryStatus.textContent = `已解除 ${result.removed || 0} 条 ${source} 标记`;
+        await loadDuplicateLibrary();
+      } catch (error) { duplicateLibraryStatus.textContent = error.message; }
+    });
+    card.append(label, remove);
+    duplicateLibraryList.append(card);
+  }
 }
 
 function renderRules(rules) {
@@ -175,11 +231,14 @@ async function saveAllSettings() {
       duplicateCheck: fields.duplicateCheck.checked,
       titleLimit: clamp(fields.titleLimit.value, 1, 100, 12),
       summaryLimit: clamp(fields.summaryLimit.value, 1, 500, 50),
+      usageThreshold: clamp(fields.usageThreshold.value, 1, 40, 3),
+      usageWindowDays: clamp(fields.usageWindowDays.value, 1, 365, 90),
       batchLimit: LSAWorkflow.batchSize(fields.batchLimit.value),
       batchConcurrency: clamp(fields.batchConcurrency.value, 1, 2, 2),
       aiTimeoutMs: clamp(fields.aiTimeoutSeconds.value, 10, 120, 30) * 1000,
       aiEndpoint: endpoint,
       aiModel: fields.aiModel.value.trim(),
+      aiFallbackModel: fields.aiFallbackModel.value.trim(),
       reviewAiEnabled: fields.reviewAiEnabled.checked,
       reviewAiEndpoint,
       reviewAiModel: fields.reviewAiModel.value.trim(),
@@ -238,4 +297,28 @@ document.querySelector("#clearSecrets").addEventListener("click", async () => {
   saveMessage.textContent = "本机密钥已清除";
 });
 document.querySelector("#refreshRules").addEventListener("click", loadSettings);
+document.querySelector("#refreshDuplicateLibrary").addEventListener("click", () => loadDuplicateLibrary()
+  .catch((error) => { duplicateLibraryStatus.textContent = error.message; }));
+document.querySelector("#exportDuplicateLibrary").addEventListener("click", async () => {
+  try {
+    const result = await sendRuntime("EXPORT_DUPLICATE_LIBRARY", { download: true });
+    duplicateLibraryStatus.textContent = `已导出 ${result.library ? Object.keys(result.library.entries || {}).length : 0} 条标记${result.path ? `：${result.path}` : ""}`;
+  } catch (error) { duplicateLibraryStatus.textContent = error.message; }
+});
+document.querySelector("#importDuplicateLibrary").addEventListener("click", () => duplicateLibraryFile.click());
+duplicateLibraryFile.addEventListener("change", async () => {
+  const file = duplicateLibraryFile.files?.[0];
+  duplicateLibraryFile.value = "";
+  if (!file) return;
+  try {
+    if (file.size > 16 * 1024 * 1024) throw new Error("标记库文件超过 16MB");
+    const library = JSON.parse(await file.text());
+    const result = await sendRuntime("IMPORT_DUPLICATE_LIBRARY", { library });
+    duplicateLibraryStatus.textContent = `导入完成，当前共 ${result.count || 0} 条标记`;
+    await loadDuplicateLibrary();
+  } catch (error) { duplicateLibraryStatus.textContent = `导入失败：${error.message}`; }
+});
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (area === "local" && changes.lsaManualDuplicates) loadDuplicateLibrary().catch(() => {});
+});
 loadSettings();

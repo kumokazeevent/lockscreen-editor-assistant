@@ -11,6 +11,8 @@
     batchLimit: 30,
     batchConcurrency: 2,
     rewriteMode: "ai", thinkingLevel: "medium", autoSearch: true, duplicateCheck: true,
+    bangladeshMode: false,
+    usageThreshold: 3, usageWindowDays: 90,
     preferredRatio: "auto",
     originalFolder: "锁屏批次/原始内容",
     imageFolder: "锁屏批次/成品图片",
@@ -44,9 +46,11 @@
     mountRevision: 0,
     tabContext: null, tabSettings: {}, globalSettings: {},
     workToken: `${Date.now()}-${Math.random()}`, workOwned: false, leaseTimer: null, scanning: false,
-    imageHistory: {}, imagePage: 1, imageHasNext: false, imageBusy: false, searchRevision: 0,
+    imageHistory: {}, globalManual: {}, globalUsage: {}, imagePage: 1, imageHasNext: false, imageBusy: false, searchRevision: 0,
     imageQuery: "", imageTargetIndex: null, pageFilter: "all", autoReadRevision: 0,
     downloadBusy: false, downloadProgress: null,
+    titleTranslationStatus: new Map(), titleTranslationInFlight: new Set(),
+    aiTranslation: { loaded: false, configured: false, reason: "正在检查主 AI 配置…" },
   };
 
   function create(tag, className, text) {
@@ -122,6 +126,11 @@
       error.code = response.code || "";
       error.status = Number(response.status) || 0;
       error.requestUrl = response.requestUrl || "";
+      error.errorType = response.errorType || "";
+      error.model = response.model || "";
+      error.attempts = Number(response.attempts) || 0;
+      error.diagnostics = Array.isArray(response.diagnostics) ? response.diagnostics : [];
+      error.usedFallbackModel = Boolean(response.usedFallbackModel);
       throw error;
     }
     return response;
@@ -156,6 +165,36 @@
     const items = Array.isArray(state.batch?.items) ? state.batch.items : [];
     items.forEach(ensureItemStages);
     return items;
+  }
+
+  function isBangladeshEligible() {
+    const item = getBatchItems().find(recordMatchesRoute) || selectedRecord?.() || getBatchItems()[0];
+    const language = state.batch?.metadata?.language || item?.pageLanguage || item?.language || "";
+    const country = state.batch?.metadata?.country || item?.pageCountry || "";
+    return LSAWorkflow.normalizeLanguageCode(language) === "bn"
+      && /(?:bangladesh|孟加拉|বাংলাদেশ)/iu.test(String(country));
+  }
+
+  function isBangladeshModeActive() {
+    return isBangladeshEligible() && Boolean(state.settings.bangladeshMode);
+  }
+
+  function renderBangladeshMode() {
+    const eligible = isBangladeshEligible();
+    const active = eligible && Boolean(state.settings.bangladeshMode);
+    const warning = q(".lsa-bangladesh-warning");
+    if (warning) warning.hidden = !active;
+    const bar = q(".lsa-bangladesh-mode-bar");
+    if (bar) bar.classList.toggle("is-active", active);
+    const badge = q(".lsa-bangladesh-badge");
+    if (badge) badge.textContent = active ? "已开启" : eligible ? "建议开启" : "条件未匹配";
+    const toggle = q(".lsa-bangladesh-toggle");
+    if (toggle) { toggle.checked = Boolean(state.settings.bangladeshMode); toggle.disabled = !eligible || state.workOwned; }
+    const hint = q(".lsa-bangladesh-mode-hint");
+    if (hint) hint.textContent = active
+      ? "人物与非蝴蝶/鱼类动物会被严格初筛；自动结果仍必须逐条人工审核。"
+      : eligible ? "检测到孟加拉语 + 孟加拉，请人工确认后开启。工具不会自动改数据。"
+        : "仅当语言为孟加拉语且国家为孟加拉时可开启。";
   }
 
   function ensureItemStages(item) {
@@ -228,17 +267,20 @@
     if (!state.batch) return null;
     const copy = JSON.parse(JSON.stringify(state.batch));
     copy.version = 4; copy.countUnit = "words";
-    copy.items.forEach((item) => { item.manualDuplicate = Boolean(state.imageHistory[LSAWorkflow.imageKey(item.image || {})]?.manual); });
+    copy.items.forEach((item) => { item.manualDuplicate = Boolean(state.globalManual[LSAWorkflow.imageKey(item.image || {})]); });
     return copy;
   }
 
-  function persistBatch({ render = true } = {}) {
+  function persistBatch({ render = true, item = null, progressOnly = false } = {}) {
     if (!state.batch) return Promise.resolve();
     state.batch.updatedAt = Date.now();
     const snapshot = cloneBatch();
     state.storageChain = state.storageChain.catch(() => {})
       .then(() => chrome.storage.local.set({ [state.tabContext.keys.batchState]: snapshot }));
-    if (render) renderBatch();
+    if (render) {
+      if (LSAAssistantEngine.shouldPatchProgress(state.batch, item, progressOnly)) renderItemRuntimeState(item);
+      else renderBatch();
+    }
     return state.storageChain;
   }
 
@@ -304,6 +346,8 @@
     state.settings.batchLimit = state.tabSettings.batchLimit;
     await chrome.storage.local.set({ [state.tabContext.keys.settings]: state.tabSettings });
     await persistBatch();
+    const reconciliation = await sendRuntime("RECONCILE_IMAGE_DOWNLOADS").catch(() => null);
+    if (reconciliation?.history) state.imageHistory = reconciliation.history;
   }
 
   async function exportResults(pageKey = null) {
@@ -312,9 +356,12 @@
       : page.items.every((item) => ["completed", "needs_review"].includes(item.status)));
     const items = pages.flatMap((page) => page.items);
     if (!items.length) return setPanelStatus(".lsa-transfer-status", "尚无已完成页面；可保存完整批次 JSON 保留当前进度", true);
+    const allPages = pagesInBatch();
+    const pageNumber = pageKey ? Math.max(1, allPages.findIndex((page) => page.key === pageKey) + 1) : 0;
+    const fileType = pageKey ? `结果_第${pageNumber}页` : "批次结果";
     await sendRuntime("SAVE_TEXT_FILE", { folder: state.settings.originalFolder, batchFolder: currentFolder(),
-      fileName: `${state.batch.batchId}-${pageKey ? pages[0].label : "已完成页面"}.json`,
-      text: JSON.stringify({ ...cloneBatch(), version: 4, countUnit: "words", format: "lockscreen-results", items: items.map((item) => ({ ...item, manualDuplicate: Boolean(state.imageHistory[LSAWorkflow.imageKey(item.image || {})]?.manual) })) }, null, 2) });
+      fileName: LSAWorkflow.batchFileName(state.batch, fileType, items.length),
+      text: JSON.stringify({ ...cloneBatch(), version: 4, countUnit: "words", format: "lockscreen-results", items: items.map((item) => ({ ...item, manualDuplicate: Boolean(state.globalManual[LSAWorkflow.imageKey(item.image || {})]) })) }, null, 2) });
     setPanelStatus(".lsa-transfer-status", `已导出 ${pages.length} 页、${items.length} 条结果`);
   }
 
@@ -327,16 +374,17 @@
       const batch = LSAWorkflow.importBatch(JSON.parse(await file.text()), state.settings);
       await acquireWork();
       const folders = LSAWorkflow.splitBatchFolders(batch);
-      for (const item of batch.items) {
-        if (item.manualDuplicate && item.image) await sendRuntime("MARK_IMAGE_DUPLICATE", { image: item.image, marked: true });
-      }
+      let usageWarning = "";
+      try { await sendRuntime("REBUILD_IMAGE_USAGE", { batch }); }
+      catch (error) { usageWarning = `；图片使用记录未能重建：${error.message}`; }
       // Preserve the old batch before switching; never append unrelated imported records.
       await archiveBatch();
       for (const folder of folders) await archiveBatch(folder);
       const selected = folders.find((folder) => folder.items.some(recordMatchesRoute)) || folders[0];
       state.batch = null;
       await selectFolder(selected);
-      setPanelStatus(".lsa-transfer-status", `已导入 ${batch.items.length} 条，分为 ${folders.length} 个文件夹；当前显示 ${selected.items.length} 条，旧批次已归档，不再追加。可在文件夹列表切换。`);
+      await sendRuntime("RECONCILE_IMAGE_DOWNLOADS").catch(() => {});
+      setPanelStatus(".lsa-transfer-status", `已导入 ${batch.items.length} 条，分为 ${folders.length} 个文件夹；当前显示 ${selected.items.length} 条，旧批次已归档，不再追加。可在文件夹列表切换${usageWarning}。`);
     } catch (error) { setPanelStatus(".lsa-transfer-status", `导入失败：${error.message}`, true); }
     finally { if (state.workOwned) await releaseWork(); }
   }
@@ -387,8 +435,8 @@
   async function saveTextSnapshot(kind, quiet = false) {
     if (!state.batch) throw new Error("当前没有批次");
     const isOriginal = kind === "original" || kind === "original-list";
-    const label = kind === "original-list" ? "原始列表" : isOriginal ? "原始内容" : "批次结果";
-    const fileName = `${state.batch.batchId}-${label}.json`;
+    const fileType = kind === "original-list" ? "批次原稿_读取时" : isOriginal ? "批次原稿_含正文" : "批次结果";
+    const fileName = LSAWorkflow.batchFileName(state.batch, fileType);
     try {
       const response = await sendRuntime("SAVE_TEXT_FILE", {
         folder: state.settings.originalFolder,
@@ -472,6 +520,10 @@
       language: cleanText(data.language || data.languageCode || ""),
       reviewWarning: cleanText(response.reviewWarning || data.reviewWarning || ""),
       rewriteMode: data.rewriteMode || response.rewriteMode || "ai",
+      aiModel: cleanText(response.model || data.model || ""),
+      aiAttempts: Number(response.attempts || data.attempts || 0),
+      aiDiagnostics: Array.isArray(response.diagnostics) ? response.diagnostics : [],
+      usedFallbackModel: Boolean(response.usedFallbackModel),
     };
   }
 
@@ -519,6 +571,11 @@
       fileName: raw.fileName || "",
       cropUrls: raw.cropUrls || null,
       suggestedCropUrl: raw.suggestedCropUrl || "",
+      imageKey: raw.imageKey || "",
+      globalManualDuplicate: Boolean(raw.globalManualDuplicate),
+      usageCount: Number(raw.usageCount || 0),
+      usageLimited: Boolean(raw.usageLimited),
+      localDownloadStatus: raw.localDownloadStatus || "",
     };
     image.aspectLabel = closestRatioLabel(image);
     if (image.safetyStatus === "review" && !image.safetyReason) {
@@ -565,14 +622,21 @@
 
   async function processItem(item, token) {
     if (token !== state.runToken || state.pauseRequested) return;
+    const bangladeshMode = isBangladeshModeActive();
     item.attempts = Number(item.attempts || 0) + 1;
     item.error = "";
+    item.errorType = "";
+    item.error_type = "";
+    item.aiErrorModel = "";
+    item.model = "";
+    item.aiDiagnostics = [];
+    item.retryStatus = "";
     item.reviewWarning = "";
     resetItemProgress(item);
     try {
       setItemStage(item, "article", "working");
       item.status = "fetching";
-      await persistBatch();
+      await persistBatch({ item, progressOnly: true });
       const articleResponse = !item.articleText && item.sourceUrl
         ? await sendRuntime("FETCH_ARTICLE", { url: item.sourceUrl, sourceUrl: item.sourceUrl }) : {};
       const articleText = item.articleText || articleTextFromResponse(articleResponse) || item.originalSummary || item.originalTitle;
@@ -583,7 +647,7 @@
       if (token !== state.runToken || !state.workOwned) return;
       setItemStage(item, "ai", "working");
       item.status = "rewriting";
-      await persistBatch();
+      await persistBatch({ item, progressOnly: true });
       const reusedExistingCopy = !item.forceRewrite && item.title && item.summary && textLength(item.title) <= state.settings.titleLimit
         && textLength(item.summary) <= state.settings.summaryLimit;
       const priorQuerySource = cleanText(item.imageQuerySourceTitle || "");
@@ -591,7 +655,7 @@
         item: {
           index: item.index, id: item.id, originalTitle: item.originalTitle,
           originalSummary: item.originalSummary, articleTitle: item.articleTitle,
-          articleText, sourceUrl: item.sourceUrl,
+          articleText, sourceUrl: item.sourceUrl, pageLanguage: item.pageLanguage, pageCountry: item.pageCountry,
         },
         titleLimit: Number(state.settings.titleLimit || 12),
         summaryLimit: Number(state.settings.summaryLimit || 50),
@@ -612,22 +676,42 @@
       if (token !== state.runToken || !state.workOwned) return;
       setItemStage(item, "image", "working");
       item.status = "searching";
-      await persistBatch();
+      await persistBatch({ item, progressOnly: true });
       const imageResponse = await sendRuntime("SEARCH_PEXELS_BATCH", {
         query: item.imageQueryEn, imageQueryEn: item.imageQueryEn,
-        preferredRatio: state.settings.preferredRatio, orientation: "portrait",
+        preferredRatio: state.settings.preferredRatio, orientation: "portrait", candidateLimit: 60,
+        bangladeshMode,
       });
-      const available = (imageResponse.items || []).filter((image) => !duplicateInfo(image));
+      const candidates = (imageResponse.items || []).map(normalizeImage);
+      const available = candidates.filter((image) => !imageRestriction(image, item).blocked);
+      const usedFallback = !available.length && candidates.some((image) => image.width > 0 && image.height > image.width
+        && image.imageUrl && image.safetyStatus !== "rejected");
       if (token !== state.runToken || !state.workOwned) return;
-      item.image = selectBestImage({ ...imageResponse, items: available.length ? available : imageResponse.items });
+      item.image = selectBestImage({ ...imageResponse, items: available.length ? available : candidates });
+      if (usedFallback) {
+        const warning = "候选全部重复/占用，已自动选用，请人工确认";
+        item.reviewWarning = [item.reviewWarning, warning].filter(Boolean).join("；");
+      }
       setItemStage(item, "image", "done");
       item.currentStage = "";
-      item.status = item.image.safetyStatus === "passed" && item.rewriteMode !== "local" ? "completed" : "needs_review";
+      item.status = !usedFallback && item.image.safetyStatus === "passed" && item.rewriteMode !== "local" ? "completed" : "needs_review";
+      if (bangladeshMode) {
+        item.status = "needs_review";
+        item.reviewWarning = [item.reviewWarning, "孟加拉模式：自动初筛不保证合规，投递前必须人工审核图片与文案"].filter(Boolean).join("；");
+      }
       item.error = "";
     } catch (error) {
       setItemStage(item, item.currentStage || "article", "error");
       item.status = "error";
       item.error = error.message || "处理失败";
+      item.errorType = error.errorType || error.code || "UNKNOWN_ERROR";
+      item.error_type = item.errorType;
+      item.aiErrorModel = error.model || "";
+      item.model = item.aiErrorModel;
+      item.aiAttempts = Number(error.attempts) || item.aiAttempts || 0;
+      item.aiDiagnostics = Array.isArray(error.diagnostics) ? error.diagnostics : [];
+      item.usedFallbackModel = Boolean(error.usedFallbackModel);
+      item.retryStatus = "";
       const fatalAiError = ["AI_NOT_CONFIGURED", "AI_ENDPOINT_INVALID"].includes(error.code)
         || (error.code === "HTTP_ERROR" && [400, 401, 403, 404, 422].includes(Number(error.status)));
       if (fatalAiError) {
@@ -722,13 +806,13 @@
     setPanelStatus(".lsa-batch-status", "正在暂停；不会强行中断当前两条网络请求…");
   }
 
-  async function retryFailed(index = null) {
+  async function retryFailed(index = null, errorType = "") {
     if (state.workOwned) return;
     if (!state.batch) return;
     try { await acquireWork(); } catch (error) { return setPanelStatus(".lsa-batch-status", error.message, true); }
     try {
     const targets = index === null
-      ? getBatchItems().filter((item) => item.status === "error")
+      ? LSAWorkflow.failedItemsByType(getBatchItems(), errorType)
       : getBatchItems().filter((item) => item.index === index);
     if (!targets.length) {
       setPanelStatus(".lsa-batch-status", "没有需要重试的失败项");
@@ -737,6 +821,12 @@
     targets.forEach((item) => {
       item.status = "pending";
       item.error = "";
+      item.errorType = "";
+      item.error_type = "";
+      item.aiErrorModel = "";
+      item.model = "";
+      item.aiDiagnostics = [];
+      item.retryStatus = "";
       resetItemProgress(item);
     });
     state.batch.status = "ready";
@@ -758,21 +848,45 @@
     return `${image.source || "素材源未知"} · ${size} · ${image.aspectLabel || closestRatioLabel(image)} · ${safetyText(image)}`;
   }
 
-  function duplicateInfo(image) {
-    const entry = state.imageHistory[LSAWorkflow.imageKey(image)];
-    if (entry?.manual) return "已手动标记重复";
-    if (["queued", "completed"].includes(entry?.status)) return "已下载过";
-    return "";
+  function occupiedImageOwner(image, targetItem = null) {
+    const key = LSAWorkflow.imageKey(image);
+    if (!key) return null;
+    return getBatchItems().find((item) => item !== targetItem && item.image && LSAWorkflow.imageKey(item.image) === key) || null;
+  }
+
+  function imageRestriction(image, targetItem = null) {
+    const key = LSAWorkflow.imageKey(image);
+    const local = state.imageHistory[key] || {};
+    const usageCount = LSAWorkflow.usageEventsInWindow(state.globalUsage[key], state.settings.usageWindowDays).length;
+    const globalManual = Boolean(state.globalManual[key]);
+    const usageLimited = usageCount >= Number(state.settings.usageThreshold || 3);
+    const localStatus = Object.prototype.hasOwnProperty.call(state.imageHistory, key) ? local.status : image.localDownloadStatus;
+    const localUsed = ["queued", "completed"].includes(localStatus);
+    const owner = occupiedImageOwner(image, targetItem);
+    const reasons = [];
+    if (globalManual) reasons.push("已在全局手动标记重复");
+    if (usageLimited) reasons.push(`近 ${state.settings.usageWindowDays} 天已使用 ${usageCount} 次`);
+    else if (usageCount > 0) reasons.push(`近 ${state.settings.usageWindowDays} 天使用 ${usageCount} 次`);
+    if (localUsed) reasons.push(localStatus === "queued" ? "当前标签页下载中" : "当前标签页已下载");
+    if (owner) reasons.push(`本批次已由第 ${owner.index} 条占用`);
+    return { key, globalManual, usageCount, usageLimited, localUsed, owner, blocked: globalManual || usageLimited || localUsed || Boolean(owner), reasons };
+  }
+
+  function duplicateInfo(image, targetItem = null) {
+    return imageRestriction(image, targetItem).reasons.join("；");
   }
 
   function duplicateButton(image) {
-    const marked = state.imageHistory[LSAWorkflow.imageKey(image)]?.manual;
+    const key = LSAWorkflow.imageKey(image);
+    const marked = Boolean(state.globalManual[key]);
     const button = create("button", "lsa-secondary-button", marked ? "取消重复标记" : "标记重复");
     button.type = "button";
     button.addEventListener("click", async () => {
       try {
         const response = await sendRuntime("MARK_IMAGE_DUPLICATE", { image, marked: !marked });
         state.imageHistory[response.key] = response.entry;
+        if (response.globalEntry) state.globalManual[response.key] = response.globalEntry;
+        else delete state.globalManual[response.key];
         renderBatch(); renderManualImages();
       } catch (error) { setPanelStatus(".lsa-image-status", error.message, true); }
     });
@@ -892,6 +1006,25 @@
     return wrap;
   }
 
+  function renderItemRuntimeState(item) {
+    if (!state.root || !item) return;
+    renderTotalProgress();
+    const counts = batchCounts();
+    const summary = q(".lsa-batch-summary");
+    if (summary && state.batch) summary.textContent = LSAAssistantEngine.batchSummary(state.batch, counts);
+    const key = LSAWorkflow.recordKey(item);
+    const nextProgress = createItemProgress(item);
+    LSAAssistantUi.patchBatchCard({
+      root: state.root,
+      itemKey: key,
+      status: item.status,
+      statusLabel: STATUS_LABELS[item.status] || item.status || "待处理",
+      progressNode: nextProgress,
+      retryStatus: item.retryStatus,
+      createRetryNode: (text) => create("p", "lsa-item-retry-status", text),
+    });
+  }
+
   function renderTotalProgress() {
     const metrics = progressMetrics();
     const value = q(".lsa-total-progress-value");
@@ -939,12 +1072,16 @@
     if (visibleItems.length < items.length) wrap.append(create("p", "lsa-section-hint", "当前展示前 60 条；请用页面筛选查看其余页面，总进度包含所有记录。"));
     for (const item of visibleItems) {
       const card = create("article", `lsa-batch-card is-${item.status || "pending"}`);
+      card.dataset.itemKey = LSAWorkflow.recordKey(item);
       const header = create("div", "lsa-batch-card-header");
       header.append(create("span", "lsa-item-number", String(item.index).padStart(2, "0")));
       const title = create("strong", "lsa-original-title", item.originalTitle || "（未读取到原标题）");
       title.title = item.originalTitle || "";
+      if (isBangladeshModeActive()) header.append(create("span", "lsa-bangladesh-card-badge", "孟加拉"));
       header.append(title, create("span", "lsa-item-status", STATUS_LABELS[item.status] || item.status || "待处理"));
       card.append(header, createItemProgress(item));
+      if (isBangladeshModeActive()) card.append(create("p", "lsa-bangladesh-card-warning", "⚠ 孟加拉模式：本条图片与文案必须人工审核"));
+      if (item.retryStatus) card.append(create("p", "lsa-item-retry-status", item.retryStatus));
       if (item.title || item.summary) {
         const output = create("div", "lsa-item-output");
         output.append(create("b", "", item.title || "—"), create("p", "", item.summary || "—"));
@@ -989,7 +1126,7 @@
           state.originalForSearch = { title: item.originalTitle, summary: item.originalSummary };
           q(".lsa-stock-query").value = item.originalTitle;
           switchTab("images");
-          searchManualImages(1, true);
+          searchManualImages(1);
         });
         actions.append(search);
       }
@@ -1008,7 +1145,7 @@
         }));
         actions.append(download);
         actions.append(duplicateButton(item.image));
-        if (duplicateInfo(item.image)) card.append(create("p", "lsa-item-error", duplicateInfo(item.image)));
+        if (duplicateInfo(item.image, item)) card.append(create("p", "lsa-item-error", duplicateInfo(item.image, item)));
       }
       if (item.editUrl) {
         const edit = create("a", "lsa-link-button", "打开编辑页");
@@ -1022,6 +1159,7 @@
 
   function renderBatch() {
     if (!state.root) return;
+    renderBangladeshMode();
     const folder = q(".lsa-current-folder");
     if (folder) folder.textContent = state.batch ? currentFolder() : "尚未选择文件夹；读取或导入后建立";
     for (const key of ["language", "country"]) {
@@ -1043,6 +1181,7 @@
     const start = q(".lsa-start-batch");
     const pause = q(".lsa-pause-batch");
     const retry = q(".lsa-retry-failed");
+    const retryType = q(".lsa-retry-type");
     if (start) {
       start.disabled = state.scanning || !counts.total || state.batch?.status === "running" || state.batch?.status === "pausing"
         || (!counts.pending && !counts.working);
@@ -1050,6 +1189,14 @@
     }
     if (pause) pause.disabled = !state.scanning && (!state.workOwned || state.batch?.status !== "running");
     if (retry) retry.disabled = !counts.failed || state.batch?.status === "running";
+    if (retryType) {
+      const selected = retryType.value;
+      const failureCounts = LSAWorkflow.failureTypeCounts(getBatchItems());
+      retryType.replaceChildren(new Option(`全部失败（${counts.failed}）`, ""),
+        ...Object.entries(failureCounts).sort().map(([type, count]) => new Option(`${type}（${count}）`, type)));
+      retryType.value = Object.prototype.hasOwnProperty.call(failureCounts, selected) ? selected : "";
+      retryType.disabled = !counts.failed || state.batch?.status === "running";
+    }
     const save = q(".lsa-save-batch-json");
     const downloadAll = q(".lsa-download-all");
     if (save) save.disabled = !counts.total;
@@ -1163,6 +1310,90 @@
     location.assign(target);
   }
 
+  function titleTranslationKey(item) {
+    return `${String(item?.id || item?.index || "unknown")}::${cleanText(item?.originalTitle || "")}`;
+  }
+
+  async function createOfflineTitleTranslator(sourceLanguage) {
+    const options = { sourceLanguage, targetLanguage: "zh" };
+    if (globalThis.Translator?.availability && globalThis.Translator?.create) {
+      const availability = await globalThis.Translator.availability(options);
+      if (["unavailable", "no"].includes(String(availability))) throw new Error(`不支持 ${sourceLanguage} → zh`);
+      return globalThis.Translator.create(options);
+    }
+    if (globalThis.translation?.canTranslate && globalThis.translation?.createTranslator) {
+      const availability = await globalThis.translation.canTranslate(options);
+      if (["unavailable", "no"].includes(String(availability))) throw new Error(`不支持 ${sourceLanguage} → zh`);
+      return globalThis.translation.createTranslator(options);
+    }
+    throw new Error("当前 Chrome 未提供 Translator API");
+  }
+
+  async function requestOfflineTitleTranslation(item) {
+    if (!item || item.titleZh || !recordMatchesRoute(item)) return;
+    const key = titleTranslationKey(item);
+    if (state.titleTranslationInFlight.has(key) || state.titleTranslationStatus.has(key)) return;
+    state.titleTranslationInFlight.add(key);
+    state.titleTranslationStatus.set(key, "正在尝试 Chrome 离线翻译…");
+    renderSelectedRecord();
+    try {
+      const detected = await sendRuntime("DETECT_SOURCE_LANGUAGE", {
+        text: item.originalTitle,
+        hint: item.language || item.pageLanguage || "",
+      });
+      const sourceLanguage = cleanText(detected.code || "").toLowerCase();
+      if (!sourceLanguage) throw new Error("无法确定原标题语言");
+      let titleZh;
+      if (sourceLanguage === "zh") titleZh = item.originalTitle;
+      else {
+        const translator = await createOfflineTitleTranslator(sourceLanguage);
+        try { titleZh = cleanText(await translator.translate(item.originalTitle)); }
+        finally { translator.destroy?.(); }
+      }
+      if (!titleZh) throw new Error("返回内容为空");
+      item.titleZh = titleZh;
+      state.titleTranslationStatus.set(key, "Chrome 离线翻译已完成");
+      await persistBatch();
+    } catch (error) {
+      state.titleTranslationStatus.set(key, `离线翻译不可用：${cleanText(error.message || "当前语言不受支持")}`);
+      renderSelectedRecord();
+    } finally {
+      state.titleTranslationInFlight.delete(key);
+    }
+  }
+
+  async function refreshAiTranslationStatus() {
+    try {
+      const result = await sendRuntime("GET_AI_TRANSLATION_STATUS");
+      state.aiTranslation = { loaded: true, configured: Boolean(result.configured), reason: result.reason || "" };
+    } catch (error) {
+      state.aiTranslation = { loaded: true, configured: false, reason: error.message };
+    }
+    renderSelectedRecord();
+  }
+
+  async function translateSelectedTitleWithAi() {
+    const item = selectedRecord();
+    if (!item || !recordMatchesRoute(item)) return setPanelStatus(".lsa-edit-status", "请先打开该记录对应的编辑页", true);
+    if (!state.aiTranslation.configured) return setPanelStatus(".lsa-edit-status", state.aiTranslation.reason || "主 AI 未配置", true);
+    const key = titleTranslationKey(item);
+    state.titleTranslationStatus.set(key, "正在请求主 AI 翻译标题…");
+    renderSelectedRecord();
+    try {
+      const response = await sendRuntime("TRANSLATE_TEXT", { text: item.originalTitle });
+      const titleZh = cleanText(response.titleZh || response.translation || "");
+      if (!titleZh) throw new Error("AI 没有返回中文标题");
+      item.titleZh = titleZh;
+      state.titleTranslationStatus.set(key, `AI 翻译已更新${response.model ? ` · ${response.model}` : ""}`);
+      await persistBatch();
+      setPanelStatus(".lsa-edit-status", "标题中文对照已更新；它只用于查看，不会写入后台或参与搜图。");
+    } catch (error) {
+      state.titleTranslationStatus.set(key, `AI 翻译失败：${error.message}`);
+      renderSelectedRecord();
+      setPanelStatus(".lsa-edit-status", error.message, true);
+    }
+  }
+
   function renderSelectedRecord() {
     const wrap = q(".lsa-selected-record");
     const button = q(".lsa-apply-record");
@@ -1174,7 +1405,26 @@
       if (button) button.disabled = true;
       return;
     }
-    wrap.append(create("h3", "", `${String(item.index).padStart(2, "0")} · ${item.originalTitle}`));
+    const originalHeading = create("h3", "lsa-record-original", `${String(item.index).padStart(2, "0")} · ${item.originalTitle}`);
+    if (isBangladeshModeActive()) originalHeading.append(create("span", "lsa-bangladesh-card-badge", "孟加拉"));
+    wrap.append(originalHeading);
+    if (isBangladeshModeActive()) wrap.append(create("p", "lsa-bangladesh-card-warning", "⚠ 孟加拉模式：填入前必须人工审核图片与文案"));
+    const translationKey = titleTranslationKey(item);
+    if (item.titleZh) wrap.append(create("p", "lsa-title-zh", `中文：${item.titleZh}`));
+    const translationStatus = state.titleTranslationStatus.get(translationKey);
+    if (!item.titleZh || translationStatus) {
+      wrap.append(create("small", `lsa-translation-status${translationStatus?.startsWith("离线翻译不可用") || translationStatus?.startsWith("AI 翻译失败") ? " is-warning" : ""}`,
+        translationStatus || "正在准备离线翻译…"));
+    }
+    const translationActions = create("div", "lsa-translation-actions");
+    const translateButton = create("button", "lsa-secondary-button lsa-ai-translate-title", "AI 翻译标题");
+    translateButton.type = "button";
+    translateButton.disabled = !recordMatchesRoute(item) || !state.aiTranslation.configured;
+    translateButton.title = translateButton.disabled ? (state.aiTranslation.reason || "正在检查主 AI 配置") : "主动调用已配置的主 AI，仅翻译原标题";
+    translateButton.addEventListener("click", translateSelectedTitleWithAi);
+    translationActions.append(translateButton);
+    if (!state.aiTranslation.configured) translationActions.append(create("small", "lsa-ai-translation-note", state.aiTranslation.reason || "正在检查主 AI 配置…"));
+    wrap.append(translationActions);
     wrap.append(create("p", "lsa-record-title", item.title || "尚未生成标题"),
       create("p", "lsa-record-summary", item.summary || "尚未生成简介"));
     if (item.image) {
@@ -1186,6 +1436,7 @@
     }
     if (item.error) wrap.append(create("p", "lsa-item-error", item.error));
     if (button) button.disabled = !item.title || !item.summary;
+    if (recordMatchesRoute(item) && !item.titleZh) Promise.resolve().then(() => requestOfflineTitleTranslation(item));
   }
 
   async function applySelectedRecord() {
@@ -1258,7 +1509,7 @@
         await new Promise((resolve) => setTimeout(resolve, 500));
         if (state.root !== root || revision !== state.autoReadRevision) return;
         await readPage();
-        if (state.settings.autoSearch !== false) await searchManualImages(1, true);
+        if (state.settings.autoSearch !== false) await searchManualImages(1);
         return;
       }
       await new Promise((resolve) => setTimeout(resolve, 400));
@@ -1301,41 +1552,47 @@
   async function makeManualEnglishQuery(source) {
     if (state.settings.rewriteMode === "local") return source;
     {
-      const response = await sendRuntime("GENERATE_IMAGE_QUERY", { title: source });
+      const response = await sendRuntime("GENERATE_IMAGE_QUERY", { title: source, bangladeshMode: isBangladeshModeActive() });
       const value = cleanText(response.imageQueryEn || response.query || response.result?.imageQueryEn || "");
       if (value) return value;
     }
     throw new Error("AI 未配置或未返回英文关键词；也可直接输入英文关键词搜索");
   }
 
-  async function searchManualImages(page = 1, fromOriginal = false) {
+  function manualSearchOriginalTitle() {
+    const matched = getBatchItems().find((item) => item.index === state.imageTargetIndex)
+      || getBatchItems().find(recordMatchesRoute);
+    return cleanText(matched?.originalTitle || state.originalForSearch?.title || "");
+  }
+
+  async function searchManualImages(page = 1) {
     if (state.imageBusy) return;
     page = LSAWorkflow.number(page, 1, 1000, 1);
     const input = q(".lsa-stock-query");
-    let value = page > 1 ? state.imageQuery : cleanText(input?.value || state.originalForSearch?.title);
-    if (!value) return setPanelStatus(".lsa-image-status", "请先输入原标题或英文关键词", true);
+    const originalTitle = manualSearchOriginalTitle();
+    const typedValue = cleanText(input?.value || "");
+    const usesOriginalTitle = page > 1 ? null : !typedValue || typedValue === originalTitle;
+    let value = page > 1 ? state.imageQuery : typedValue;
+    if (page > 1 && !value) return setPanelStatus(".lsa-image-status", "当前没有可翻页的搜索结果，请先搜索", true);
+    if (page === 1 && usesOriginalTitle && !originalTitle) {
+      return setPanelStatus(".lsa-image-status", "没有读取到原标题，无法搜索图片", true);
+    }
+    if (page === 1 && !usesOriginalTitle && /[^\x00-\x7f]/.test(typedValue)) {
+      return setPanelStatus(".lsa-image-status", "请输入英文，或清空恢复按原标题搜索", true);
+    }
     const button = q(".lsa-search-images");
     state.imageBusy = true;
     const revision = ++state.searchRevision;
     if (button) button.disabled = true;
-    setPanelStatus(".lsa-image-status", "正在生成英文提示词并搜索竖屏图片…");
+    setPanelStatus(".lsa-image-status", page > 1
+      ? `正在沿用当前英文关键词加载第 ${page} 页…`
+      : usesOriginalTitle ? "正在根据原标题生成英文关键词并搜索竖屏图片…" : "正在按输入的英文关键词搜索竖屏图片…");
     try {
-      if (page === 1 && value !== state.imageQuery) {
-        const matched = getBatchItems().find((item) => item.index === state.imageTargetIndex) || getBatchItems().find(recordMatchesRoute);
-        if (fromOriginal) {
-          value = cleanText(matched?.originalTitle || state.originalForSearch?.title || value);
-          if (!value) throw new Error("没有读取到原标题，无法搜索图片");
-          input.value = value;
-          value = await makeManualEnglishQuery(value);
-        } else if (/[^\x00-\x7f]/.test(value)) {
-          value = await makeManualEnglishQuery(value);
-        }
-      }
+      if (page === 1 && usesOriginalTitle) value = await makeManualEnglishQuery(originalTitle);
       if (revision !== state.searchRevision) return;
-      input.value = value;
       const response = await sendRuntime("SEARCH_PEXELS_BATCH", {
         query: value, imageQueryEn: value, preferredRatio: state.settings.preferredRatio, orientation: "portrait",
-        page, source: page > 1 || value === state.imageQuery ? state.imageProvider : "",
+        page, source: page > 1 ? state.imageProvider : "", bangladeshMode: isBangladeshModeActive(),
       });
       if (revision !== state.searchRevision) return;
       state.imageQuery = value;
@@ -1352,7 +1609,7 @@
       renderManualImages();
       const sources = [...new Set(state.manualResults.map((image) => image.source).filter(Boolean))].join(" / ");
       setPanelStatus(".lsa-image-status", state.manualResults.length
-        ? `第 ${page} 页 · ${state.manualResults.length} 张竖图 · ${sources || "Pexels/Pixabay"}${state.settings.rewriteMode === "local" ? " · 本地模式使用原词，可自行输入英文关键词" : ""}`
+        ? `第 ${page} 页 · ${state.manualResults.length} 张竖图 · ${sources || "Pexels/Pixabay"} · 搜索词：${value}${state.settings.rewriteMode === "local" ? " · 本地模式不调用 AI" : ""}`
         : "本页没有通过竖图规则的结果，可继续翻页或更换关键词。", !state.manualResults.length);
     } catch (error) {
       if (revision !== state.searchRevision) return;
@@ -1381,15 +1638,18 @@
     }
     state.manualResults.forEach((image, index) => {
       const card = create("article", "lsa-stock-card");
+      if (isBangladeshModeActive()) card.append(create("p", "lsa-bangladesh-card-warning", "⚠ 孟加拉模式：自动初筛不保证合规，必须看图复核"));
       const preview = create("img", "lsa-stock-image");
       preview.src = image.previewUrl || image.imageUrl;
       preview.alt = image.source || "竖屏素材";
       preview.loading = "lazy";
       preview.referrerPolicy = "no-referrer";
       const copy = create("div", "lsa-stock-copy");
+      if (isBangladeshModeActive()) copy.append(create("span", "lsa-bangladesh-card-badge", "孟加拉模式"));
       copy.append(create("p", "lsa-stock-title", `${image.source || "素材"} · ${image.creator || "作者信息见来源页"}`));
       copy.append(create("p", image.safetyStatus === "passed" ? "lsa-stock-meta" : "lsa-stock-meta is-warning", imageMeta(image)));
-      if (duplicateInfo(image)) copy.append(create("p", "lsa-item-error", duplicateInfo(image)));
+      const target = getBatchItems().find((item) => item.index === state.imageTargetIndex) || selectedRecord();
+      if (duplicateInfo(image, target)) copy.append(create("p", "lsa-item-error", duplicateInfo(image, target)));
       const download = create("button", "lsa-image-action", "下载此图");
       download.type = "button";
       download.addEventListener("click", async () => {
@@ -1407,17 +1667,29 @@
       });
       copy.append(download);
       copy.append(duplicateButton(image));
-      const target = getBatchItems().find((item) => item.index === state.imageTargetIndex) || selectedRecord();
       if (target) {
         const choose = create("button", "lsa-secondary-button", `选为第 ${target.index} 条配图`);
         choose.type = "button";
         choose.disabled = state.workOwned || ["running", "pausing"].includes(state.batch?.status);
         choose.addEventListener("click", async () => {
           try {
+            const occupied = occupiedImageOwner(image, target);
+            if (occupied && !window.confirm(`这张图已由本批次第 ${occupied.index} 条占用。仍要重复选用吗？`)) {
+              return setPanelStatus(".lsa-image-status", `未替换：请改选未被第 ${occupied.index} 条占用的图片`, true);
+            }
             await acquireWork();
-            target.image = image; target.imageQueryEn = state.imageQuery; target.imageQuerySourceTitle = target.originalTitle; target.downloadStatus = ""; target.downloadError = "";
+            target.image = image;
+            const liveInput = cleanText(q(".lsa-stock-query")?.value || "");
+            const targetOriginal = cleanText(target.originalTitle || state.originalForSearch?.title || "");
+            if (!liveInput || liveInput === targetOriginal) {
+              target.imageQueryEn = state.imageQuery;
+              target.imageQuerySourceTitle = target.originalTitle;
+            }
+            target.downloadStatus = ""; target.downloadError = "";
             target.stages.image = "done";
-            target.status = target.title && target.summary ? (image.safetyStatus === "passed" && target.rewriteMode !== "local" ? "completed" : "needs_review") : "pending";
+            if (occupied) target.reviewWarning = [target.reviewWarning, `与第 ${occupied.index} 条使用同一图片，请人工确认`].filter(Boolean).join("；");
+            target.status = target.title && target.summary ? (!occupied && image.safetyStatus === "passed" && target.rewriteMode !== "local" && !isBangladeshModeActive() ? "completed" : "needs_review") : "pending";
+            if (isBangladeshModeActive()) target.reviewWarning = [target.reviewWarning, "孟加拉模式：投递前必须人工审核图片与文案"].filter(Boolean).join("；");
             await persistBatch();
             setPanelStatus(".lsa-image-status", `已替换第 ${target.index} 条配图`);
           } catch (error) { setPanelStatus(".lsa-image-status", error.message, true); }
@@ -1447,8 +1719,18 @@
         lines.push(`扫描诊断：${warnings || JSON.stringify(diagnostics)}`);
       }
     }
-    getBatchItems().filter((item) => item.error).slice(0, 5)
-      .forEach((item) => lines.push(`${String(item.index).padStart(2, "0")}：${item.error}`));
+    const failureCounts = LSAWorkflow.failureTypeCounts(getBatchItems());
+    if (Object.keys(failureCounts).length) {
+      lines.push(`错误分类：${Object.entries(failureCounts).map(([type, count]) => `${type} ${count}`).join("；")}`);
+    }
+    getBatchItems().filter((item) => item.error).slice(0, 30).forEach((item) => {
+      lines.push(`${String(item.index).padStart(2, "0")} [${item.errorType || "UNKNOWN_ERROR"}] model=${item.aiErrorModel || item.aiModel || "未记录"} attempts=${item.aiAttempts || 0}${item.usedFallbackModel ? " fallback=是" : ""}`);
+      lines.push(item.error);
+      for (const diagnostic of (Array.isArray(item.aiDiagnostics) ? item.aiDiagnostics : []).slice(0, 8)) {
+        lines.push(`  attempt=${diagnostic.attempt || 0} status=${diagnostic.httpStatus || 0} type=${diagnostic.contentType || "无"} elapsed=${diagnostic.elapsedMs || 0}ms kind=${diagnostic.responseKind || "无"}`);
+        if (diagnostic.rawBody) lines.push(`  raw=${String(diagnostic.rawBody).slice(0, 3000)}`);
+      }
+    });
     return lines.join("\n");
   }
 
@@ -1500,6 +1782,11 @@
         <button class="lsa-tab-button" data-tab="images" type="button">单条配图</button>
       </nav>
       <div class="lsa-assistant-body">
+        <div class="lsa-bangladesh-warning" hidden>⚠ 孟加拉模式：宗教与内容禁忌风险高，所有条目投递前必须逐条人工审核图片与文案；自动初筛不保证合规。</div>
+        <div class="lsa-bangladesh-mode-bar">
+          <div><strong>孟加拉模式 <span class="lsa-bangladesh-badge">条件未匹配</span></strong><small class="lsa-bangladesh-mode-hint">仅当语言为孟加拉语且国家为孟加拉时可开启。</small></div>
+          <label class="lsa-switch"><input class="lsa-bangladesh-toggle" type="checkbox"><span>开启</span></label>
+        </div>
         ${isList ? `
         <section class="lsa-tab-panel" data-panel="batch">
           <div class="lsa-section-card">
@@ -1514,7 +1801,7 @@
             <p class="lsa-batch-summary">尚未建立批次</p>
             <div class="lsa-page-results"></div>
             <label class="lsa-field-label">显示页面<select class="lsa-page-filter"><option value="all">全部页面</option></select></label>
-            <div class="lsa-button-row"><button class="lsa-primary-button lsa-start-batch" type="button" disabled>开始处理</button><button class="lsa-secondary-button lsa-pause-batch" type="button" disabled>暂停</button><button class="lsa-secondary-button lsa-retry-failed" type="button" disabled>重试失败项</button></div>
+            <div class="lsa-button-row"><button class="lsa-primary-button lsa-start-batch" type="button" disabled>开始处理</button><button class="lsa-secondary-button lsa-pause-batch" type="button" disabled>暂停</button><select class="lsa-retry-type" aria-label="失败类型"><option value="">全部失败</option></select><button class="lsa-secondary-button lsa-retry-failed" type="button" disabled>重试失败项</button></div>
             <div class="lsa-button-row"><button class="lsa-secondary-button lsa-save-batch-json" type="button" disabled>保存批次 JSON</button><button class="lsa-secondary-button lsa-download-all" type="button" disabled>下载自动通过图</button></div>
             <p class="lsa-status-text lsa-batch-status">扫描后可开始；并发固定不超过 2，状态实时保存。</p>
           </div>
@@ -1549,8 +1836,8 @@
         <section class="lsa-tab-panel" data-panel="images" hidden>
           <div class="lsa-section-card">
             <div class="lsa-section-row"><h2 class="lsa-section-title">单条竖屏配图</h2><button class="lsa-text-action lsa-read-for-images" type="button">读取原标题</button></div>
-            <p class="lsa-section-hint">每次搜索都只根据读取到的原标题重新生成英文视觉词；不采用简介、正文、改写标题或旧关键词。优先 Pexels，必要时回退 Pixabay。</p>
-            <div class="lsa-search-row"><input class="lsa-assistant-input lsa-stock-query" type="search" placeholder="读取到的原标题 / 自动生成的英文关键词"><button class="lsa-primary-button lsa-search-images" type="button">按原标题搜索</button></div>
+            <p class="lsa-section-hint">输入框为空或等于原标题时，自动按原标题生成英文视觉词；改成英文词则直接搜索、不调用 AI。简介、正文和改写标题不参与搜图。优先 Pexels，必要时回退 Pixabay。</p>
+            <div class="lsa-search-row"><input class="lsa-assistant-input lsa-stock-query" type="search" placeholder="原标题；也可输入英文关键词"><button class="lsa-primary-button lsa-search-images" type="button">搜索图片</button></div>
             <p class="lsa-status-text lsa-image-status">正脸与裸露检测存在局限，无法确定的图片会明确标为“需复核”。</p>
             <div class="lsa-image-pager"><button class="lsa-secondary-button lsa-images-prev" type="button" disabled>上一页</button><span class="lsa-images-page">第 1 页</span><button class="lsa-secondary-button lsa-images-next" type="button" disabled>下一页</button></div>
           </div>
@@ -1645,6 +1932,20 @@
   }
 
   function bindAssistantEvents() {
+    q(".lsa-bangladesh-toggle")?.addEventListener("change", async (event) => {
+      const enabled = Boolean(event.target.checked);
+      if (enabled && !isBangladeshEligible()) {
+        event.target.checked = false;
+        setPanelStatus(state.route.kind === "list" ? ".lsa-batch-status" : ".lsa-edit-status", "只有语言为孟加拉语且国家为孟加拉时才能开启孟加拉模式", true);
+        return;
+      }
+      state.tabSettings = { ...state.tabSettings, bangladeshMode: enabled };
+      state.settings = { ...state.settings, bangladeshMode: enabled };
+      await chrome.storage.local.set({ [state.tabContext.keys.settings]: state.tabSettings });
+      renderBatch();
+      setPanelStatus(state.route.kind === "list" ? ".lsa-batch-status" : ".lsa-edit-status",
+        enabled ? "孟加拉模式已开启：自动初筛已收紧，投递前仍须逐条人工审核。" : "孟加拉模式已关闭。请确认当前国家规则是否允许。");
+    });
     q(".lsa-save-meta")?.addEventListener("click", async () => {
       if (!state.batch || state.workOwned) return setPanelStatus(".lsa-transfer-status", "请先读取 / 导入批次，并暂停处理后修改", true);
       try {
@@ -1716,7 +2017,7 @@
     q(".lsa-scan-batch")?.addEventListener("click", scanListItems);
     q(".lsa-start-batch")?.addEventListener("click", runBatch);
     q(".lsa-pause-batch")?.addEventListener("click", pauseBatch);
-    q(".lsa-retry-failed")?.addEventListener("click", () => retryFailed());
+    q(".lsa-retry-failed")?.addEventListener("click", () => retryFailed(null, q(".lsa-retry-type")?.value || ""));
     q(".lsa-save-batch-json")?.addEventListener("click", () => saveTextSnapshot("batch").catch(() => {}));
     q(".lsa-download-all")?.addEventListener("click", downloadAllImages);
     q(".lsa-refresh-record")?.addEventListener("click", () => {
@@ -1736,10 +2037,17 @@
     q(".lsa-bind-fields")?.addEventListener("click", () => pageTool("START_BINDING")
       .catch((error) => setPanelStatus(".lsa-manual-status", error.message, true)));
     q(".lsa-draft-copy")?.addEventListener("input", updateManualCounts);
-    q(".lsa-search-images")?.addEventListener("click", () => searchManualImages(1, true));
+    q(".lsa-search-images")?.addEventListener("click", () => searchManualImages(1));
     q(".lsa-images-prev")?.addEventListener("click", () => searchManualImages(state.imagePage - 1));
     q(".lsa-images-next")?.addEventListener("click", () => searchManualImages(state.imagePage + 1));
-    q(".lsa-stock-query")?.addEventListener("keydown", (event) => { if (event.key === "Enter") searchManualImages(1, true); });
+    q(".lsa-stock-query")?.addEventListener("input", () => {
+      state.manualResults = [];
+      state.imagePage = 1;
+      state.imageHasNext = false;
+      renderManualImages();
+      renderImagePager();
+    });
+    q(".lsa-stock-query")?.addEventListener("keydown", (event) => { if (event.key === "Enter") searchManualImages(1); });
     q(".lsa-diagnostics")?.addEventListener("toggle", updateDiagnostics);
   }
 
@@ -1751,8 +2059,8 @@
     unmount({ invalidate: false });
     state.tabContext ||= await sendRuntime("GET_TAB_CONTEXT");
     const keys = state.tabContext.keys;
-    const [{ settings = {} }, local] = await Promise.all([
-      chrome.storage.sync.get("settings"), chrome.storage.local.get(Object.values(keys)),
+    const [{ settings = {} }, local, duplicateLibrary] = await Promise.all([
+      chrome.storage.sync.get("settings"), chrome.storage.local.get(Object.values(keys)), sendRuntime("GET_DUPLICATE_LIBRARY"),
     ]);
     if (revision !== state.mountRevision) return;
     const assistantState = local[keys.assistantState] || {};
@@ -1773,6 +2081,10 @@
       }
     }
     state.imageHistory = local[keys.imageHistory] || {};
+    state.globalManual = duplicateLibrary.entries || {};
+    state.globalUsage = duplicateLibrary.usage || {};
+    const reconciliation = await sendRuntime("RECONCILE_IMAGE_DOWNLOADS").catch(() => null);
+    if (reconciliation?.history) state.imageHistory = reconciliation.history;
     const lease = await sendRuntime("WORK_LOCK", { operation: "status", token: state.workToken });
     if (revision !== state.mountRevision) return;
     if (!lease.active) await recoverInterruptedBatch();
@@ -1806,7 +2118,10 @@
     }
     renderBatch();
     updateDiagnostics();
-    if (route.kind === "edit") autoReadAndSearch().catch((error) => setPanelStatus(".lsa-image-status", error.message, true));
+    if (route.kind === "edit") {
+      refreshAiTranslationStatus();
+      autoReadAndSearch().catch((error) => setPanelStatus(".lsa-image-status", error.message, true));
+    }
     saveAssistantState({ enabled: true });
   }
 
@@ -1823,6 +2138,22 @@
 
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     const type = message?.type || message?.action;
+    if (type === "AI_RETRY_PROGRESS") {
+      const item = getBatchItems().find((record) => (message.itemId && String(record.id) === String(message.itemId))
+        || Number(record.index) === Number(message.itemIndex));
+      if (item) {
+        if (message.status === "waiting") {
+          item.retryStatus = `第 ${message.attempt} 次重试，等待 ${Math.ceil(Number(message.waitMs || 0) / 1000)} 秒 · ${message.model || "当前模型"}`;
+        } else if (message.status === "requesting" && Number(message.attempt) > 1) {
+          item.retryStatus = `正在进行第 ${message.attempt} 次请求 · ${message.model || "当前模型"}`;
+        } else {
+          item.retryStatus = "";
+        }
+        renderItemRuntimeState(item);
+      }
+      sendResponse?.({ ok: true });
+      return undefined;
+    }
     if (type !== "TOGGLE_FLOATING_ASSISTANT") return undefined;
     if (state.root) unmount({ disable: true });
     else handleRouteChange({ force: true }).catch(() => {});
@@ -1837,15 +2168,29 @@
       updateManualCounts();
       qa("[data-setting]").forEach((input) => { if (input !== document.activeElement) input.value = state.settings[input.dataset.setting]; });
       renderBatch();
+      if (state.route.kind === "edit") refreshAiTranslationStatus();
     }
     const keys = state.tabContext?.keys;
     if (area === "local" && keys && changes[keys.settings]) {
       state.tabSettings = changes[keys.settings].newValue || {};
       state.settings = { ...DEFAULT_SETTINGS, ...state.globalSettings, ...state.tabSettings };
       updateManualCounts(); renderBatch();
+      if (state.route.kind === "edit") refreshAiTranslationStatus();
+    }
+    if (area === "local" && changes.localSecrets && state.route.kind === "edit") {
+      refreshAiTranslationStatus();
     }
     if (area === "local" && keys && changes[keys.imageHistory]) {
       state.imageHistory = changes[keys.imageHistory].newValue || {};
+      renderBatch(); renderManualImages();
+    }
+    if (area === "local" && changes.lsaManualDuplicates) {
+      state.globalManual = changes.lsaManualDuplicates.newValue || {};
+      renderBatch(); renderManualImages();
+    }
+    if (area === "local" && changes.lsaImageUsage) {
+      state.globalUsage = changes.lsaImageUsage.newValue || {};
+      renderBatch(); renderManualImages();
     }
     if (area === "local" && keys && changes[keys.batchState] && !state.workOwned) {
       const incoming = changes[keys.batchState].newValue;

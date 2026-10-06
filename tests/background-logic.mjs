@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const source = fs.readFileSync(path.resolve(here, "..", "background.js"), "utf8");
+const backgroundModules = ["background-ai.js", "background-stock.js", "background-downloads.js", "background-locks.js"];
 const noop = () => {};
 class FakeOffscreenCanvas {
   constructor(width, height) { this.width = width; this.height = height; }
@@ -42,6 +43,7 @@ const context = vm.createContext({
   OffscreenCanvas: FakeOffscreenCanvas,
 });
 vm.runInContext(fs.readFileSync(path.resolve(here, "..", "workflow.js"), "utf8"), context);
+for (const file of backgroundModules) vm.runInContext(fs.readFileSync(path.resolve(here, "..", file), "utf8"), context, { filename: file });
 vm.runInContext(source, context, { filename: "background.js" });
 
 function evaluate(expression) {
@@ -75,8 +77,18 @@ assert(evaluate("describeEmptyAiResponse({model:'custom-model',choices:[]})").in
   "空响应诊断未包含实际返回模型");
 assert(evaluate("isReasoningTruncated({choices:[{finish_reason:'length',message:{content:'',reasoning_content:'long reasoning'}}]})") === true,
   "未识别思考内容耗尽输出预算");
+assert(evaluate("isOutputTruncated({choices:[{finish_reason:'length',message:{content:'partial result'}}]})") === true,
+  "有部分正文的 length 响应也必须识别为截断");
+assert(evaluate("isOutputTruncated({choices:[{finish_reason:'length',message:{content:''}}]})") === true,
+  "无 reasoning_content 的 length 响应也必须识别为截断");
 assert(evaluate("isReasoningTruncated({choices:[{finish_reason:'stop',message:{content:'',reasoning_content:'reasoning'}}]})") === false,
   "非 length 空响应不应触发扩容重试");
+assert(evaluate("retryDelayMs(0)") === 5000 && evaluate("retryDelayMs(1)") === 15000 && evaluate("retryDelayMs(2)") === 30000,
+  "自动重试没有使用 5/15/30 秒分级退避");
+assert(evaluate("retryDelayMs(0,90000)") === 60000, "Retry-After 没有限制到 60 秒");
+assert(evaluate("classifyAiError({status:429})") === "RATE_LIMIT", "429 未分类为限流");
+assert(evaluate("classifyAiError({status:503})") === "SERVER_ERROR", "5xx 未分类为服务端错误");
+assert(evaluate("classifyAiError({responseKind:'EMPTY_CHOICES'})") === "EMPTY_RESPONSE", "空 choices 未分类为空响应");
 assert(evaluate("shouldRetry({code:'TIMEOUT',retryable:true})") === false, "超时不应再连续自动重试");
 assert(evaluate("getNearestAspect(1080, 1920, 'auto').aspectLabel") === "9:16", "9:16 比例识别失败");
 assert(evaluate("getNearestAspect(1080, 2400, 'auto').aspectLabel") === "9:20", "9:20 比例识别失败");
@@ -86,6 +98,22 @@ assert(evaluate("inspectImageMetadataSafety({title:'woman walking'}).safetyStatu
   "普通人物图片应要求复核");
 assert(evaluate("inspectImageMetadataSafety({title:'woman silhouette from behind'}).safetyStatus") === "passed",
   "背影/剪影不应一律拒绝");
+assert(evaluate("inspectImageMetadataSafety({title:'woman silhouette from behind',width:900,height:1600},true).safetyStatus") === "rejected",
+  "孟加拉模式不应因背影词放行人物");
+assert(evaluate("inspectImageMetadataSafety({title:'realistic pet cat',width:900,height:1600},true).safetyStatus") === "rejected",
+  "孟加拉模式未拒绝非白名单动物");
+assert(evaluate("inspectImageMetadataSafety({title:'cartoon cat illustration',width:900,height:1600},true).safetyStatus") === "review",
+  "孟加拉模式的动画动物应进入人工复核而非自动通过");
+assert(evaluate("inspectImageMetadataSafety({title:'butterfly in garden',width:900,height:1600},true).safetyStatus") === "passed",
+  "孟加拉模式应允许蝴蝶候选");
+assert(evaluate("inspectImageMetadataSafety({title:'fish in aquarium',width:900,height:1600},true).safetyStatus") === "passed",
+  "孟加拉模式应允许鱼类候选");
+const bangladeshQuery = evaluate("buildSafeStockQuery('woman cooking dinner',true)");
+assert(bangladeshQuery.includes("no people") && !bangladeshQuery.includes("side profile"),
+  "孟加拉模式人物词没有转向无人对象/场景搜索");
+assert(evaluate("normalizeLanguageCode('孟加拉语')") === "bn", "孟加拉语代码未识别");
+assert(evaluate("detectSourceLanguage('কীভাবে বাগানে ফুল ফলাবেন').code") === "bn", "孟加拉文字未识别");
+assert(evaluate("detectSourceLanguage('این یک راه خوب برای زندگی است').code") === "fa", "波斯语文本未识别");
 assert(evaluate("normalizePexelsImage({id:7,src:{original:'https://img/original.jpg',medium:'https://img/medium.jpg'},width:1080,height:1920}).imageUrl")
   === "https://img/original.jpg", "Pexels 未优先 original");
 
@@ -137,5 +165,23 @@ assert(imageQueryMessages[1].content.includes("Почему кошки любя�
 assert(!imageQueryMessages[1].content.includes("summary") && !imageQueryMessages[1].content.includes("description"),
   "独立搜图请求混入简介或其他内容");
 assert(imageQueryMessages[0].content.includes("previously saved query"), "手动换图未明确排除旧关键词");
+assert(evaluate("buildImageQueryMessages('বাড়ির সাজসজ্জা',true)[0].content").includes("BANGLADESH MODE"),
+  "孟加拉搜图提示词未加入专用约束");
+assert(evaluate("buildAiMessages({originalTitle:'খাবারের ধারণা',originalSummary:'',titleLimit:12,summaryLimit:50,expectedLanguage:'bn',bangladeshMode:true})[0].content").includes("BANGLADESH MODE"),
+  "孟加拉文案提示词未加入专用约束");
+
+chrome.storage.sync.get = async () => ({settings:{aiEndpoint:"https://api.test/chat/completions",aiModel:"translation-model",rewriteMode:"ai",thinkingLevel:"medium",aiTimeoutMs:30000}});
+chrome.storage.local.get = async () => ({localSecrets:{aiApiKey:"translation-key"}});
+let translationRequest;
+context.fetch = async (_url, options) => {
+  translationRequest = JSON.parse(options.body);
+  return new Response(JSON.stringify({model:"translation-model",choices:[{finish_reason:"stop",message:{content:'{"translation":"宠物牙齿护理"}'}}]}), {headers:{"content-type":"application/json"}});
+};
+const translationStatus = await evaluate("getAiTranslationStatus()");
+assert(translationStatus.configured === true, "完整主 AI 配置未启用手动标题翻译");
+const translated = await evaluate("translateTextWithAi({text:'Pet dental care'})");
+assert(translated.titleZh === "宠物牙齿护理", "标题 AI 翻译结果解析失败");
+assert(translationRequest.messages.at(-1).content === "Pet dental care", "标题翻译请求没有原样传入标题");
+assert(!JSON.stringify(translationRequest).includes("summary"), "标题翻译请求不应携带简介");
 
 console.log("后台逻辑测试通过");

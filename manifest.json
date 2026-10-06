@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "锁屏编辑助手",
-  "version": "0.12.2",
+  "version": "0.13.0",
   "description": "为锁屏内容后台批量改写多语言标题与简介、搜索竖屏商用图片并辅助填写文案。",
   "permissions": [
     "contextMenus",
@@ -15,7 +15,8 @@
     "https://*/*"
   ],
   "background": {
-    "service_worker": "background.js"
+    "service_worker": "background-entry.js",
+    "type": "module"
   },
   "action": {
     "default_title": "显示或隐藏锁屏编辑助手"
@@ -38,6 +39,8 @@
       "js": [
         "workflow.js",
         "content.js",
+        "assistant-engine.js",
+        "assistant-ui.js",
         "assistant.js"
       ],
       "css": [

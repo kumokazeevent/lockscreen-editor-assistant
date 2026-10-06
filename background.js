@@ -1,4 +1,8 @@
-importScripts("workflow.js");
+const LSAWorkflow = globalThis.LSAWorkflow;
+const { parseRetryAfter, retryDelayMs, classifyAiError } = globalThis.LSABackgroundAi;
+const { PERSON_TERMS, containsWholeTerm, inspectImageMetadataSafety, buildSafeStockQuery } = globalThis.LSABackgroundStock;
+const { extensionForMime, fileNameForMime } = globalThis.LSABackgroundDownloads;
+const queueWorkLock = globalThis.LSABackgroundLocks.serialQueue();
 const SEARCH_ENGINES = {
   baidu: (query) =>
     `https://image.baidu.com/search/index?tn=baiduimage&word=${encodeURIComponent(query)}`,
@@ -15,12 +19,23 @@ const DEFAULT_BATCH_SETTINGS = {
   batchConcurrency: 2,
   rewriteMode: "ai",
   thinkingLevel: "medium",
+  aiFallbackModel: "",
+  bangladeshMode: false,
   duplicateCheck: true,
+  usageThreshold: 3,
+  usageWindowDays: 90,
   aiTimeoutMs: 30000,
   preferredRatio: "auto",
   originalFolder: "锁屏批次/原始内容",
   imageFolder: "锁屏批次/成品图片",
 };
+
+const MANUAL_DUPLICATES_KEY = "lsaManualDuplicates";
+const IMAGE_USAGE_KEY = "lsaImageUsage";
+const USAGE_REBUILT_BATCHES_KEY = "lsaUsageRebuiltBatches";
+const MANUAL_DUPLICATES_MIGRATED_KEY = "lsaManualDuplicatesMigratedV1";
+const USAGE_EVENT_LIMIT = 40;
+const USAGE_TTL_MS = 365 * 86400000;
 
 const TARGET_RATIOS = {
   "9:16": 9 / 16,
@@ -45,6 +60,7 @@ function tabEpoch() {
 chrome.runtime.onStartup?.addListener(() => {
   const epoch = crypto.randomUUID();
   epochPromise = chrome.storage.local.set({ lsaTabEpoch: epoch }).then(() => epoch);
+  ensureDuplicateMigration().catch(() => {});
 });
 async function getTabContext(tabId) {
   if (!Number.isInteger(tabId) || tabId < 0) throw new Error("未识别到当前浏览器标签页，请刷新后台后重试");
@@ -56,7 +72,7 @@ async function tabOverrides(tabId) {
   if (!Number.isInteger(tabId)) return {};
   const { keys } = await getTabContext(tabId);
   const saved = (await chrome.storage.local.get(keys.settings))[keys.settings] || {};
-  return Object.fromEntries(["titleLimit", "summaryLimit", "rewriteMode", "thinkingLevel", "batchConcurrency", "batchLimit"].filter((key) => saved[key] !== undefined).map((key) => [key, saved[key]]));
+  return Object.fromEntries(["titleLimit", "summaryLimit", "rewriteMode", "thinkingLevel", "batchConcurrency", "batchLimit", "bangladeshMode"].filter((key) => saved[key] !== undefined).map((key) => [key, saved[key]]));
 }
 async function savedBatches() {
   const all = await chrome.storage.local.get(null);
@@ -68,6 +84,7 @@ async function savedBatches() {
 }
 
 chrome.runtime.onInstalled.addListener(() => {
+  ensureDuplicateMigration().catch(() => {});
   chrome.contextMenus.removeAll(() => {
     chrome.contextMenus.create({
       id: "lockscreen-search-selection",
@@ -136,6 +153,13 @@ class RequestError extends Error {
     super(message);
     this.name = "RequestError";
     Object.assign(this, details);
+  }
+}
+
+class OutputTruncatedError extends RequestError {
+  constructor(message, details = {}) {
+    super(message, { ...details, code: "OUTPUT_LENGTH", errorType: "OUTPUT_LENGTH", retryable: true });
+    this.name = "OutputTruncatedError";
   }
 }
 
@@ -231,6 +255,133 @@ async function fetchJson(url, options = {}, timeout = 30000, timeoutLabel = "接
     });
   }
   return payload;
+}
+
+function buildAiDiagnostic({ status = 0, contentType = "", elapsedMs = 0, timeoutMs = 0, attempt = 1,
+  model = "", bodyText = "", responseKind = "", requestUrl = "", retryAfterMs = 0 } = {}) {
+  return {
+    httpStatus: Number(status) || 0,
+    contentType: String(contentType || "").slice(0, 200),
+    elapsedMs: Math.max(0, Math.round(Number(elapsedMs) || 0)),
+    durationMs: Math.max(0, Math.round(Number(elapsedMs) || 0)),
+    timeoutMs: Math.max(0, Math.round(Number(timeoutMs) || 0)),
+    attempt: Math.max(1, Math.round(Number(attempt) || 1)),
+    model: String(model || "").slice(0, 200),
+    rawBody: String(bodyText || "").slice(0, 3000),
+    responseKind: String(responseKind || "").slice(0, 80),
+    requestUrl: String(requestUrl || "").slice(0, 1000),
+    retryAfterMs: Math.min(60000, Math.max(0, Math.round(Number(retryAfterMs) || 0))),
+  };
+}
+
+function aiResponseKind(payload, bodyText) {
+  if (!String(bodyText || "").trim()) return "EMPTY_BODY";
+  if (payload?.error) return "ERROR_JSON";
+  if (Array.isArray(payload?.choices) && payload.choices.length === 0) return "EMPTY_CHOICES";
+  if (Array.isArray(payload?.choices) && payload.choices.length && !getAiResponseText(payload).trim()
+    && payload.choices[0]?.finish_reason !== "length"
+    && !normalizeAiContent(payload.choices[0]?.message?.reasoning_content).trim()) return "EMPTY_CONTENT";
+  return "JSON";
+}
+
+async function fetchAiJson(url, options = {}, timeout = 30000, timeoutLabel = "AI", metadata = {}) {
+  const startedAt = Date.now();
+  let response;
+  try {
+    response = await fetchResponse(url, options, timeout, timeoutLabel);
+  } catch (error) {
+    const diagnostic = buildAiDiagnostic({
+      elapsedMs: Date.now() - startedAt,
+      timeoutMs: timeout,
+      attempt: metadata.attempt,
+      model: metadata.model,
+      requestUrl: String(url || ""),
+      responseKind: error?.code === "TIMEOUT" ? "TIMEOUT" : "NETWORK_ERROR",
+    });
+    error.errorType = classifyAiError({ code: error?.code });
+    error.model = metadata.model || "";
+    error.diagnostic = diagnostic;
+    error.diagnostics = [diagnostic];
+    throw error;
+  }
+  const bodyText = await response.text().catch(() => "");
+  const contentType = response.headers.get("content-type") || "";
+  const retryAfterMs = parseRetryAfter(response.headers.get("retry-after"));
+  let payload = {};
+  let parsed = false;
+  if (bodyText.trim()) {
+    try { payload = JSON.parse(bodyText); parsed = true; } catch {}
+  }
+  const responseKind = !bodyText.trim() ? "EMPTY_BODY" : parsed ? aiResponseKind(payload, bodyText) : "INVALID_JSON";
+  const diagnostic = buildAiDiagnostic({
+    status: response.status,
+    contentType,
+    elapsedMs: Date.now() - startedAt,
+    timeoutMs: timeout,
+    attempt: metadata.attempt,
+    model: metadata.model,
+    bodyText,
+    responseKind,
+    requestUrl: response.url || String(url || ""),
+    retryAfterMs,
+  });
+  if (!response.ok) {
+    const providerMessage = payload?.detail || payload?.error?.message || payload?.message
+      || (/<!doctype html|<html\b/i.test(bodyText) ? "服务器返回了网页而不是 API JSON，请检查完整接口地址" : bodyText.slice(0, 240))
+      || `HTTP ${response.status}`;
+    const errorType = classifyAiError({ status: response.status, responseKind });
+    throw new RequestError(`${timeoutLabel}请求失败（${response.status}）：${providerMessage}`, {
+      code: "HTTP_ERROR",
+      status: response.status,
+      requestUrl: diagnostic.requestUrl,
+      retryable: response.status === 408 || response.status === 409 || response.status === 429 || response.status >= 500,
+      retryAfterMs,
+      errorType,
+      model: metadata.model || "",
+      diagnostic,
+      diagnostics: [diagnostic],
+    });
+  }
+  if (!parsed || ["EMPTY_BODY", "ERROR_JSON", "EMPTY_CHOICES", "EMPTY_CONTENT", "INVALID_JSON"].includes(responseKind)) {
+    const message = responseKind === "EMPTY_BODY" ? `${timeoutLabel}返回 200，但响应正文为空`
+      : responseKind === "ERROR_JSON" ? `${timeoutLabel}返回 200，但正文是 error JSON`
+      : responseKind === "EMPTY_CHOICES" ? `${timeoutLabel}返回 200，但 choices 为空数组`
+      : responseKind === "EMPTY_CONTENT" ? describeEmptyAiResponse(payload)
+      : `${timeoutLabel}返回 200，但正文不是有效 JSON`;
+    throw new RequestError(message, {
+      code: "AI_EMPTY",
+      status: response.status,
+      requestUrl: diagnostic.requestUrl,
+      retryable: true,
+      errorType: "EMPTY_RESPONSE",
+      model: metadata.model || "",
+      diagnostic,
+      diagnostics: [diagnostic],
+    });
+  }
+  return { data: payload, diagnostic };
+}
+
+function applyCompletionBudget(body, budget, field = "max_tokens") {
+  delete body.max_tokens;
+  delete body.max_completion_tokens;
+  body[field === "max_completion_tokens" ? "max_completion_tokens" : "max_tokens"] = budget;
+  return body;
+}
+
+function requiresCompletionTokenFieldFallback(error) {
+  if (![400, 422].includes(Number(error?.status))) return false;
+  const raw = String(error?.diagnostic?.rawBody || error?.message || "");
+  return /max_completion_tokens/i.test(raw) || /max_tokens[^\n]{0,100}(?:unsupported|not supported|unknown|invalid)/i.test(raw);
+}
+
+function sleepForRetry(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function notifyAiRetry(tabId, payload = {}) {
+  if (!Number.isInteger(tabId) || typeof chrome.tabs?.sendMessage !== "function") return Promise.resolve();
+  return chrome.tabs.sendMessage(tabId, { type: "AI_RETRY_PROGRESS", ...payload }).catch(() => {});
 }
 
 function normalizeOpenverseImage(item) {
@@ -344,51 +495,12 @@ function getNearestAspect(width, height, preferredRatio = "auto") {
   return { ratio, aspectLabel: bestLabel, ratioDistance: bestDistance };
 }
 
-const EXPOSED_SKIN_TERMS = [
-  "nude", "nudity", "naked", "topless", "shirtless", "lingerie", "underwear", "bikini",
-  "swimsuit", "swimwear", "cleavage", "erotic", "boudoir", "seductive", "sexy",
-];
-const FRONTAL_FACE_TERMS = [
-  "headshot", "selfie", "looking at camera", "facing camera", "front portrait", "close-up face",
-  "close up face", "facial portrait",
-];
-const SAFE_PERSON_POSE_TERMS = [
-  "side profile", "profile view", "back view", "from behind", "silhouette", "shadow", "rear view",
-];
-const PERSON_TERMS = [
-  "person", "people", "woman", "women", "man", "men", "girl", "boy", "child", "adult", "model",
-  "lady", "gentleman", "couple", "family", "worker", "traveler", "traveller",
-];
-
-function inspectImageMetadataSafety(item) {
-  const text = `${item.title || ""} ${item.attribution || ""}`.toLowerCase();
-  const exposure = EXPOSED_SKIN_TERMS.find((term) => text.includes(term));
-  if (exposure) {
-    return { safetyStatus: "rejected", safetyReason: `元数据含高裸露风险词：${exposure}` };
-  }
-  const frontal = FRONTAL_FACE_TERMS.find((term) => text.includes(term));
-  if (frontal) {
-    return { safetyStatus: "rejected", safetyReason: `元数据显示可能为正脸特写：${frontal}` };
-  }
-  const safePose = SAFE_PERSON_POSE_TERMS.find((term) => text.includes(term));
-  if (safePose) {
-    return { safetyStatus: "passed", safetyReason: `元数据显示为可用人物姿态：${safePose}` };
-  }
-  if (PERSON_TERMS.some((term) => new RegExp(`\\b${term}\\b`, "i").test(text))) {
-    return {
-      safetyStatus: "review",
-      safetyReason: "图片包含人物，元数据无法确认是否正脸或裸露，请在上传前看缩略图复核",
-    };
-  }
-  return { safetyStatus: "passed", safetyReason: "元数据未发现正脸或高裸露风险词" };
-}
-
-function enrichAndRankImages(items, preferredRatio = "auto", limit = 12) {
+function enrichAndRankImages(items, preferredRatio = "auto", limit = 12, bangladeshMode = false) {
   return items
     .filter(isPortraitImage)
     .map((item) => {
       const aspect = getNearestAspect(item.width, item.height, preferredRatio);
-      const safety = inspectImageMetadataSafety(item);
+      const safety = inspectImageMetadataSafety(item, bangladeshMode);
       const cropUrls = item.source === "pexels"
         ? {
             "9:16": pexelsCropUrl(item.originalUrl || item.imageUrl, 1080, 1920),
@@ -410,24 +522,6 @@ function enrichAndRankImages(items, preferredRatio = "auto", limit = 12) {
     .filter((item) => item.safetyStatus !== "rejected")
     .sort((left, right) => left.rankScore - right.rankScore || right.height - left.height)
     .slice(0, limit);
-}
-
-function buildSafeStockQuery(query) {
-  const base = String(query || "")
-    .replace(/[\r\n\t]+/g, " ")
-    .replace(/\s{2,}/g, " ")
-    .trim();
-  if (!base) throw new Error("请输入图片搜索词");
-  const lower = base.toLowerCase();
-  const humanQueryTerms = [
-    ...PERSON_TERMS,
-    "president", "politician", "leader", "doctor", "teacher", "farmer", "athlete", "singer",
-    "actor", "actress", "tourist", "mother", "father", "crowd", "pedestrian", "human",
-  ];
-  if (!humanQueryTerms.some((term) => new RegExp(`\\b${term}\\b`, "i").test(lower))) return base;
-  const additions = ["side profile", "back view", "silhouette", "fully clothed", "wide shot"]
-    .filter((term) => !lower.includes(term));
-  return `${base} ${additions.join(" ")}`.trim();
 }
 
 const PIXABAY_CACHE_TTL = 24 * 60 * 60 * 1000;
@@ -463,7 +557,7 @@ async function searchPexels(query, page = 1, options = {}) {
     });
   }
   const url = validateHttpUrl(settings.pexelsEndpoint || "https://api.pexels.com/v1/search", "Pexels 接口地址");
-  url.searchParams.set("query", options.safeQuery ? buildSafeStockQuery(query) : String(query).trim());
+  url.searchParams.set("query", options.safeQuery ? buildSafeStockQuery(query, options.bangladeshMode) : String(query).trim());
   url.searchParams.set("orientation", "portrait");
   url.searchParams.set("locale", options.safeQuery ? "en-US" : /[\u3400-\u9fff]/.test(query) ? "zh-CN" : "en-US");
   url.searchParams.set("per_page", String(options.perPage || 12));
@@ -492,11 +586,11 @@ async function searchPixabay(query, page = 1, options = {}) {
       retryable: false,
     });
   }
-  const safeQuery = options.safeQuery ? buildSafeStockQuery(query) : String(query).trim();
+  const safeQuery = options.safeQuery ? buildSafeStockQuery(query, options.bangladeshMode) : String(query).trim();
   const normalizedQuery = Array.from(safeQuery).slice(0, 100).join("");
   const perPage = options.perPage || 20;
   const configuredEndpoint = settings.pixabayEndpoint || "https://pixabay.com/api/";
-  const cacheKey = `v3|${configuredEndpoint}|${normalizedQuery.toLowerCase()}|${page}|${perPage}`;
+  const cacheKey = `v4|${Boolean(options.bangladeshMode)}|${configuredEndpoint}|${normalizedQuery.toLowerCase()}|${page}|${perPage}`;
   const cachedResult = await getCachedPixabaySearch(cacheKey);
   if (cachedResult) return cachedResult;
   const url = validateHttpUrl(configuredEndpoint, "Pixabay 接口地址");
@@ -555,30 +649,31 @@ async function searchStockImages(source, query, page = 1) {
   };
 }
 
-async function searchBatchImages(query, preferredRatio = "auto", page = 1, source = "") {
+async function searchBatchImages(query, preferredRatio = "auto", page = 1, source = "", bangladeshMode = false) {
   if (!String(query || "").trim()) throw new Error("AI 未生成可用的英文图片关键词");
   const ratio = normalizePreferredRatio(preferredRatio);
   if (["pexels", "pixabay"].includes(source)) {
-    const result = await (source === "pexels" ? searchPexels : searchPixabay)(query, page, { safeQuery: true, perPage: 60, timeout: 30000 });
-    return { ...result, preferredRatio: ratio, items: enrichAndRankImages(result.items, ratio, 12) };
+    const result = await (source === "pexels" ? searchPexels : searchPixabay)(query, page, { safeQuery: true, perPage: 60, timeout: 30000, bangladeshMode });
+    return { ...result, preferredRatio: ratio, bangladeshMode, items: enrichAndRankImages(result.items, ratio, 60, bangladeshMode) };
   }
   let pexelsError = null;
   try {
-    const pexels = await searchPexels(query, page, { safeQuery: true, perPage: 60, timeout: 30000 });
-    const items = enrichAndRankImages(pexels.items, ratio, 12);
-    if (items.length) return { ...pexels, preferredRatio: ratio, items, fallbackUsed: false };
+    const pexels = await searchPexels(query, page, { safeQuery: true, perPage: 60, timeout: 30000, bangladeshMode });
+    const items = enrichAndRankImages(pexels.items, ratio, 60, bangladeshMode);
+    if (items.length) return { ...pexels, preferredRatio: ratio, bangladeshMode, items, fallbackUsed: false };
     pexelsError = new Error("Pexels 没有返回符合竖屏和安全规则的图片");
   } catch (error) {
     pexelsError = error;
   }
 
   try {
-    const pixabay = await searchPixabay(query, page, { safeQuery: true, perPage: 60, timeout: 30000 });
-    const items = enrichAndRankImages(pixabay.items, ratio, 12);
+    const pixabay = await searchPixabay(query, page, { safeQuery: true, perPage: 60, timeout: 30000, bangladeshMode });
+    const items = enrichAndRankImages(pixabay.items, ratio, 60, bangladeshMode);
     if (!items.length) throw new Error("Pixabay 也没有返回符合竖屏和安全规则的图片");
     return {
       ...pixabay,
       preferredRatio: ratio,
+      bangladeshMode,
       items,
       fallbackUsed: true,
       fallbackReason: cleanErrorMessage(pexelsError, "Pexels 无可用结果"),
@@ -616,22 +711,13 @@ function wordCount(value) {
 }
 
 function normalizeLanguageCode(value) {
-  const text = String(value || "").trim().toLowerCase();
-  if (!text) return "";
-  const containsRules = [
-    ["vi", /vietnamese|越南语|越南|\bvie?\b/i],
-    ["es", /spanish|español|西班牙语|西班牙|\bes\b|\bspa\b/i],
-    ["en", /english|英语|英文|\ben\b|\beng\b/i],
-    ["ru", /russian|русский|俄语|俄文|\bru\b|\brus\b/i],
-    ["be", /belarusian|беларуская|白俄罗斯语|\bbe\b|\bbel\b/i],
-    ["ar", /arabic|العربية|阿拉伯语|阿拉伯文|\bar\b|\bara\b/i],
-    ["it", /italian|italiano|意大利语|\bit\b|\bita\b/i],
-    ["zh", /chinese|中文|汉语|華語|\bzh\b|\bzho\b/i],
-  ];
-  for (const [code, pattern] of containsRules) {
-    if (pattern.test(text)) return code;
-  }
-  return text.slice(0, 12);
+  return LSAWorkflow.normalizeLanguageCode(value);
+}
+
+const SUPPORTED_LANGUAGE_CODES = new Set(["vi", "es", "en", "ru", "be", "ar", "it", "zh", "fa", "ne", "si", "my", "ky", "tg", "az", "bn", "id"]);
+
+function isBangladeshCountry(value) {
+  return /(?:bangladesh|孟加拉|বাংলাদেশ)/iu.test(String(value || "").trim());
 }
 
 function supportsThinkingControl(model, endpoint = "") {
@@ -666,6 +752,13 @@ function configureThinking(body, model, endpoint, level = "medium") {
   return body;
 }
 
+function aiHeaders(apiKey) {
+  return {
+    "Content-Type": "application/json",
+    Authorization: `Bearer ${String(apiKey || "").trim()}`,
+  };
+}
+
 function normalizeAiEndpoint(value) {
   const endpointUrl = validateHttpUrl(value, "AI 接口地址");
   endpointUrl.pathname = endpointUrl.pathname.replace(/\/+$/g, "");
@@ -689,6 +782,8 @@ function normalizeAiEndpoint(value) {
 function detectSourceLanguage(text) {
   const value = String(text || "").trim();
   if (!value) return { code: "", confidence: 0 };
+  if (/\p{Script=Bengali}/u.test(value)) return { code: "bn", confidence: 1 };
+  if (/[پچژگکی]/u.test(value) && /(?:است|برای|های|یک|در|از|به|که)/u.test(value)) return { code: "fa", confidence: 0.92 };
   if (/\p{Script=Arabic}/u.test(value)) return { code: "ar", confidence: 1 };
   if (/[ўЎіІ]/u.test(value)) return { code: "be", confidence: 0.95 };
   if (/\p{Script=Cyrillic}/u.test(value)) return { code: "ru", confidence: 0.9 };
@@ -764,10 +859,12 @@ function describeEmptyAiResponse(data) {
 }
 
 function isReasoningTruncated(data) {
-  const choice = data?.choices?.[0];
-  return choice?.finish_reason === "length" &&
-    !normalizeAiContent(choice?.message?.content).trim() &&
-    Boolean(normalizeAiContent(choice?.message?.reasoning_content).trim());
+  return data?.choices?.[0]?.finish_reason === "length";
+}
+
+
+function isOutputTruncated(data) {
+  return isReasoningTruncated(data);
 }
 
 function validateAiResult(raw, context) {
@@ -847,7 +944,8 @@ function buildAiMessages(context, correction = "") {
     languageInstruction,
     "IMAGE QUERY SOURCE IS STRICT: image_query_en must be 5 to 12 concrete English visual keywords derived EXCLUSIVELY from the ORIGINAL TITLE. Ignore the original description, article text and shortened title for this field.",
     "For people, prefer side profile, back view, silhouette, fully clothed subjects or wide shots. Avoid frontal close-ups, selfies, swimwear, nudity, exposed skin and sexualized poses. Prefer objects or scenery when people are unnecessary.",
-    "LANGUAGE CODE: language must be the ISO 639-1 two-letter code of the original title, such as en, vi, es, ru, be, ar or it.",
+    context.bangladeshMode ? "BANGLADESH MODE: avoid religiously sensitive framing, storytelling narration, negative or sad wording, and romantic-love themes. Food content must never mention pork, pig, bacon or ham. Prefer neutral, practical and positive wording." : "",
+    "LANGUAGE CODE: language must be the ISO 639-1 two-letter code of the original title: vi, es, en, ru, be, ar, it, zh, fa, ne, si, my, ky, tg, az, bn or id.",
     "MANDATORY FINAL CHECK: count words in the title and summary before answering. For Vietnamese count space-separated written words/syllables; for Chinese and other unspaced writing use natural word segmentation.",
     "Keep internal reasoning concise and reserve enough output budget for the final JSON answer.",
     `If title exceeds ${context.titleLimit} words, rewrite it shorter and count again. If summary exceeds ${context.summaryLimit} words, rewrite it shorter and count again.`,
@@ -892,6 +990,7 @@ async function reviewAiCandidate(candidate, context, settings, localSecrets, tim
           `The final title MUST use the original language and contain at most ${context.titleLimit} words. Count words, not letters. Spaces and punctuation do not count. Contractions and hyphenated words count as one.`,
           `The final summary MUST use the original language and contain at most ${context.summaryLimit} words.`,
           "Preserve the core meaning, important proper nouns and every stated number of methods, steps, tips or items. Do not invent facts.",
+          context.bangladeshMode ? "BANGLADESH MODE: remove religiously sensitive framing, storytelling narration, negative/sad wording, romantic-love themes and any pork-related food wording while preserving the factual core." : "",
           "image_query_en must remain a concrete English stock-photo query based EXCLUSIVELY on original_title. Ignore original_summary and article text for this field.",
           "Count the words in title and summary before replying. Rewrite and recount until both word limits are satisfied.",
           "Review quickly and directly. Do not provide analysis or explanations.",
@@ -911,22 +1010,34 @@ async function reviewAiCandidate(candidate, context, settings, localSecrets, tim
     ],
   };
   disableThinking(requestBody, model, endpoint);
-  const data = await fetchJson(endpoint, {
+  const { data, diagnostic } = await fetchAiJson(endpoint, {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${apiKey}`,
-    },
+    headers: aiHeaders(apiKey),
     body: JSON.stringify(requestBody),
-  }, timeout, "审核 AI");
+  }, timeout, "审核 AI", { attempt: 1, model });
+  if (data?.choices?.[0]?.finish_reason === "length") {
+    throw new OutputTruncatedError(describeEmptyAiResponse(data), { model, diagnostic, diagnostics: [diagnostic] });
+  }
   const content = getAiResponseText(data);
   if (!content) {
     throw new RequestError(describeEmptyAiResponse(data), {
       code: "REVIEW_AI_INVALID",
       retryable: false,
+      errorType: "EMPTY_RESPONSE",
+      model,
+      diagnostic,
+      diagnostics: [diagnostic],
     });
   }
-  return validateAiResult(extractJson(content), context);
+  try {
+    return validateAiResult(extractJson(content), context);
+  } catch (error) {
+    error.model ||= model;
+    error.errorType ||= "AI_INVALID";
+    error.diagnostic ||= diagnostic;
+    error.diagnostics ||= [diagnostic];
+    throw error;
+  }
 }
 
 function shouldRetry(error) {
@@ -952,6 +1063,7 @@ async function generateBatchItemWithAi(payload = {}, tabId) {
   }
   let endpoint = String(settings.aiEndpoint || "").trim();
   const model = String(settings.aiModel || "").trim();
+  const fallbackModel = String(settings.aiFallbackModel || "").trim();
   const apiKey = String(localSecrets.aiApiKey || "").trim();
   if (!endpoint || !model || !apiKey) {
     throw new RequestError("独立 AI 接口未配置完整，请在设置中填写接口地址、模型和 API Key", {
@@ -965,8 +1077,11 @@ async function generateBatchItemWithAi(payload = {}, tabId) {
   if (!originalTitle) throw new Error("没有读取到原标题，无法改写");
   const originalSummary = String(item.originalSummary || item.summary || "").trim().slice(0, 2000);
   const detected = detectSourceLanguage(`${originalTitle} ${originalSummary}`);
-  const hintedLanguage = normalizeLanguageCode(item.languageHint || item.language || payload.languageHint);
+  const normalizedHint = normalizeLanguageCode(item.languageHint || item.language || item.pageLanguage || payload.languageHint);
+  const hintedLanguage = SUPPORTED_LANGUAGE_CODES.has(normalizedHint) ? normalizedHint : "";
   const expectedLanguage = hintedLanguage || (detected.confidence >= 0.55 ? detected.code : "");
+  const bangladeshMode = Boolean(settings.bangladeshMode && expectedLanguage === "bn"
+    && isBangladeshCountry(item.pageCountry || payload.pageCountry || payload.country));
   const context = {
     originalTitle,
     originalSummary,
@@ -975,102 +1090,196 @@ async function generateBatchItemWithAi(payload = {}, tabId) {
     rewritePrompt,
     titleLimit: clampNumber(payload.titleLimit ?? settings.titleLimit, 12, 1, 100),
     summaryLimit: clampNumber(payload.summaryLimit ?? settings.summaryLimit, 50, 1, 500),
+    bangladeshMode,
   };
   const timeout = clampNumber(payload.timeoutMs ?? settings.aiTimeoutMs, 30000, 5000, 120000);
-  const maxRetries = clampNumber(payload.maxRetries, 2, 0, 2);
-  let lastError;
-  let attemptsMade = 0;
-  let outputTokenBudget = 4096;
+  const maxAttempts = clampNumber((payload.maxRetries ?? 2) + 1, 3, 1, 3);
+  const allDiagnostics = [];
+  let totalAttempts = 0;
 
-  for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
-    attemptsMade = attempt + 1;
-    const requestBody = {
-      model,
-      temperature: 0.1,
-      max_tokens: outputTokenBudget,
-      stream: false,
-      messages: buildAiMessages(context, attempt > 0 ? cleanErrorMessage(lastError, "The previous output was invalid") : ""),
-    };
-    configureThinking(requestBody, model, endpoint, settings.thinkingLevel);
-    try {
-      const data = await fetchJson(endpoint, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${apiKey}`,
-        },
-        body: JSON.stringify(requestBody),
-      }, timeout, "AI 改写");
-      const content = getAiResponseText(data);
-      if (!content) {
-        const truncated = isReasoningTruncated(data);
-        throw new RequestError(describeEmptyAiResponse(data), {
-          code: truncated ? "REASONING_TRUNCATED" : "AI_INVALID",
-          retryable: truncated,
-        });
-      }
-      const candidate = extractJson(content);
-      let primaryResult;
-      let primaryError;
-      try {
-        primaryResult = validateAiResult(candidate, context);
-      } catch (error) {
-        primaryError = error;
-      }
-      let result = primaryResult;
-      let reviewed = false;
-      let reviewWarning = "";
-      if (settings.reviewAiEnabled) {
-        try {
-          result = await reviewAiCandidate(candidate, context, settings, localSecrets, timeout);
-          reviewed = true;
-        } catch (reviewError) {
-          if (!primaryResult) {
-            throw new RequestError(
-              `审核 AI 未能修正不合格的主 AI 结果：${cleanErrorMessage(reviewError, "审核失败")}；主 AI：${cleanErrorMessage(primaryError, "结果未通过校验")}`,
-              { code: reviewError?.code || "REVIEW_AI_FAILED", status: reviewError?.status, retryable: false },
-            );
-          }
-          result = primaryResult;
-          reviewWarning = `审核 AI 未完成，已使用通过本地校验的主 AI 结果：${cleanErrorMessage(reviewError, "审核失败")}`;
-        }
-      } else if (!primaryResult) {
-        throw primaryError;
-      }
-      return {
-        configured: true,
-        result,
-        title: result.title,
-        summary: result.summary,
-        image_query_en: result.image_query_en,
-        imageQueryEn: result.image_query_en,
-        language: result.language,
-        reviewed,
-        reviewWarning,
-        attempts: attemptsMade,
+  const requestCycle = async (activeModel, usedFallbackModel = false) => {
+    const errors = [];
+    const budgets = [4096, 8192, 16384];
+    let budgetIndex = 0;
+    let completionField = "max_tokens";
+    let lastError;
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      totalAttempts += 1;
+      await notifyAiRetry(tabId, {
+        status: "requesting", itemId: String(item.id || ""), itemIndex: item.index,
+        attempt, waitMs: 0, model: activeModel, errorType: "", usedFallbackModel,
+      });
+      const requestBody = {
+        model: activeModel,
+        temperature: 0.1,
+        stream: false,
+        messages: buildAiMessages(context, attempt > 1 ? cleanErrorMessage(lastError, "The previous output was invalid") : ""),
       };
-    } catch (error) {
-      lastError = error;
-      if (error?.code === "REASONING_TRUNCATED") outputTokenBudget = 8192;
-      if (attempt >= maxRetries || !shouldRetry(error)) break;
-      await new Promise((resolve) => setTimeout(resolve, 250 * (attempt + 1)));
+      applyCompletionBudget(requestBody, budgets[budgetIndex], completionField);
+      configureThinking(requestBody, activeModel, endpoint, settings.thinkingLevel);
+      let response;
+      try {
+        while (true) {
+          try {
+            response = await fetchAiJson(endpoint, {
+              method: "POST",
+              headers: aiHeaders(apiKey),
+              body: JSON.stringify(requestBody),
+            }, timeout, "AI 改写", { attempt, model: activeModel });
+            allDiagnostics.push(response.diagnostic);
+            break;
+          } catch (requestError) {
+            if (requestError?.diagnostic) allDiagnostics.push(requestError.diagnostic);
+            if (completionField === "max_tokens" && requiresCompletionTokenFieldFallback(requestError)) {
+              completionField = "max_completion_tokens";
+              applyCompletionBudget(requestBody, budgets[budgetIndex], completionField);
+              continue;
+            }
+            throw requestError;
+          }
+        }
+        const { data, diagnostic } = response;
+        if (data?.choices?.[0]?.finish_reason === "length") {
+          throw new OutputTruncatedError(describeEmptyAiResponse(data), {
+            model: activeModel,
+            status: diagnostic.httpStatus,
+            requestUrl: diagnostic.requestUrl,
+            diagnostic,
+            diagnostics: [diagnostic],
+          });
+        }
+        const content = getAiResponseText(data);
+        if (!content) {
+          throw new RequestError(describeEmptyAiResponse(data), {
+            code: "AI_EMPTY", errorType: "EMPTY_RESPONSE", retryable: true,
+            model: activeModel, status: diagnostic.httpStatus, requestUrl: diagnostic.requestUrl,
+            diagnostic, diagnostics: [diagnostic],
+          });
+        }
+        let candidate;
+        try { candidate = extractJson(content); }
+        catch (error) {
+          error.model ||= activeModel;
+          error.errorType ||= "AI_INVALID";
+          error.diagnostic ||= diagnostic;
+          error.diagnostics ||= [diagnostic];
+          throw error;
+        }
+        let primaryResult;
+        let primaryError;
+        try { primaryResult = validateAiResult(candidate, context); }
+        catch (error) {
+          primaryError = error;
+          primaryError.model ||= activeModel;
+          primaryError.errorType ||= "AI_INVALID";
+          primaryError.diagnostic ||= diagnostic;
+          primaryError.diagnostics ||= [diagnostic];
+        }
+        let result = primaryResult;
+        let reviewed = false;
+        let reviewWarning = "";
+        if (settings.reviewAiEnabled) {
+          try {
+            result = await reviewAiCandidate(candidate, context, settings, localSecrets, timeout);
+            reviewed = true;
+          } catch (reviewError) {
+            if (!primaryResult) {
+              throw new RequestError(
+                `审核 AI 未能修正不合格的主 AI 结果：${cleanErrorMessage(reviewError, "审核失败")}；主 AI：${cleanErrorMessage(primaryError, "结果未通过校验")}`,
+                {
+                  code: reviewError?.code || "REVIEW_AI_FAILED", status: reviewError?.status, retryable: false,
+                  errorType: reviewError?.errorType || "AI_INVALID", model: activeModel,
+                  diagnostic: reviewError?.diagnostic || diagnostic,
+                  diagnostics: [...(primaryError?.diagnostics || [diagnostic]), ...(reviewError?.diagnostics || [])],
+                },
+              );
+            }
+            result = primaryResult;
+            reviewWarning = `审核 AI 未完成，已使用通过本地校验的主 AI 结果：${cleanErrorMessage(reviewError, "审核失败")}`;
+          }
+        } else if (!primaryResult) {
+          throw primaryError;
+        }
+        return {
+          ok: true,
+          value: {
+            configured: true, result, title: result.title, summary: result.summary,
+            image_query_en: result.image_query_en, imageQueryEn: result.image_query_en,
+            language: result.language, reviewed, reviewWarning, attempts: totalAttempts,
+            model: activeModel, usedFallbackModel, diagnostics: allDiagnostics,
+          },
+        };
+      } catch (error) {
+        error.model ||= activeModel;
+        error.errorType ||= classifyAiError({ status: error?.status, code: error?.code });
+        error.diagnostics = error.diagnostics?.length ? error.diagnostics : error.diagnostic ? [error.diagnostic] : [];
+        lastError = error;
+        errors.push(error);
+        if (error.errorType === "OUTPUT_LENGTH") {
+          if (budgetIndex < budgets.length - 1 && attempt < maxAttempts) {
+            budgetIndex += 1;
+            continue;
+          }
+          break;
+        }
+        if (attempt >= maxAttempts || !shouldRetry(error)) break;
+        const waitMs = retryDelayMs(attempt - 1, error.retryAfterMs);
+        await notifyAiRetry(tabId, {
+          status: "waiting", itemId: String(item.id || ""), itemIndex: item.index,
+          attempt: attempt + 1, waitMs, model: activeModel, errorType: error.errorType, usedFallbackModel,
+        });
+        await sleepForRetry(waitMs);
+      }
+    }
+    return { ok: false, error: lastError, errors };
+  };
+
+  const primary = await requestCycle(model, false);
+  if (primary.ok) {
+    await notifyAiRetry(tabId, { status: "clear", itemId: String(item.id || ""), itemIndex: item.index });
+    return primary.value;
+  }
+  const lengthExhausted = primary.errors.length === maxAttempts
+    && primary.errors.every((error) => error.errorType === "OUTPUT_LENGTH");
+  const transientExhausted = primary.errors.length === maxAttempts
+    && primary.errors.every((error) => error.errorType === "EMPTY_RESPONSE"
+      || (error.errorType === "SERVER_ERROR" && (!error.status || Number(error.status) >= 500)));
+  let finalCycle = primary;
+  let usedFallbackModel = false;
+  if (fallbackModel && fallbackModel !== model && (lengthExhausted || transientExhausted)) {
+    if (transientExhausted) {
+      const waitMs = retryDelayMs(2, primary.error?.retryAfterMs);
+      await notifyAiRetry(tabId, {
+        status: "waiting", itemId: String(item.id || ""), itemIndex: item.index,
+        attempt: 1, waitMs, model: fallbackModel, errorType: primary.error?.errorType || "", usedFallbackModel: true,
+      });
+      await sleepForRetry(waitMs);
+    }
+    finalCycle = await requestCycle(fallbackModel, true);
+    usedFallbackModel = true;
+    if (finalCycle.ok) {
+      await notifyAiRetry(tabId, { status: "clear", itemId: String(item.id || ""), itemIndex: item.index });
+      return finalCycle.value;
     }
   }
+  await notifyAiRetry(tabId, { status: "clear", itemId: String(item.id || ""), itemIndex: item.index });
+  const lastError = finalCycle.error || primary.error;
   const timeoutHint = lastError?.code === "TIMEOUT"
-    ? "；为避免连续等待约 90 秒，超时不会自动重复请求，可稍后点击重试"
+    ? `；本次请求已等待 ${Math.ceil(timeout / 1000)} 秒，超时不会自动重复请求，可稍后点击重试`
     : "";
   throw new RequestError(
-    `AI 改写失败（已尝试 ${attemptsMade} 次）：${cleanErrorMessage(lastError, "上游接口不可用")}${timeoutHint}`,
+    `AI 改写失败（已尝试 ${totalAttempts} 次）：${cleanErrorMessage(lastError, "上游接口不可用")}${timeoutHint}`,
     {
-      code: lastError?.code || "AI_FAILED",
-      status: lastError?.status,
-      requestUrl: lastError?.requestUrl,
-      retryable: false,
+      code: lastError?.code || "AI_FAILED", status: lastError?.status,
+      requestUrl: lastError?.requestUrl, retryable: false,
+      errorType: lastError?.errorType || classifyAiError({ status: lastError?.status, code: lastError?.code }),
+      model: lastError?.model || (usedFallbackModel ? fallbackModel : model), attempts: totalAttempts,
+      diagnostics: allDiagnostics, usedFallbackModel,
     },
   );
 }
 
-function buildImageQueryMessages(title) {
+function buildImageQueryMessages(title, bangladeshMode = false) {
   const originalTitle = String(title || "").replace(/\s+/g, " ").trim();
   if (!originalTitle) throw new Error("没有读取到原标题，无法生成图片搜索词");
   return [
@@ -1082,6 +1291,7 @@ function buildImageQueryMessages(title) {
         "Return 5 to 10 concrete English visual keywords describing visible subject, named place, object, action, scene and atmosphere stated or directly implied by that title.",
         "Prefer side profile, back view, silhouette, fully clothed subjects or wide shots. Avoid frontal faces, selfies, swimwear, nudity and excessive exposed skin.",
         "Preserve visually relevant proper nouns. Do not use abstract words such as news, article, report or photography.",
+        bangladeshMode ? "BANGLADESH MODE: prefer food without pork, landscapes, objects, butterflies, fish or anime/cartoon visuals. Exclude people, realistic animals other than butterflies/fish, romance, religious storytelling and pork-related terms." : "",
         "Return strict JSON only: {\"image_query_en\":\"...\"}",
       ].join("\n"),
     },
@@ -1106,22 +1316,118 @@ async function generateImageQueryWithAi(payload, tabId) {
     model,
     temperature: 0.1,
     max_tokens: 2048,
-    messages: buildImageQueryMessages(payload.title),
+    messages: buildImageQueryMessages(payload.title, Boolean(settings.bangladeshMode && payload.bangladeshMode)),
   };
   configureThinking(requestBody, model, endpoint, settings.thinkingLevel || "medium");
-  const data = await fetchJson(endpoint, {
+  const { data, diagnostic } = await fetchAiJson(endpoint, {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${apiKey}`,
-    },
+    headers: aiHeaders(apiKey),
     body: JSON.stringify(requestBody),
-  }, clampNumber(settings.aiTimeoutMs, 30000, 5000, 120000), "英文图片关键词生成");
+  }, clampNumber(settings.aiTimeoutMs, 30000, 5000, 120000), "英文图片关键词生成", { attempt: 1, model });
+  if (data?.choices?.[0]?.finish_reason === "length") {
+    throw new OutputTruncatedError(describeEmptyAiResponse(data), { model, diagnostic, diagnostics: [diagnostic] });
+  }
   const generated = extractJson(getAiResponseText(data));
   return {
     configured: true,
     imageQueryEn: String(generated.image_query_en || "").trim(),
+    diagnostics: [diagnostic],
   };
+}
+
+async function getAiTranslationStatus(tabId) {
+  const [{ settings: savedSettings = {} }, { localSecrets = {} }] = await Promise.all([
+    chrome.storage.sync.get("settings"),
+    chrome.storage.local.get("localSecrets"),
+  ]);
+  const settings = { ...DEFAULT_BATCH_SETTINGS, ...savedSettings, ...await tabOverrides(tabId) };
+  const configured = settings.rewriteMode !== "local"
+    && Boolean(String(settings.aiEndpoint || "").trim())
+    && Boolean(String(settings.aiModel || "").trim())
+    && Boolean(String(localSecrets.aiApiKey || "").trim());
+  return {
+    configured,
+    rewriteMode: settings.rewriteMode,
+    model: String(settings.aiModel || "").trim(),
+    reason: configured ? "" : settings.rewriteMode === "local"
+      ? "当前标签页为本地模式，AI 翻译不会发起付费请求"
+      : "请先在设置页配置主 AI 的端点、模型和 API Key",
+  };
+}
+
+async function translateTextWithAi(payload = {}, tabId) {
+  const text = String(payload.text || "").replace(/\s+/g, " ").trim().slice(0, 2000);
+  if (!text) throw new RequestError("没有可翻译的原标题", { code: "AI_INVALID", retryable: false });
+  const [{ settings: savedSettings = {} }, { localSecrets = {} }] = await Promise.all([
+    chrome.storage.sync.get("settings"),
+    chrome.storage.local.get("localSecrets"),
+  ]);
+  const settings = { ...DEFAULT_BATCH_SETTINGS, ...savedSettings, ...await tabOverrides(tabId) };
+  if (settings.rewriteMode === "local") {
+    throw new RequestError("当前标签页为本地模式；请切换为 AI 改写后再手动使用 AI 翻译", {
+      code: "AI_NOT_CONFIGURED", retryable: false, errorType: "AUTH_ERROR",
+    });
+  }
+  let endpoint = String(settings.aiEndpoint || "").trim();
+  const model = String(settings.aiModel || "").trim();
+  const apiKey = String(localSecrets.aiApiKey || "").trim();
+  if (!endpoint || !model || !apiKey) {
+    throw new RequestError("主 AI 接口未配置完整，无法手动翻译", {
+      code: "AI_NOT_CONFIGURED", retryable: false, errorType: "AUTH_ERROR",
+    });
+  }
+  endpoint = normalizeAiEndpoint(endpoint);
+  const requestBody = {
+    model,
+    temperature: 0,
+    max_tokens: 1024,
+    stream: false,
+    messages: [
+      {
+        role: "system",
+        content: [
+          "Translate the supplied article title into concise, natural Simplified Chinese.",
+          "Preserve the exact meaning, numbers and proper nouns. Do not summarize, explain or add facts.",
+          "Return exactly one strict JSON object and nothing else: {\"translation\":\"...\"}",
+        ].join("\n"),
+      },
+      { role: "user", content: text },
+    ],
+  };
+  configureThinking(requestBody, model, endpoint, settings.thinkingLevel);
+  const timeout = clampNumber(settings.aiTimeoutMs, 30000, 5000, 120000);
+  let response;
+  try {
+    response = await fetchAiJson(endpoint, {
+      method: "POST",
+      headers: aiHeaders(apiKey),
+      body: JSON.stringify(requestBody),
+    }, timeout, "标题 AI 翻译", { attempt: 1, model });
+  } catch (error) {
+    if (requiresCompletionTokenFieldFallback(error)) {
+      applyCompletionBudget(requestBody, 1024, "max_completion_tokens");
+      response = await fetchAiJson(endpoint, {
+        method: "POST",
+        headers: aiHeaders(apiKey),
+        body: JSON.stringify(requestBody),
+      }, timeout, "标题 AI 翻译", { attempt: 1, model });
+    } else throw error;
+  }
+  const { data, diagnostic } = response;
+  if (isOutputTruncated(data)) {
+    throw new OutputTruncatedError(describeEmptyAiResponse(data), { model, diagnostic, diagnostics: [diagnostic] });
+  }
+  const content = getAiResponseText(data).trim();
+  let titleZh = "";
+  try { titleZh = String(extractJson(content).translation || "").trim(); }
+  catch { titleZh = content.replace(/^```(?:json)?\s*|\s*```$/gi, "").replace(/^['\"`]+|['\"`]+$/g, "").trim(); }
+  if (!titleZh || !/\p{Script=Han}/u.test(titleZh)) {
+    throw new RequestError("AI 没有返回有效的中文标题翻译", {
+      code: "AI_INVALID", retryable: false, errorType: "AI_INVALID", model,
+      diagnostic, diagnostics: [diagnostic],
+    });
+  }
+  return { titleZh, translation: titleZh, model, diagnostics: [diagnostic] };
 }
 
 function decodeHtmlEntities(value) {
@@ -1209,20 +1515,6 @@ function inferImageMime(url, contentType) {
   if (/\.gif$/.test(pathname)) return "image/gif";
   if (/\.avif$/.test(pathname)) return "image/avif";
   return "image/jpeg";
-}
-
-function extensionForMime(mime) {
-  return ({
-    "image/jpeg": "jpg", "image/jpg": "jpg", "image/png": "png", "image/webp": "webp",
-    "image/gif": "gif", "image/avif": "avif",
-  })[String(mime || "").toLowerCase()] || "jpg";
-}
-
-function fileNameForMime(value, mime, fallback = "lockscreen-image.jpg") {
-  const extension = extensionForMime(mime);
-  const safe = sanitizeFileName(value || fallback, fallback);
-  const stem = safe.replace(/\.[a-z0-9]{1,8}$/i, "") || "lockscreen-image";
-  return sanitizeFileName(`${stem}.${extension}`, fallback);
 }
 
 async function normalizeDownloadedImage(buffer, sourceMime) {
@@ -1405,15 +1697,201 @@ function withImageHistory(task) {
 async function imageHistory(storageKey = "imageHistory") {
   return (await chrome.storage.local.get(storageKey))[storageKey] || {};
 }
+
+let duplicateMigrationPromise;
+function duplicateEntry(key, image = {}, previous = {}) {
+  const known = String(key || "").match(/^(pexels|pixabay):(.+)$/i);
+  return {
+    markedAt: Number(previous.markedAt || previous.updatedAt) || Date.now(),
+    source: String(image.source || image.provider || previous.source || known?.[1] || "unknown").toLowerCase(),
+    id: String(image.id || previous.id || known?.[2] || ""),
+    url: String(image.originalUrl || image.imageUrl || image.downloadUrl || previous.url || "").slice(0, 4000),
+  };
+}
+
+async function migrateLegacyDuplicateMarks() {
+  const marker = (await chrome.storage.local.get(MANUAL_DUPLICATES_MIGRATED_KEY))[MANUAL_DUPLICATES_MIGRATED_KEY];
+  if (marker) return { migrated: false };
+  const all = await chrome.storage.local.get(null);
+  const manual = all[MANUAL_DUPLICATES_KEY] && typeof all[MANUAL_DUPLICATES_KEY] === "object"
+    ? { ...all[MANUAL_DUPLICATES_KEY] }
+    : {};
+  let migrated = 0;
+  for (const [storageKey, history] of Object.entries(all)) {
+    if (!/^lsaTab:.*:imageHistory$/.test(storageKey) || !history || typeof history !== "object") continue;
+    for (const [key, entry] of Object.entries(history)) {
+      if (!entry?.manual || manual[key]) continue;
+      manual[key] = duplicateEntry(key, {}, entry);
+      migrated += 1;
+    }
+  }
+  await chrome.storage.local.set({
+    [MANUAL_DUPLICATES_KEY]: manual,
+    [MANUAL_DUPLICATES_MIGRATED_KEY]: { completedAt: Date.now(), migrated },
+  });
+  return { migrated: true, count: migrated };
+}
+
+function ensureDuplicateMigration() {
+  duplicateMigrationPromise ||= migrateLegacyDuplicateMarks().catch((error) => {
+    duplicateMigrationPromise = null;
+    throw error;
+  });
+  return duplicateMigrationPromise;
+}
+
+function validUsageEvents(entry, now = Date.now()) {
+  const cutoff = now - USAGE_TTL_MS;
+  return (Array.isArray(entry?.events) ? entry.events : [])
+    .map(Number)
+    .filter((stamp) => Number.isFinite(stamp) && stamp >= cutoff && stamp <= now)
+    .sort((left, right) => left - right)
+    .slice(-USAGE_EVENT_LIMIT);
+}
+
+async function globalImageState(storageKey = "") {
+  await ensureDuplicateMigration();
+  const keys = [MANUAL_DUPLICATES_KEY, IMAGE_USAGE_KEY];
+  if (storageKey) keys.push(storageKey);
+  const saved = await chrome.storage.local.get(keys);
+  return {
+    manual: saved[MANUAL_DUPLICATES_KEY] || {},
+    usage: saved[IMAGE_USAGE_KEY] || {},
+    local: storageKey ? saved[storageKey] || {} : {},
+  };
+}
+
+async function getDuplicateLibrary() {
+  const { manual, usage } = await globalImageState();
+  const bySource = {};
+  for (const entry of Object.values(manual)) {
+    const source = String(entry?.source || "unknown").toLowerCase();
+    bySource[source] = (bySource[source] || 0) + 1;
+  }
+  return { count: Object.keys(manual).length, bySource, entries: manual, usage };
+}
+
+async function exportDuplicateLibrary() {
+  const library = await getDuplicateLibrary();
+  return {
+    format: "lockscreen-manual-duplicates",
+    version: 1,
+    exportedAt: new Date().toISOString(),
+    entries: library.entries,
+  };
+}
+
+async function importDuplicateLibrary(payload = {}) {
+  const data = payload.library || payload.data || payload;
+  if (!data || data.format !== "lockscreen-manual-duplicates" || !data.entries || typeof data.entries !== "object") {
+    throw new Error("重复标记库格式无效");
+  }
+  return withImageHistory(async () => {
+    await ensureDuplicateMigration();
+    const current = (await chrome.storage.local.get(MANUAL_DUPLICATES_KEY))[MANUAL_DUPLICATES_KEY] || {};
+    const next = payload.replace ? {} : { ...current };
+    for (const [key, raw] of Object.entries(data.entries)) {
+      if (!key || key.length > 4000 || key === "__proto__" || !raw || typeof raw !== "object") continue;
+      next[key] = duplicateEntry(key, raw, raw);
+    }
+    await chrome.storage.local.set({ [MANUAL_DUPLICATES_KEY]: next });
+    return { count: Object.keys(next).length };
+  });
+}
+
+async function removeDuplicatesBySource(source) {
+  const target = String(source || "").trim().toLowerCase();
+  if (!target) throw new Error("请指定素材来源");
+  return withImageHistory(async () => {
+    await ensureDuplicateMigration();
+    const current = (await chrome.storage.local.get(MANUAL_DUPLICATES_KEY))[MANUAL_DUPLICATES_KEY] || {};
+    const next = Object.fromEntries(Object.entries(current).filter(([, entry]) => String(entry?.source || "unknown").toLowerCase() !== target));
+    await chrome.storage.local.set({ [MANUAL_DUPLICATES_KEY]: next });
+    return { removed: Object.keys(current).length - Object.keys(next).length, count: Object.keys(next).length };
+  });
+}
+
+async function recordImageUsageUnlocked(key, timestamp = Date.now()) {
+  if (!key) return { count: 0 };
+  const now = Date.now();
+  const stamp = Math.min(now, Number.isFinite(Number(timestamp)) ? Number(timestamp) : now);
+  const saved = await chrome.storage.local.get(IMAGE_USAGE_KEY);
+  const usage = saved[IMAGE_USAGE_KEY] && typeof saved[IMAGE_USAGE_KEY] === "object" ? { ...saved[IMAGE_USAGE_KEY] } : {};
+  const events = [...validUsageEvents(usage[key], now), stamp].sort((a, b) => a - b).slice(-USAGE_EVENT_LIMIT);
+  usage[key] = { events, lastUsedAt: events.at(-1) || stamp };
+  await chrome.storage.local.set({ [IMAGE_USAGE_KEY]: usage });
+  return { count: events.length, entry: usage[key] };
+}
+
+async function attachGlobalDedupInfo(result = {}, tabId, candidateLimit = 12) {
+  const storageKey = Number.isInteger(tabId) ? (await getTabContext(tabId)).keys.imageHistory : "";
+  const [{ usageThreshold, usageWindowDays }, global] = await Promise.all([getBatchSettings(), globalImageState(storageKey)]);
+  const annotate = (image) => {
+    const key = LSAWorkflow.imageKey(image);
+    const usageCount = LSAWorkflow.usageEventsInWindow(global.usage[key], usageWindowDays).length;
+    return {
+      ...image,
+      imageKey: key,
+      globalManualDuplicate: Boolean(global.manual[key]),
+      usageCount,
+      usageLimited: usageCount >= Number(usageThreshold || 3),
+      localDownloadStatus: global.local[key]?.status || "",
+    };
+  };
+  const items = (result.items || result.images || result.results || []).map(annotate).sort((left, right) => {
+    const leftBlocked = Number(left.globalManualDuplicate) * 2 + Number(left.usageLimited);
+    const rightBlocked = Number(right.globalManualDuplicate) * 2 + Number(right.usageLimited);
+    return leftBlocked - rightBlocked;
+  }).slice(0, clampNumber(candidateLimit, 12, 1, 60));
+  return { ...result, items };
+}
+
+async function rebuildImageUsage(payload = {}) {
+  const batch = payload.batch || payload.data || payload;
+  if (!batch?.batchId || !Array.isArray(batch.items)) throw new Error("批次结果缺少 batchId 或 items");
+  return withImageHistory(async () => {
+    const saved = await chrome.storage.local.get([IMAGE_USAGE_KEY, USAGE_REBUILT_BATCHES_KEY]);
+    const rebuilt = Array.isArray(saved[USAGE_REBUILT_BATCHES_KEY]) ? [...saved[USAGE_REBUILT_BATCHES_KEY]] : [];
+    if (rebuilt.includes(batch.batchId)) return { rebuilt: false, reason: "already_rebuilt" };
+    const usage = saved[IMAGE_USAGE_KEY] && typeof saved[IMAGE_USAGE_KEY] === "object" ? { ...saved[IMAGE_USAGE_KEY] } : {};
+    const timestamp = Math.min(Date.now(), Number.isFinite(new Date(batch.createdAt).getTime()) ? new Date(batch.createdAt).getTime() : Date.now());
+    const additions = new Map();
+    for (const item of batch.items) {
+      const key = LSAWorkflow.imageKey(item?.image || {});
+      if (key && validUsageEvents(usage[key]).length === 0) additions.set(key, (additions.get(key) || 0) + 1);
+    }
+    let rebuiltImages = 0;
+    if (timestamp >= Date.now() - USAGE_TTL_MS) {
+      for (const [key, count] of additions) {
+        const events = Array(Math.min(USAGE_EVENT_LIMIT, count)).fill(timestamp);
+        usage[key] = { events, lastUsedAt: timestamp };
+        rebuiltImages += 1;
+      }
+    }
+    const nextRebuilt = [...rebuilt.filter((id) => id !== batch.batchId), batch.batchId].slice(-200);
+    await chrome.storage.local.set({ [IMAGE_USAGE_KEY]: usage, [USAGE_REBUILT_BATCHES_KEY]: nextRebuilt });
+    return { rebuilt: true, rebuiltImages, rebuiltEvents: [...additions.values()].reduce((sum, count) => sum + count, 0) };
+  });
+}
+
 async function markDuplicate(payload, tabId) {
   const storageKey = Number.isInteger(tabId) ? (await getTabContext(tabId)).keys.imageHistory : "imageHistory";
   return withImageHistory(async () => {
+    await ensureDuplicateMigration();
     const key = LSAWorkflow.imageKey(payload.image);
     if (!key) throw new Error("没有可识别的图片地址");
-    const history = await imageHistory(storageKey);
-    history[key] = { ...history[key], manual: Boolean(payload.marked), updatedAt: Date.now() };
-    await chrome.storage.local.set({ [storageKey]: history });
-    return { key, entry: history[key] };
+    const saved = await chrome.storage.local.get([storageKey, MANUAL_DUPLICATES_KEY]);
+    const history = saved[storageKey] || {};
+    const manual = saved[MANUAL_DUPLICATES_KEY] || {};
+    if (payload.marked) {
+      manual[key] = duplicateEntry(key, payload.image, manual[key]);
+      history[key] = { ...history[key], manual: true, updatedAt: Date.now() };
+    } else {
+      delete manual[key];
+      if (history[key]) history[key] = { ...history[key], manual: false, updatedAt: Date.now() };
+    }
+    await chrome.storage.local.set({ [storageKey]: history, [MANUAL_DUPLICATES_KEY]: manual });
+    return { key, entry: history[key] || {}, globalEntry: manual[key] || null, marked: Boolean(payload.marked) };
   });
 }
 
@@ -1426,20 +1904,28 @@ async function downloadFinalImage(payload = {}, tabId) {
   const url = chooseDownloadUrl(image, item);
   if (!/^(https?:\/\/|data:image\/)/i.test(url)) throw new Error("成品图片下载地址无效");
   const key = LSAWorkflow.imageKey(image) || url;
-  const history = await imageHistory(storageKey);
-  const isDuplicate = (entry) => entry?.manual || ["queued", "completed"].includes(entry?.status);
-  if (settings.duplicateCheck !== false && !payload.force && isDuplicate(history[key])) {
-    return { skipped: true, duplicate: true, path: history[key].path || "", reason: history[key].manual ? "你已标记为重复" : "此图已下载或正在下载" };
+  const global = await globalImageState(storageKey);
+  const isLocalDuplicate = (entry) => ["queued", "completed"].includes(entry?.status);
+  if (settings.duplicateCheck !== false && !payload.force && global.manual[key]) {
+    return { skipped: true, duplicate: true, path: global.local[key]?.path || "", reason: "你已在全局标记为重复" };
+  }
+  if (settings.duplicateCheck !== false && !payload.force && isLocalDuplicate(global.local[key])) {
+    return { skipped: true, duplicate: true, path: global.local[key].path || "", reason: "此图已在当前标签页下载或正在下载" };
   }
   const file = await fetchImageFile({ url, item, image });
   const bytes = Uint8Array.from(atob(file.dataUrl.split(",")[1]), (character) => character.charCodeAt(0));
   const digest = await crypto.subtle.digest("SHA-256", bytes);
   const hash = Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
   return withImageHistory(async () => {
-  const fresh = await imageHistory(storageKey);
-  const duplicate = Object.values(fresh).find((entry) => entry.hash === hash && isDuplicate(entry));
-  if (settings.duplicateCheck !== false && !payload.force && (isDuplicate(fresh[key]) || duplicate)) {
-    return { skipped: true, duplicate: true, path: (duplicate || fresh[key])?.path || "", reason: "图片已存在（素材或文件内容相同）" };
+  const saved = await chrome.storage.local.get([storageKey, MANUAL_DUPLICATES_KEY]);
+  const fresh = saved[storageKey] || {};
+  const manual = saved[MANUAL_DUPLICATES_KEY] || {};
+  const duplicate = Object.values(fresh).find((entry) => entry.hash === hash && isLocalDuplicate(entry));
+  if (settings.duplicateCheck !== false && !payload.force && manual[key]) {
+    return { skipped: true, duplicate: true, path: fresh[key]?.path || "", reason: "你已在全局标记为重复" };
+  }
+  if (settings.duplicateCheck !== false && !payload.force && (isLocalDuplicate(fresh[key]) || duplicate)) {
+    return { skipped: true, duplicate: true, path: (duplicate || fresh[key])?.path || "", reason: "图片已存在（素材、地址或文件内容相同）" };
   }
   const baseFolder = joinDownloadPath(sanitizeRelativeFolder(payload.folder, settings.imageFolder), payload.batchFolder ? sanitizePathSegment(payload.batchFolder, "未命名批次") : tab?.folder || "");
   const allocation = await reserveFinalImageFolder(baseFolder, payload.batchLimit);
@@ -1452,7 +1938,7 @@ async function downloadFinalImage(payload = {}, tabId) {
     conflictAction: "uniquify",
     saveAs: false,
   });
-  fresh[key] = { ...fresh[key], hash, path, downloadId, status: "queued", updatedAt: Date.now() };
+  fresh[key] = { ...fresh[key], manual: Boolean(fresh[key]?.manual), hash, path, downloadId, status: "queued", usageRecordedAt: 0, updatedAt: Date.now() };
   await chrome.storage.local.set({ [storageKey]: fresh, [`lsaDownload:${downloadId}`]: { storageKey, key } });
   return { downloadId, path, fileName, url, ...allocation };
   });
@@ -1464,16 +1950,58 @@ chrome.downloads.onChanged?.addListener((delta) => {
     const record = (await chrome.storage.local.get(`lsaDownload:${delta.id}`))[`lsaDownload:${delta.id}`];
     if (!record) return;
     const history = await imageHistory(record.storageKey);
-    for (const entry of Object.values(history)) {
-      if (entry.downloadId === delta.id) entry.status = delta.state.current === "complete" ? "completed" : "interrupted";
+    for (const [key, entry] of Object.entries(history)) {
+      if (entry.downloadId !== delta.id) continue;
+      entry.status = delta.state.current === "complete" ? "completed" : "interrupted";
+      entry.updatedAt = Date.now();
+      if (delta.state.current === "complete" && !entry.usageRecordedAt) {
+        await recordImageUsageUnlocked(record.key || key, Date.now());
+        entry.usageRecordedAt = Date.now();
+      }
     }
     await chrome.storage.local.set({ [record.storageKey]: history });
   }).catch(() => {});
 });
 
-let workLockChain = Promise.resolve();
+async function reconcileImageDownloads(tabId) {
+  if (!Number.isInteger(tabId)) throw new Error("未识别到当前标签页");
+  const storageKey = (await getTabContext(tabId)).keys.imageHistory;
+  return withImageHistory(async () => {
+    const history = await imageHistory(storageKey);
+    let completed = 0;
+    let interrupted = 0;
+    for (const [key, entry] of Object.entries(history)) {
+      if (entry?.status !== "queued") continue;
+      let matches = [];
+      if (Number.isInteger(entry.downloadId) && typeof chrome.downloads.search === "function") {
+        try { matches = await chrome.downloads.search({ id: entry.downloadId }); } catch { matches = []; }
+      }
+      const download = matches[0];
+      if (!download) {
+        entry.status = "interrupted";
+        entry.updatedAt = Date.now();
+        interrupted += 1;
+      } else if (download.state === "complete") {
+        entry.status = "completed";
+        entry.updatedAt = Date.now();
+        if (!entry.usageRecordedAt) {
+          await recordImageUsageUnlocked(key, Number(download.endTime ? new Date(download.endTime).getTime() : Date.now()));
+          entry.usageRecordedAt = Date.now();
+        }
+        completed += 1;
+      } else if (download.state === "interrupted") {
+        entry.status = "interrupted";
+        entry.updatedAt = Date.now();
+        interrupted += 1;
+      }
+    }
+    await chrome.storage.local.set({ [storageKey]: history });
+    return { completed, interrupted, history };
+  });
+}
+
 function workLock(action, token, tabId) {
-  const run = workLockChain.then(async () => {
+  return queueWorkLock(async () => {
     const storageKey = (await getTabContext(tabId)).keys.workLease;
     const workLease = (await chrome.storage.local.get(storageKey))[storageKey];
     const active = workLease && workLease.expiresAt > Date.now();
@@ -1487,8 +2015,6 @@ function workLock(action, token, tabId) {
     await chrome.storage.local.set({ [storageKey]: { token, tabId, expiresAt: Date.now() + 30000 } });
     return { active: true, owns: true };
   });
-  workLockChain = run.catch(() => {});
-  return run;
 }
 
 async function downloadImage(url, fileName) {
@@ -1512,6 +2038,11 @@ function respondAsync(sendResponse, promise, fallbackMessage) {
       code: error?.code || "",
       status: Number(error?.status) || 0,
       requestUrl: error?.requestUrl || "",
+      errorType: error?.errorType || classifyAiError({ status: error?.status, code: error?.code }),
+      model: error?.model || "",
+      attempts: Number(error?.attempts) || 0,
+      diagnostics: Array.isArray(error?.diagnostics) ? error.diagnostics : error?.diagnostic ? [error.diagnostic] : [],
+      usedFallbackModel: Boolean(error?.usedFallbackModel),
     }));
   return true;
 }
@@ -1522,6 +2053,22 @@ chrome.runtime.onMessage.addListener((message = {}, _sender, sendResponse) => {
   if (action === "LIST_SAVED_BATCHES") return respondAsync(sendResponse, savedBatches(), "读取已存批次失败");
   if (action === "WORK_LOCK") return respondAsync(sendResponse, workLock(message.operation, message.token, _sender.tab?.id), "批次正在使用");
   if (action === "MARK_IMAGE_DUPLICATE") return respondAsync(sendResponse, markDuplicate(message, _sender.tab?.id), "重复标记失败");
+  if (action === "GET_DUPLICATE_LIBRARY") return respondAsync(sendResponse, getDuplicateLibrary(), "读取全局重复标记库失败");
+  if (action === "IMPORT_DUPLICATE_LIBRARY") return respondAsync(sendResponse, importDuplicateLibrary(message), "导入全局重复标记库失败");
+  if (action === "REMOVE_DUPLICATES_BY_SOURCE") return respondAsync(sendResponse, removeDuplicatesBySource(message.source), "解除来源标记失败");
+  if (action === "REBUILD_IMAGE_USAGE") return respondAsync(sendResponse, rebuildImageUsage(message), "重建图片使用记录失败");
+  if (action === "RECONCILE_IMAGE_DOWNLOADS") return respondAsync(sendResponse, reconcileImageDownloads(_sender.tab?.id), "下载状态对账失败");
+  if (action === "EXPORT_DUPLICATE_LIBRARY") {
+    const run = async () => {
+      const library = await exportDuplicateLibrary();
+      if (!message.download) return { library };
+      const settings = await getBatchSettings();
+      const stamp = new Date().toISOString().slice(0, 16).replace(/[-:T]/g, "");
+      const saved = await saveTextFile({ folder: settings.originalFolder, fileName: `全局重复标记库_${stamp}.json`, text: JSON.stringify(library, null, 2) });
+      return { library, ...saved };
+    };
+    return respondAsync(sendResponse, run(), "导出全局重复标记库失败");
+  }
 
   if (action === "OPEN_IMAGE_SEARCH") {
     openImageSearch(message.engine, message.query);
@@ -1542,13 +2089,15 @@ chrome.runtime.onMessage.addListener((message = {}, _sender, sendResponse) => {
   }
 
   if (action === "SEARCH_STOCK_IMAGES") {
-    return respondAsync(sendResponse, searchStockImages(message.source, message.query, message.page), "素材搜索失败");
+    return respondAsync(sendResponse, searchStockImages(message.source, message.query, message.page)
+      .then((result) => attachGlobalDedupInfo(result, _sender.tab?.id, message.candidateLimit)), "素材搜索失败");
   }
 
   if (action === "SEARCH_PEXELS_BATCH" || action === "SEARCH_BATCH_IMAGES") {
     return respondAsync(
       sendResponse,
-      searchBatchImages(message.query, message.preferredRatio, message.page || 1, message.source),
+      searchBatchImages(message.query, message.preferredRatio, message.page || 1, message.source, Boolean(message.bangladeshMode))
+        .then((result) => attachGlobalDedupInfo(result, _sender.tab?.id, message.candidateLimit)),
       "批量竖屏图片搜索失败",
     );
   }
@@ -1559,6 +2108,22 @@ chrome.runtime.onMessage.addListener((message = {}, _sender, sendResponse) => {
 
   if (action === "GENERATE_IMAGE_QUERY") {
     return respondAsync(sendResponse, generateImageQueryWithAi(message, _sender.tab?.id), "英文图片关键词生成失败");
+  }
+
+  if (action === "DETECT_SOURCE_LANGUAGE") {
+    const normalizedHint = normalizeLanguageCode(message.hint);
+    const hinted = SUPPORTED_LANGUAGE_CODES.has(normalizedHint) ? normalizedHint : "";
+    const detected = detectSourceLanguage(message.text);
+    sendResponse({ ok: true, ...detected, code: hinted || detected.code, hinted: Boolean(hinted) });
+    return false;
+  }
+
+  if (action === "GET_AI_TRANSLATION_STATUS") {
+    return respondAsync(sendResponse, getAiTranslationStatus(_sender.tab?.id), "读取 AI 翻译状态失败");
+  }
+
+  if (action === "TRANSLATE_TEXT") {
+    return respondAsync(sendResponse, translateTextWithAi(message, _sender.tab?.id), "标题 AI 翻译失败");
   }
 
   if (action === "AI_PROCESS_ITEM") {

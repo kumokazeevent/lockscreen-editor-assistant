@@ -14,6 +14,23 @@
   const clean = (value, max = 12000) => String(value ?? "").normalize("NFC").replace(/\s+/g, " ").trim().slice(0, max);
   const number = (value, min, max, fallback) => Number.isFinite(Number(value))
     ? Math.max(min, Math.min(max, Math.round(Number(value)))) : fallback;
+  function normalizeLanguageCode(value) {
+    const text = String(value || "").trim().toLowerCase();
+    if (!text) return "";
+    const rules = [
+      ["vi", /vietnamese|越南语|越南|\bvie?\b/i], ["es", /spanish|español|西班牙语|西班牙|\bes\b|\bspa\b/i],
+      ["en", /english|英语|英文|\ben\b|\beng\b/i], ["ru", /russian|русский|俄语|俄文|\bru\b|\brus\b/i],
+      ["be", /belarusian|беларуская|白俄罗斯语|\bbe\b|\bbel\b/i], ["ar", /arabic|العربية|阿拉伯语|阿拉伯文|\bar\b|\bara\b/i],
+      ["it", /italian|italiano|意大利语|\bit\b|\bita\b/i], ["zh", /chinese|中文|汉语|華語|\bzh\b|\bzho\b/i],
+      ["fa", /persian|farsi|فارسی|波斯语|\bfa\b|\bfas\b|\bper\b/i], ["ne", /nepali|नेपाली|尼泊尔语|\bne\b|\bnep\b/i],
+      ["si", /sinhala|sinhalese|සිංහල|僧伽罗语|\bsi\b|\bsin\b/i], ["my", /burmese|myanmar|မြန်မာ|缅甸语|\bmy\b|\bmya\b|\bbur\b/i],
+      ["ky", /kyrgyz|кыргыз|吉尔吉斯语|\bky\b|\bkir\b/i], ["tg", /tajik|тоҷикӣ|塔吉克语|\btg\b|\btgk\b/i],
+      ["az", /azerbaijani|azərbaycan|阿塞拜疆语|\baz\b|\baze\b/i], ["bn", /bengali|bangla|বাংলা|孟加拉语|\bbn\b|\bben\b/i],
+      ["id", /indonesian|bahasa indonesia|印度尼西亚语|印尼语|\bid\b|\bind\b/i],
+    ];
+    for (const [code, pattern] of rules) if (pattern.test(text)) return code;
+    return text.slice(0, 12);
+  }
   const DEFAULT_PROMPT = "Preserve the original language and core meaning. Rewrite naturally within {titleLimit} words for the title and {summaryLimit} words for the description. Count written words, not letters or characters. Spaces and punctuation are not words. Hyphenated words and contractions count as one word. Preserve an already suitable text if it fits. Keep important proper nouns. Never change a stated number of methods or steps to a different number. Remove repetition and excessive modifiers. Do not invent facts. Check both word counts before answering.";
   function wordPrompt(value) {
     return String(value || DEFAULT_PROMPT)
@@ -58,15 +75,40 @@
       country: clean(raw.country || fallback.country || "未知国家", 40),
       capturedAt: Number.isFinite(new Date(stamp).getTime()) ? new Date(stamp).getTime() : Date.now() };
   }
-  function folderName(batch = {}) {
-    const meta = batchMeta(batch.metadata, { capturedAt: batch.createdAt });
-    const safe = (value) => value.replace(/[<>:"/\\|?*\x00-\x1f]/g, "_").replace(/[. ]+$/g, "") || "未知";
-    const date = new Date(meta.capturedAt), pad = (value, width = 2) => String(value).padStart(width, "0");
-    const stamp = `${date.getFullYear()}${pad(date.getMonth()+1)}${pad(date.getDate())}-${pad(date.getHours())}${pad(date.getMinutes())}${pad(date.getSeconds())}${pad(date.getMilliseconds(),3)}`;
-    // A stable suffix prevents simultaneous tabs/pages with identical timestamps colliding.
+  function safePathPart(value, fallback = "未知") {
+    return clean(value, 120).replace(/[<>:"/\\|?*\x00-\x1f]/g, "_").replace(/[. ]+$/g, "") || fallback;
+  }
+  function batchStampSuffix(batch = {}) {
     let hash = 0;
     for (const ch of String(batch.batchId || "")) hash = (hash * 31 + ch.codePointAt(0)) | 0;
-    return `${safe(meta.language)}_${safe(meta.country)}_${stamp}-${(hash >>> 0).toString(36)}`;
+    return (hash >>> 0).toString(36);
+  }
+  function folderName(batch = {}) {
+    const meta = batchMeta(batch.metadata, { capturedAt: batch.createdAt });
+    const date = new Date(meta.capturedAt), pad = (value, width = 2) => String(value).padStart(width, "0");
+    const stamp = `${date.getFullYear()}${pad(date.getMonth()+1)}${pad(date.getDate())}-${pad(date.getHours())}${pad(date.getMinutes())}${pad(date.getSeconds())}${pad(date.getMilliseconds(),3)}`;
+    return `${safePathPart(meta.language)}_${safePathPart(meta.country)}_${stamp}-${batchStampSuffix(batch)}`;
+  }
+  function batchFileName(batch = {}, type = "批次结果", count = null) {
+    const allowed = /^(?:批次原稿_读取时|批次原稿_含正文|批次结果|结果_第\d+页)$/u;
+    if (!allowed.test(String(type))) throw new Error("批次 JSON 类型无效");
+    const meta = batchMeta(batch.metadata, { capturedAt: batch.createdAt });
+    const date = new Date(meta.capturedAt), pad = (value) => String(value).padStart(2, "0");
+    const stamp = `${date.getFullYear()}${pad(date.getMonth()+1)}${pad(date.getDate())}-${pad(date.getHours())}${pad(date.getMinutes())}`;
+    const total = count !== null && count !== undefined && Number.isFinite(Number(count))
+      ? Math.max(0, Math.round(Number(count)))
+      : (Array.isArray(batch.items) ? batch.items.length : 0);
+    return `${safePathPart(meta.language)}_${safePathPart(meta.country)}_${total}条_${stamp}_${type}_${batchStampSuffix(batch)}.json`;
+  }
+  function usageEventsInWindow(entry = {}, windowDays = 90, now = Date.now()) {
+    const current = Number.isFinite(Number(now)) ? Number(now) : Date.now();
+    const days = number(windowDays, 1, 365, 90);
+    const cutoff = current - days * 86400000;
+    const ttl = current - 365 * 86400000;
+    return (Array.isArray(entry?.events) ? entry.events : [])
+      .map(Number)
+      .filter((stamp) => Number.isFinite(stamp) && stamp >= cutoff && stamp >= ttl && stamp <= current)
+      .sort((left, right) => left - right);
   }
   function splitBatchFolders(batch) {
     const groups = new Map();
@@ -109,10 +151,15 @@
         pageKey: clean(raw.pageKey || "imported", 160), pageLabel: clean(raw.pageLabel || "导入页面", 160),
         pageLanguage: clean(raw.pageLanguage, 40), pageCountry: clean(raw.pageCountry, 40),
         sourcePage: httpUrl(raw.sourcePage || data.sourcePage), pageOrder: number(raw.pageOrder, 0, 600, index),
-        articleText: clean(raw.articleText), title: clean(raw.title, 12000), summary: clean(raw.summary, 32000),
+        articleText: clean(raw.articleText), title: clean(raw.title, 12000), titleZh: clean(raw.titleZh, 4000), summary: clean(raw.summary, 32000),
         imageQueryEn: clean(raw.imageQueryEn || raw.image_query_en, 500), imageQuerySourceTitle: clean(raw.imageQuerySourceTitle, 2000), language: clean(raw.language, 20),
         image: safeImage(raw.image), rewriteMode: raw.rewriteMode === "local" ? "local" : "ai",
         reviewWarning: clean(raw.reviewWarning, 1000), error: clean(raw.error, 2000), attempts: 0,
+        errorType: clean(raw.errorType || raw.error_type, 80), error_type: clean(raw.error_type || raw.errorType, 80),
+        model: clean(raw.model || raw.aiErrorModel || raw.aiModel, 200), aiModel: clean(raw.aiModel || raw.model, 200),
+        aiErrorModel: clean(raw.aiErrorModel || raw.model, 200), aiAttempts: number(raw.aiAttempts, 0, 20, 0),
+        aiDiagnostics: Array.isArray(raw.aiDiagnostics || raw.diagnostics) ? (raw.aiDiagnostics || raw.diagnostics).slice(0, 20) : [],
+        usedFallbackModel: Boolean(raw.usedFallbackModel),
         downloadStatus: "", downloadPath: "", manualDuplicate: Boolean(raw.manualDuplicate),
         stages: { article: "pending", ai: "pending", image: "pending" }, status: "pending",
       };
@@ -161,5 +208,18 @@
       imageQuerySourceTitle: item.originalTitle,
       rewriteMode: "local", reviewWarning: "本地词语候选：未做语义理解或翻译，请人工核对原意与专有名词。" };
   }
-  globalThis.LSAWorkflow = { words, count, clean, number, DEFAULT_PROMPT, wordPrompt, httpUrl, editUrl, imageKey, recordKey, batchSize, batchMeta, folderName, splitBatchFolders, safeImage, importBatch, localShorten, localRewrite };
+  function failureTypeCounts(items = []) {
+    return (Array.isArray(items) ? items : []).reduce((counts, item) => {
+      if (item?.status !== "error") return counts;
+      const type = clean(item.errorType || item.error_type || "UNKNOWN_ERROR", 80) || "UNKNOWN_ERROR";
+      counts[type] = (counts[type] || 0) + 1;
+      return counts;
+    }, {});
+  }
+  function failedItemsByType(items = [], type = "") {
+    const target = clean(type, 80);
+    return (Array.isArray(items) ? items : []).filter((item) => item?.status === "error"
+      && (!target || clean(item.errorType || item.error_type || "UNKNOWN_ERROR", 80) === target));
+  }
+  globalThis.LSAWorkflow = { words, count, clean, number, normalizeLanguageCode, DEFAULT_PROMPT, wordPrompt, httpUrl, editUrl, imageKey, recordKey, batchSize, batchMeta, batchStampSuffix, batchFileName, usageEventsInWindow, folderName, splitBatchFolders, safeImage, importBatch, localShorten, localRewrite, failureTypeCounts, failedItemsByType };
 })();

@@ -12,7 +12,7 @@
         <div class="brand">锁</div>
         <div>
           <h1>锁屏编辑助手设置</h1>
-          <p>0.12.2 · 标签页独立并行，标题与简介按词计数</p>
+          <p>0.13.0 · 运行中局部刷新、后台与界面模块化、回归测试补强</p>
         </div>
       </header>
 
@@ -23,6 +23,7 @@
           <div class="api-row-title">AI API</div>
           <label>Chat Completions 完整地址<input id="aiEndpoint" type="url" placeholder="https://api.deepseek.com/chat/completions" /></label>
           <label>模型名称（原样发送）<input id="aiModel" type="text" placeholder="填写提供商给出的准确模型 ID" /></label>
+          <label>备用模型（可选）<input id="aiFallbackModel" type="text" placeholder="与主模型共用接口和 Key；留空不启用" /></label>
           <label>API Key<input id="aiApiKey" type="password" placeholder="留空则不修改现有密钥" autocomplete="new-password" /></label>
         </div>
         <label class="toggle-row"><input id="reviewAiEnabled" type="checkbox" />启用第二 AI 审核与修改（每条内容会增加一次 API 请求）</label>
@@ -46,6 +47,8 @@
         <div class="form-grid">
           <label>标题最多词数<input id="titleLimit" type="number" min="1" max="100" /></label>
           <label>简介最多词数<input id="summaryLimit" type="number" min="1" max="500" /></label>
+          <label>图片重复阈值（次）<input id="usageThreshold" type="number" min="1" max="40" /></label>
+          <label>用量统计窗口（天）<input id="usageWindowDays" type="number" min="1" max="365" /></label>
           <label>优先图片比例
             <select id="preferredRatio">
               <option value="auto">自动（9:16 / 9:20）</option>
@@ -61,6 +64,23 @@
         <label>简写提示词（支持 {titleLimit} 与 {summaryLimit}）<textarea id="rewritePrompt" rows="8" maxlength="12000"></textarea></label>
         <p class="section-description">提示词可调整写作风格；工具会补充同语言、当前词数上限、英文搜图词及 JSON 格式要求。留空使用内置提示词。</p>
         <button id="resetPrompt" class="secondary" type="button">恢复内置提示词</button>
+      </section>
+
+      <section>
+        <div class="section-title">
+          <div>
+            <h2>全局重复标记库</h2>
+            <p>手动标记会跨所有标签页生效；解除标记不会删除既有下载历史。</p>
+          </div>
+          <button id="refreshDuplicateLibrary" class="secondary" type="button">刷新</button>
+        </div>
+        <div id="duplicateLibraryList" class="rule-list"></div>
+        <div class="button-row">
+          <button id="exportDuplicateLibrary" class="secondary" type="button">导出标记库</button>
+          <button id="importDuplicateLibrary" class="secondary" type="button">导入标记库</button>
+          <input id="duplicateLibraryFile" type="file" accept=".json,application/json" hidden />
+        </div>
+        <p id="duplicateLibraryStatus" class="save-message" role="status"></p>
       </section>
 
       <section>

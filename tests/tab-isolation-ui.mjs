@@ -6,13 +6,14 @@ import { webcrypto } from 'node:crypto';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 const root = fileURLToPath(new URL('../', import.meta.url));
+const version = JSON.parse(fs.readFileSync(path.join(root,'manifest.json'),'utf8')).version;
 const require = createRequire(path.join(process.env.LSA_NODE_MODULES || 'C:/Users/Administrator/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/node_modules','package.json'));
 const { chromium } = require('playwright');
 const browser = await chromium.launch({channel:'chrome',headless:true});
 const store = {local:{localSecrets:{aiApiKey:'test-key',pexelsApiKey:'test-key'}},sync:{settings:{aiEndpoint:'https://api.test/chat/completions',aiModel:'exact-test-model',titleLimit:12,summaryLimit:50,rewriteMode:'ai',autoSearch:false}}};
 const pages = new Map(), messages = [], savedExports = [], savedPaths = [];
 let handler, startup, activeAi = 0, peakAi = 0;
-const gates = new Map();
+const gates = new Map(), imageGates = new Map();
 const noop = () => {};
 const event = () => ({addListener:noop});
 const storageArea = (area) => ({
@@ -32,21 +33,31 @@ const chrome={
 const sandbox=vm.createContext({chrome,console,crypto:webcrypto,URL,URLSearchParams,TextEncoder,Uint8Array,ArrayBuffer,AbortController,setTimeout,clearTimeout,btoa,atob,importScripts:noop,
   fetch:async(url,options={})=>{
     if(String(url).includes('api.test')) {
-      const body=JSON.parse(options.body), tag=body.messages.at(-1).content.includes('Room A')?'A':'B';
+      const body=JSON.parse(options.body);
+      if(body.messages?.[0]?.content?.includes('Translate the supplied article title')) {
+        return new Response(JSON.stringify({model:body.model,choices:[{message:{content:JSON.stringify({translation:'AI 中文标题'})},finish_reason:'stop'}]}),{headers:{'content-type':'application/json'}});
+      }
+      const tag=body.messages.at(-1).content.includes('Room A')?'A':'B';
       activeAi++;peakAi=Math.max(peakAi,activeAi);
       if(gates.has(tag))await gates.get(tag).promise;
       activeAi--;
       return new Response(JSON.stringify({choices:[{message:{content:JSON.stringify({title:'A calm guide to caring for cats at home',summary:'Keep cats comfortable and give them a quiet place to rest.',image_query_en:'cat sleeping at home room '+tag,language:'en'})},finish_reason:'stop'}]}),{headers:{'content-type':'application/json'}});
     }
-    if(String(url).includes('api.pexels.com'))return new Response(JSON.stringify({page:1,total_results:1,photos:[{id:501,width:900,height:1600,alt:'Cat resting at home',src:{original:'https://image.test/cat.jpg',medium:'https://image.test/cat.jpg'}}]}),{headers:{'content-type':'application/json'}});
+    if(String(url).includes('api.pexels.com')) {
+      const query=new URL(String(url)).searchParams.get('query') || '';
+      const tag=query.includes('room A')?'A':query.includes('room B')?'B':'';
+      if(tag && imageGates.has(tag))await imageGates.get(tag).promise;
+      return new Response(JSON.stringify({page:1,total_results:1,photos:[{id:501,width:900,height:1600,alt:'Cat resting at home',src:{original:'https://image.test/cat.jpg',medium:'https://image.test/cat.jpg'}}]}),{headers:{'content-type':'application/json'}});
+    }
     return new Response('image bytes',{headers:{'content-type':'image/jpeg'}});
   },
 });
-for(const file of ['workflow.js','background.js'])vm.runInContext(fs.readFileSync(path.join(root,file),'utf8'),sandbox);
+for(const file of ['workflow.js','background-ai.js','background-stock.js','background-downloads.js','background-locks.js','background.js'])vm.runInContext(fs.readFileSync(path.join(root,file),'utf8'),sandbox);
 const run=(text)=>vm.runInContext(text,sandbox);
 const keys=async(id)=>(await run(`getTabContext(${id})`)).keys;
 const gate=(tag)=>{let release;const promise=new Promise((resolve)=>release=resolve);gates.set(tag,{promise,release});};
-gate('A');gate('B');
+const imageGate=(tag)=>{let release;const promise=new Promise((resolve)=>release=resolve);imageGates.set(tag,{promise,release});};
+gate('A');gate('B');imageGate('A');imageGate('B');
 try {
   const context=await browser.newContext({viewport:{width:1366,height:940}});
   await context.route('**/*',(route)=>route.fulfill({contentType:'text/html; charset=utf-8',body:'<!doctype html><meta charset="utf-8"><h1>模拟锁屏后台</h1><main id="fixture"></main>'}));
@@ -61,10 +72,14 @@ try {
       window.storageListeners=[];
       const area=(name)=>({get:(keys)=>window.lsaTestRpc({kind:'get',area:name,keys}),set:(patch)=>window.lsaTestRpc({kind:'set',area:name,patch})});
       window.chrome={storage:{local:area('local'),sync:area('sync'),onChanged:{addListener:(fn)=>window.storageListeners.push(fn)}},runtime:{onMessage:{addListener:()=>{}},sendMessage:(message)=>window.lsaTestRpc({kind:'message',message})}};
+      window.Translator={
+        availability:async()=> 'available',
+        create:async()=>({translate:async(text)=>'离线中文：'+text,destroy:()=>{}}),
+      };
       window.fixtureId=id;
     },{id});
     await page.addStyleTag({path:path.join(root,'assistant.css')});
-    for(const file of ['workflow.js','content.js'])await page.addScriptTag({path:path.join(root,file)});
+    for(const file of ['workflow.js','content.js','assistant-engine.js','assistant-ui.js'])await page.addScriptTag({path:path.join(root,file)});
     await page.evaluate(()=>{
       window.realPageSnapshot = window.__lsaPageTools.scanPageSnapshot;
       window.__lsaPageTools.scanPageSnapshot=async()=>({ok:true,pageLabel:'当前页',sourcePage:location.href,items:[{id:String(window.fixtureId),originalTitle:'How to care for cats in Room '+(window.fixtureId===101?'A':'B'),originalSummary:'Give your cats a comfortable home',editUrl:'https://lockscreen-admin.mofeeds.com/#/nav/overseasDeliver?index=5&type=editEMPTY&id='+window.fixtureId}]});
@@ -90,7 +105,11 @@ try {
   assert.equal(peakAi,2,'两个标签页必须同时有AI请求在运行');
   await a.locator('.lsa-pause-batch').click();
   assert.equal(store.local[kb.batchState].status,'running');
+  await b.evaluate(()=>window.__runtimeCard=document.querySelector('.lsa-batch-card'));
   gates.get('A').release();gates.get('B').release();
+  await b.waitForFunction(()=>document.querySelector('.lsa-item-status')?.textContent==='搜索配图');
+  assert.equal(await b.evaluate(()=>window.__runtimeCard===document.querySelector('.lsa-batch-card')),true,'步骤推进时必须保留卡片 DOM，不得整批重绘');
+  imageGates.get('A').release();imageGates.get('B').release();
   await a.waitForFunction(()=>document.querySelector('.lsa-batch-status').textContent.includes('已暂停'));
   await b.waitForFunction(()=>document.querySelector('.lsa-batch-status').textContent.includes('处理完成'));
   assert.equal(store.local[ka.batchState].items[0].id,'101');
@@ -104,14 +123,24 @@ try {
   assert.equal(manualQueryMessage.title,'How to care for cats in Room B','手动换图必须重新读取该记录原标题');
   assert.equal('summary' in manualQueryMessage,false,'手动换图请求不应携带简介');
   await b.waitForFunction(()=>document.querySelector('.lsa-image-status')?.textContent.includes('第 1 页'));
-  await b.locator('.lsa-stock-query').fill('totally unrelated ASCII words');
-  const beforeForcedOriginal=messages.filter((message)=>message.action==='GENERATE_IMAGE_QUERY').length;
+  await b.locator('.lsa-stock-query').fill('quiet cat by window');
+  const beforeDirectEnglish=messages.filter((message)=>message.action==='GENERATE_IMAGE_QUERY').length;
+  const beforeDirectSearch=messages.filter((message)=>message.action==='SEARCH_PEXELS_BATCH').length;
   await b.locator('.lsa-search-images').click();
-  for(let attempt=0;attempt<100&&messages.filter((message)=>message.action==='GENERATE_IMAGE_QUERY').length===beforeForcedOriginal;attempt++)await new Promise((resolve)=>setTimeout(resolve,20));
-  const forcedOriginalMessage=messages.filter((message)=>message.action==='GENERATE_IMAGE_QUERY').at(-1);
-  assert.equal(forcedOriginalMessage.title,'How to care for cats in Room B','手改输入框后再次搜索也必须回到读取的原标题');
-  assert.equal('summary' in forcedOriginalMessage,false);
+  for(let attempt=0;attempt<100&&messages.filter((message)=>message.action==='SEARCH_PEXELS_BATCH').length===beforeDirectSearch;attempt++)await new Promise((resolve)=>setTimeout(resolve,20));
+  assert.equal(messages.filter((message)=>message.action==='GENERATE_IMAGE_QUERY').length,beforeDirectEnglish,'人工英文词不得调用 AI');
+  const directSearch=messages.filter((message)=>message.action==='SEARCH_PEXELS_BATCH').at(-1);
+  assert.equal(directSearch.query,'quiet cat by window','人工英文词必须原样交给安全搜索链');
   await b.waitForFunction(()=>document.querySelector('.lsa-image-status')?.textContent.includes('第 1 页'));
+  const persistedQueryBefore=store.local[kb.batchState].items[0].imageQueryEn;
+  await b.getByRole('button',{name:'选为第 1 条配图'}).first().click();
+  await b.waitForFunction(()=>document.querySelector('.lsa-image-status')?.textContent.includes('已替换第 1 条'));
+  assert.equal(store.local[kb.batchState].items[0].imageQueryEn,persistedQueryBefore,'人工英文词选图不得覆盖持久化搜图词');
+  await b.locator('.lsa-stock-query').fill('кот у окна');
+  const beforeRejectedSearch=messages.filter((message)=>message.action==='SEARCH_PEXELS_BATCH').length;
+  await b.locator('.lsa-search-images').click();
+  await b.waitForFunction(()=>document.querySelector('.lsa-image-status')?.textContent.includes('请输入英文'));
+  assert.equal(messages.filter((message)=>message.action==='SEARCH_PEXELS_BATCH').length,beforeRejectedSearch,'非 ASCII 人工词不得发起素材请求');
   await b.locator('[data-tab="batch"]').click();
   const reviewCopy=structuredClone(store.local[kb.batchState]);
   reviewCopy.items[0].status='needs_review';reviewCopy.updatedAt=Date.now()+1000;
@@ -198,7 +227,7 @@ try {
   assert.equal(store.local[kc.batchState].batchId,cOriginal.batchId,'可以切回旧文件夹');
   await c.locator('.lsa-save-batch-json').click();
   await c.waitForFunction(()=>document.querySelector('.lsa-batch-status').textContent.includes('已保存'));
-  assert.ok(savedPaths.some(name=>name.includes('俄语_白俄罗斯_')&&name.endsWith('批次结果.json')),'JSON 保存到语言国家时间目录');
+  assert.ok(savedPaths.some(name=>/^锁屏批次\/原始内容\/俄语_白俄罗斯_.*\/俄语_白俄罗斯_40条_\d{8}-\d{4}_批次结果_[a-z0-9]+\.json$/.test(name)),'JSON 保存到语言国家时间目录，并使用直观文件名');
   await c.locator('[data-setting="batchLimit"]').selectOption('30');
   await c.waitForFunction(async(key)=>(await window.chrome.storage.local.get(key))[key]?.batchLimit===30,kc.batchState);
   assert.equal(store.local[kc.batchState].items.length,40,'切换30档不删除已有记录');
@@ -231,6 +260,36 @@ try {
   assert.equal('summary' in legacyGenerate,false);
   assert.notEqual(legacySearch.query,'old summary derived beach query','自动处理不得复用旧版非原标题查询');
   assert.equal(store.local[kd.batchState].items[0].imageQuerySourceTitle,'Legacy original mountain title');
+  const e=await create(505),ke=await keys(505);
+  const occupiedBatch={version:4,countUnit:'words',format:'lockscreen-results',batchId:'occupied-fallback',createdAt:Date.now(),updatedAt:Date.now(),status:'ready',batchLimit:30,metadata:{language:'英语',country:'南非',capturedAt:Date.now()},items:[
+    {index:1,id:'505-a',originalTitle:'First cat room',originalSummary:'A comfortable room',title:'First cat room',summary:'A comfortable room',imageQueryEn:'cat room',imageQuerySourceTitle:'First cat room',image:{id:'pexels-501',source:'pexels',imageUrl:'https://image.test/cat.jpg',previewUrl:'https://image.test/cat.jpg',width:900,height:1600,safetyStatus:'passed'},pageKey:'occupied',pageLabel:'占用测试',status:'completed',stages:{article:'done',ai:'done',image:'done'},rewriteMode:'ai'},
+    {index:2,id:'505-b',originalTitle:'How to care for cats in Room B',originalSummary:'Give cats a comfortable home',sourceUrl:'',editUrl:'',pageKey:'occupied',pageLabel:'占用测试',status:'pending',stages:{article:'pending',ai:'pending',image:'pending'},rewriteMode:'ai'}
+  ]};
+  await chrome.storage.local.set({[ke.batchState]:occupiedBatch});
+  await e.waitForFunction(()=>document.querySelectorAll('.lsa-batch-card').length===2);
+  await e.locator('.lsa-start-batch').click();
+  await e.waitForFunction(()=>document.querySelector('.lsa-batch-status').textContent.includes('处理完成'));
+  assert.equal(store.local[ke.batchState].items[1].status,'needs_review','候选全部被批次占用时必须降为需复核');
+  assert.ok(store.local[ke.batchState].items[1].reviewWarning.includes('候选全部重复/占用'),'占用兜底必须写入固定警告');
+  await e.locator('.lsa-batch-card').nth(1).getByRole('button',{name:'换图 / 翻页'}).click();
+  await e.waitForFunction(()=>document.querySelector('.lsa-image-status')?.textContent.includes('第 1 页'));
+  assert.ok((await e.locator('.lsa-stock-card .lsa-item-error').first().textContent()).includes('第 1 条占用'),'手动搜图卡片应显示占用者');
+  e.once('dialog',(dialog)=>dialog.dismiss());
+  await e.getByRole('button',{name:'选为第 2 条配图'}).first().click();
+  await e.waitForFunction(()=>document.querySelector('.lsa-image-status')?.textContent.includes('未替换'));
+  const f=await create(606),kf=await keys(606);
+  const bangladeshBatch={version:4,countUnit:'words',format:'lockscreen-results',batchId:'bangladesh-mode',createdAt:Date.now(),updatedAt:Date.now(),status:'ready',batchLimit:30,metadata:{language:'孟加拉语',country:'孟加拉',capturedAt:Date.now()},items:[{
+    index:1,id:'606',originalTitle:'বাড়ির জন্য সহজ ধারণা',originalSummary:'সহজ সাজসজ্জার ধারণা',pageLanguage:'孟加拉语',pageCountry:'孟加拉',pageKey:'bn-page',pageLabel:'孟加拉测试',status:'pending',stages:{article:'pending',ai:'pending',image:'pending'},rewriteMode:'ai'
+  }]};
+  await chrome.storage.local.set({[kf.batchState]:bangladeshBatch});
+  await f.waitForFunction(()=>document.querySelectorAll('.lsa-batch-card').length===1);
+  assert.equal(await f.locator('.lsa-bangladesh-badge').textContent(),'建议开启','双条件匹配后应提示人工开启');
+  await f.locator('.lsa-bangladesh-toggle').check();
+  await f.locator('.lsa-bangladesh-warning').waitFor();
+  assert.ok((await f.locator('.lsa-bangladesh-warning').textContent()).includes('必须逐条人工审核'));
+  assert.equal(await f.locator('.lsa-bangladesh-card-warning').count(),1,'孟加拉记录卡片必须显示人工审核警告');
+  assert.equal(store.local[kf.settings].bangladeshMode,true,'孟加拉模式开关必须按标签页保存');
+  assert.notEqual(store.local[kb.settings]?.bangladeshMode,true,'孟加拉模式不得影响其他标签页');
   fs.mkdirSync(path.join(root,'tests','artifacts'),{recursive:true});
   await c.locator('.lsa-restore summary').click();
   await c.evaluate(()=>document.querySelector('.lsa-assistant-body').scrollTop=0);
@@ -240,6 +299,16 @@ try {
     location.hash='#/nav/overseasDeliver?index=5&type=editEMPTY&id=202';
   });
   await chrome.storage.sync.set({settings:{...store.sync.settings,siteRules:{'lockscreen-admin.mofeeds.com':{titleSelector:'#title',summarySelector:'#summary'}}}});
+  await b.locator('.lsa-title-zh').waitFor();
+  assert.ok((await b.locator('.lsa-title-zh').textContent()).includes('离线中文：How to care for cats in Room B'),'编辑页应自动显示 Chrome 离线标题翻译');
+  const beforeAiTranslation=messages.filter((message)=>message.action==='TRANSLATE_TEXT').length;
+  await b.locator('.lsa-ai-translate-title').click();
+  await b.waitForFunction(()=>document.querySelector('.lsa-title-zh')?.textContent.includes('AI 中文标题'));
+  const translationMessage=messages.filter((message)=>message.action==='TRANSLATE_TEXT').at(-1);
+  assert.equal(messages.filter((message)=>message.action==='TRANSLATE_TEXT').length,beforeAiTranslation+1,'AI 翻译必须仅在手动点击后调用');
+  assert.equal(translationMessage.text,'How to care for cats in Room B');
+  assert.equal('summary' in translationMessage,false,'标题翻译不得携带简介');
+  assert.equal(store.local[kb.batchState].items[0].titleZh,'AI 中文标题','标题中文翻译应缓存到批次');
   await b.locator('.lsa-apply-record').click();
   assert.equal(await b.locator('#title').inputValue(),bSnapshot.items[0].title,'超过12字符但只有10词的标题应能填写');
   assert.equal(await b.locator('#picture').evaluate((input)=>input.files.length),0);
@@ -261,6 +330,6 @@ try {
   const before=await run('getTabContext(202)');startup();const after=await run('getTabContext(202)');
   assert.notEqual(before.keys.batchState,after.keys.batchState,'浏览器重启后不误认复用的标签ID');
   assert.ok((await run('savedBatches()')).batches.some((batch)=>batch.key===before.keys.batchState),'旧批次保留可恢复');
-  console.log('0.12.2 浏览器测试通过：自动与手动换图仅用原标题、旧查询强制刷新、实际扫描40条、文件夹归档、30/40切换及双标签并行');
+  console.log(`${version} 浏览器测试通过：局部进度刷新、全局去重、自适应搜图、标题翻译、孟加拉模式与多标签并行`);
   await context.close();
 } finally { await browser.close(); }

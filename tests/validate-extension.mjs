@@ -13,7 +13,9 @@ function assert(condition, message) {
 }
 
 assert(manifest.manifest_version === 3, "必须使用 Manifest V3");
-assert(manifest.version === "0.12.2", "构建版本应为 0.12.2");
+assert(/^\d+\.\d+\.\d+$/.test(manifest.version), "manifest 版本号格式无效");
+assert(manifest.background?.service_worker === "background-entry.js" && manifest.background?.type === "module",
+  "后台应使用模块化 service worker 入口");
 assert(manifest.permissions.includes("downloads"), "缺少下载权限");
 assert(manifest.permissions.includes("storage"), "缺少存储权限");
 assert(
@@ -27,6 +29,7 @@ const optionsHtml = read("options.html");
 for (const id of [
   "aiEndpoint",
   "aiModel",
+  "aiFallbackModel",
   "aiApiKey",
   "reviewAiEnabled",
   "reviewAiEndpoint",
@@ -38,6 +41,8 @@ for (const id of [
   "pixabayApiKey",
   "titleLimit",
   "summaryLimit",
+  "usageThreshold",
+  "usageWindowDays",
   "batchLimit",
   "batchConcurrency",
   "preferredRatio",
@@ -47,7 +52,9 @@ for (const id of [
   assert(optionsHtml.includes(`id="${id}"`), `设置页缺少 #${id}`);
 }
 
-const background = read("background.js");
+const backgroundFiles = ["background.js", "background-ai.js", "background-stock.js", "background-downloads.js", "background-locks.js"];
+const background = backgroundFiles.map(read).join("\n");
+const workflow = read("workflow.js");
 assert(background.includes('Accept: "image/jpeg,image/png') && background.includes("normalizeDownloadedImage"),
   "图片下载未优先 JPEG 或缺少 AVIF/WebP 转换");
 assert(background.includes('canvas.convertToBlob({ type: "image/jpeg", quality: 0.94 })') && background.includes("fileNameForMime"),
@@ -59,6 +66,14 @@ for (const message of [
   "FETCH_IMAGE_FILE",
   "SAVE_TEXT_FILE",
   "DOWNLOAD_FINAL_IMAGE",
+  "GET_DUPLICATE_LIBRARY",
+  "EXPORT_DUPLICATE_LIBRARY",
+  "IMPORT_DUPLICATE_LIBRARY",
+  "REBUILD_IMAGE_USAGE",
+  "RECONCILE_IMAGE_DOWNLOADS",
+  "DETECT_SOURCE_LANGUAGE",
+  "GET_AI_TRANSLATION_STATUS",
+  "TRANSLATE_TEXT",
 ]) {
   assert(background.includes(message), `后台缺少消息 ${message}`);
 }
@@ -89,9 +104,9 @@ assert(assistant.includes('lsa-record-fold lsa-inner-fold') && assistant.include
 assert(assistant.includes("Math.min(4, candidates.length)"), "批量图片下载未提升到最多 4 路并发");
 assert(assistant.includes('item.image?.safetyStatus === "passed"') && assistant.includes("当前没有自动通过的图片"),
   "自动通过图按钮仍错误依赖整条记录状态，或缺少可见反馈");
-assert(assistant.includes('q(".lsa-stock-query").value = item.originalTitle') && assistant.includes('sendRuntime("GENERATE_IMAGE_QUERY", { title: source })'),
+assert(assistant.includes('q(".lsa-stock-query").value = item.originalTitle') && assistant.includes('sendRuntime("GENERATE_IMAGE_QUERY", { title: source'),
   "手动换图没有强制从原标题重新生成关键词");
-assert(background.includes("EXCLUSIVELY from the ORIGINAL TITLE") && background.includes("buildImageQueryMessages(payload.title)"),
+assert(background.includes("EXCLUSIVELY from the ORIGINAL TITLE") && background.includes("buildImageQueryMessages(payload.title"),
   "自动或独立图片搜索未限定为原标题来源");
 assert(assistant.includes("priorQuerySource !== cleanText(item.originalTitle)") && assistant.includes("reusedExistingCopy"),
   "自动处理仍可能复用旧版或其他来源的图片关键词");
@@ -101,11 +116,32 @@ assert(background.includes("reviewAiCandidate") && background.includes('reasonin
   "第二 AI 审核或中等推理未接入");
 assert(background.includes("reviewWarning") && background.includes("disableThinking(requestBody"),
   "审核 AI 未实现快速模式或安全回退");
-assert(background.includes("outputTokenBudget = 8192") && background.includes("isReasoningTruncated"),
+assert(background.includes("const budgets = [4096, 8192, 16384]") && background.includes("isReasoningTruncated"),
   "思考截断未实现输出预算扩容重试");
+assert(background.includes("fetchAiJson") && background.includes("buildAiDiagnostic") && background.includes('headers.get("retry-after")'),
+  "AI 错误诊断或分级退避未实现");
+assert(background.includes("aiFallbackModel") && assistant.includes("lsa-retry-type"),
+  "备用模型或按错误类型重试界面未实现");
+assert(assistant.includes("请输入英文，或清空恢复按原标题搜索")
+  && assistant.includes("liveInput === targetOriginal")
+  && (assistant.match(/class=\"lsa-primary-button lsa-search-images\"/g) || []).length === 1,
+  "单按钮自适应搜图或人工词不留痕未实现");
+assert(assistant.includes("globalThis.Translator?.availability")
+  && assistant.includes("离线翻译不可用")
+  && assistant.includes("lsa-ai-translate-title")
+  && background.includes("translateTextWithAi")
+  && workflow.includes("titleZh"),
+  "编辑页离线/手动 AI 标题翻译或缓存未实现");
+assert(assistant.includes("lsa-bangladesh-toggle")
+  && assistant.includes("孟加拉模式：宗教与内容禁忌风险高")
+  && assistant.includes("isBangladeshEligible")
+  && background.includes("BANGLADESH MODE")
+  && background.includes("孟加拉模式：元数据含人物")
+  && workflow.includes('["bn", /bengali'),
+  "孟加拉模式双条件、提示词、初筛、警告或语言识别未完整实现");
 
-for (const file of ["workflow.js", "page-bridge.js", "background.js", "content.js", "assistant.js", "options.js"]) {
+for (const file of ["workflow.js", "page-bridge.js", "background-entry.js", ...backgroundFiles, "content.js", "assistant-engine.js", "assistant-ui.js", "assistant.js", "options.js"]) {
   execFileSync(process.execPath, ["--check", path.join(root, file)], { stdio: "inherit" });
 }
 
-console.log("锁屏编辑助手 0.12.2 静态验证通过");
+console.log(`锁屏编辑助手 ${manifest.version} 静态验证通过`);
