@@ -151,20 +151,33 @@ assert(overLimitRejected, "超长标题没有被拒绝");
 
 const strictPrompt = evaluate(`buildAiMessages({
   originalTitle:'How to grow peonies at home', originalSummary:'A practical guide to planting and caring for peonies.',
-  articleText:'Peonies need a sunny bed, rich soil and careful watering during early growth.', expectedLanguage:'en', titleLimit:12, summaryLimit:50
+  sourceText:'Peonies need a sunny bed, rich soil and careful watering during early growth.', summarySource:'article_body', expectedLanguage:'en', titleLimit:12, summaryLimit:50
 }, 'AI title was 27 characters, exceeding the 12 character limit')[0].content`);
 assert(strictPrompt.includes("MANDATORY FINAL CHECK"), "提示词缺少强制字符复核");
-assert(strictPrompt.includes("MANDATORY SOURCE PIPELINE"), "提示词缺少正文→简介→标题来源链");
-assert(strictPrompt.includes("ARTICLE BODY") && strictPrompt.includes("condense ONLY that generated summary"),
-  "提示词没有强制简介取自正文、标题取自生成简介");
-assert(strictPrompt.indexOf('{"summary"') < strictPrompt.indexOf('"title"'), "JSON 输出顺序必须先简介后标题");
+assert(strictPrompt.includes("version 0.13 fallback order") && strictPrompt.includes("article body first, then original description, then original title"),
+  "简介请求没有恢复 0.13 兜底顺序");
+assert(strictPrompt.includes("Do not generate the final title in this request"), "简介请求没有独立于标题生成");
+assert(strictPrompt.includes('{"summary":"...","image_query_en"') && !strictPrompt.includes('{"summary":"...","title"'),
+  "简介请求不应同时返回标题");
 assert(!strictPrompt.includes("preserve it unchanged"), "提示词仍可能直接保留原标题");
-assert(strictPrompt.includes("at most 12 words"), "提示词缺少标题词数限制");
 assert(strictPrompt.includes("at most 50 words"), "提示词缺少简介词数限制");
 assert(strictPrompt.includes("PREVIOUS ATTEMPT FAILED"), "重试提示词没有携带上次失败原因");
 assert(strictPrompt.includes("image_query_en"), "提示词丢失英文搜图词要求");
 assert(strictPrompt.includes("EXCLUSIVELY from the ORIGINAL TITLE") && strictPrompt.includes("Ignore the original description"),
   "批量自动搜图提示词没有严格限定原标题来源");
+const strictUser = evaluate(`buildAiMessages({
+  originalTitle:'Original title',originalSummary:'Original summary',sourceText:'Article body',summarySource:'article_body',
+  expectedLanguage:'en',titleLimit:12,summaryLimit:50
+})[1].content`);
+assert(strictUser.includes('原始标题：Original title') && strictUser.includes('原始简介：Original summary') && strictUser.includes('原始文章正文：Article body'),
+  "简介请求没有按 0.13 方法同时携带原标题、原简介和正文");
+const titleOnlyMessages = evaluate(`buildTitleFromSummaryMessages('Keep cats comfortable at home',{
+  expectedLanguage:'en',titleLimit:12
+})`);
+assert(titleOnlyMessages[1].content.includes('Keep cats comfortable at home'), "标题请求未收到已生成简介");
+assert(!JSON.stringify(titleOnlyMessages).includes('How to grow peonies'), "标题请求混入原标题");
+assert(titleOnlyMessages[0].content.includes('Condense ONLY the supplied summary'), "标题请求未严格限定简介来源");
+assert(titleOnlyMessages[0].content.includes('at most 12 words'), "标题请求缺少标题词数限制");
 const imageQueryMessages = evaluate("buildImageQueryMessages('Почему кошки любят коробки?')");
 assert(imageQueryMessages[1].content.includes("Почему кошки любят коробки?"), "独立搜图请求未传入原标题");
 assert(!imageQueryMessages[1].content.includes("summary") && !imageQueryMessages[1].content.includes("description"),

@@ -68,7 +68,11 @@ context.localCopy = await run('generateBatchItemWithAi({item:{originalTitle:"Car
 assert.equal(context.localCopy.summarySource,'article_body');
 assert.equal(context.localCopy.titleSource,'generated_summary');
 assert.equal(context.localCopy.title,run('LSAWorkflow.localShorten(localCopy.summary,12)'),'本地标题必须从刚生成的简介再次浓缩');
-await assert.rejects(run('generateBatchItemWithAi({item:{originalTitle:"Care for cats",originalSummary:"Fallback is forbidden"}})'),/未读取到文章正文/);
+context.localFallback = await run('generateBatchItemWithAi({item:{originalTitle:"Care for cats",originalSummary:"Use this original summary when body reading fails"}})');
+assert.equal(context.localFallback.summarySource,'original_summary','正文缺失时必须恢复原简介兜底');
+assert.equal(context.localFallback.title,run('LSAWorkflow.localShorten(localFallback.summary,12)'),'兜底后标题仍必须从生成简介浓缩');
+context.localTitleFallback = await run('generateBatchItemWithAi({item:{originalTitle:"Care for cats"}})');
+assert.equal(context.localTitleFallback.summarySource,'original_title','正文和原简介都缺失时必须回退原标题');
 await run('generateImageQueryWithAi({title:"cat"})');
 assert.equal(fetches, 0, '本地模式必须完全跳过 AI 网络');
 for (const level of ['off','low','medium','high','max','provider']) {
@@ -76,7 +80,7 @@ for (const level of ['off','low','medium','high','max','provider']) {
   assert.equal(body.thinking?.type, level === 'provider' ? undefined : level === 'off' ? 'disabled' : 'enabled');
   assert.equal(body.reasoning_effort, ['off','provider'].includes(level) ? undefined : level);
 }
-assert.ok(run(`buildAiMessages({originalTitle:'Cat care',originalSummary:'Care for cats',articleText:'Cats need calm daily care.',titleLimit:18,summaryLimit:60,rewritePrompt:'Use a calm tone within {titleLimit} and {summaryLimit} characters.'})[0].content`).includes('Use a calm tone within 18 and 60 words.'));
+assert.ok(run(`buildAiMessages({originalTitle:'Cat care',originalSummary:'Care for cats',sourceText:'Cats need calm daily care.',summarySource:'article_body',titleLimit:18,summaryLimit:60,rewritePrompt:'Use a calm tone within {titleLimit} and {summaryLimit} characters.'})[0].content`).includes('Use a calm tone within 18 and 60 words.'));
 const exported = {version:3,batchId:'test',items:[{id:'1',pageKey:'a',pageLabel:'第1页',originalTitle:'Cat care', title:'Cat care',summary:'Gentle care for cats',imageQueryEn:'cat at home',image:{id:'1',source:'pexels',imageUrl:'https://images.pexels.com/photos/1/a.jpg',width:900,height:1600,safetyStatus:'passed'}}]};
 context.exported = exported;
 const batch = run('LSAWorkflow.importBatch(exported, {titleLimit:12,summaryLimit:50})');

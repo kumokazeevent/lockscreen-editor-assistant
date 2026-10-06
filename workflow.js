@@ -31,7 +31,7 @@
     for (const [code, pattern] of rules) if (pattern.test(text)) return code;
     return text.slice(0, 12);
   }
-  const DEFAULT_PROMPT = "Use the article body as the factual source. First write a faithful description within {summaryLimit} words, then condense only that generated description into a natural title within {titleLimit} words. Keep the original language. Count written words, not letters or characters. Spaces and punctuation are not words. Hyphenated words and contractions count as one word. Keep important proper nouns and stated numbers. Remove repetition and excessive modifiers. Do not invent facts. Check both word counts before answering.";
+  const DEFAULT_PROMPT = "Use the best available source in this order: article body, original description, then original title. First write a faithful description within {summaryLimit} words, then condense only that generated description into a natural title within {titleLimit} words. Keep the original language. Count written words, not letters or characters. Spaces and punctuation are not words. Hyphenated words and contractions count as one word. Keep important proper nouns and stated numbers. Remove repetition and excessive modifiers. Do not invent facts. Check both word counts before answering.";
   function wordPrompt(value) {
     return String(value || DEFAULT_PROMPT)
       .replace(/counting spaces and punctuation/gi, "counting words, excluding standalone punctuation")
@@ -204,13 +204,18 @@
   }
   function localRewrite(item, settings) {
     const articleText = clean(item.articleText);
-    if (!articleText) throw new Error("未读取到文章正文，无法生成简介和标题");
-    const summary = localShorten(articleText, settings.summaryLimit || 50);
+    const originalSummary = clean(item.originalSummary || item.summary);
+    const originalTitle = clean(item.originalTitle || item.title);
+    const sourceText = articleText || originalSummary || originalTitle;
+    if (!sourceText) throw new Error("没有可用于生成简介的正文、原简介或原标题");
+    const summarySource = ["article_body", "original_summary", "original_title"].includes(item.summarySource)
+      ? item.summarySource : articleText ? "article_body" : originalSummary ? "original_summary" : "original_title";
+    const summary = localShorten(sourceText, settings.summaryLimit || 50);
     const title = localShorten(summary, settings.titleLimit || 12);
     return { title, summary, imageQueryEn: item.originalTitle,
       imageQuerySourceTitle: item.originalTitle,
-      copySource: "article_body_to_summary_to_title", summarySource: "article_body", titleSource: "generated_summary",
-      rewriteMode: "local", reviewWarning: "本地词语候选：简介取自文章正文，标题再取自简介；未做语义理解或翻译，请人工核对。" };
+      copySource: `${summarySource}_to_summary_to_title`, summarySource, titleSource: "generated_summary",
+      rewriteMode: "local", reviewWarning: `本地词语候选：简介来源为${summarySource === "article_body" ? "文章正文" : summarySource === "original_summary" ? "原简介（正文读取兜底）" : "原标题（最终兜底）"}，标题再取自简介；未做语义理解或翻译，请人工核对。` };
   }
   function failureTypeCounts(items = []) {
     return (Array.isArray(items) ? items : []).reduce((counts, item) => {

@@ -37,6 +37,9 @@ const sandbox=vm.createContext({chrome,console,crypto:webcrypto,URL,URLSearchPar
       if(body.messages?.[0]?.content?.includes('Translate the supplied article title')) {
         return new Response(JSON.stringify({model:body.model,choices:[{message:{content:JSON.stringify({translation:'AI 中文标题'})},finish_reason:'stop'}]}),{headers:{'content-type':'application/json'}});
       }
+      if(body.messages?.[0]?.content?.includes('title only after the summary has been completed')) {
+        return new Response(JSON.stringify({model:body.model,choices:[{message:{content:JSON.stringify({title:'A calm guide to caring for cats at home'})},finish_reason:'stop'}]}),{headers:{'content-type':'application/json'}});
+      }
       const tag=body.messages.at(-1).content.includes('Room A')?'A':'B';
       activeAi++;peakAi=Math.max(peakAi,activeAi);
       if(gates.has(tag))await gates.get(tag).promise;
@@ -261,7 +264,8 @@ try {
   const legacySearch=messages.filter((message)=>message.tabId===404&&message.action==='SEARCH_PEXELS_BATCH').at(-1);
   assert.equal(messages.filter((message)=>message.tabId===404&&message.action==='AI_PROCESS_ITEM').length,beforeLegacyRewrite+1,'旧文案缺少来源标记时必须按正文重新生成');
   assert.equal(legacyRewrite.item.originalTitle,'Legacy original mountain title');
-  assert.ok(legacyRewrite.item.articleText.includes('Mountain trails'));
+  assert.equal(legacyRewrite.item.summarySource,'article_body');
+  assert.ok(legacyRewrite.item.sourceText.includes('Mountain trails'));
   assert.notEqual(legacySearch.query,'old summary derived beach query','自动处理不得复用旧版非原标题查询');
   assert.equal(store.local[kd.batchState].items[0].imageQuerySourceTitle,'Legacy original mountain title');
   assert.equal(store.local[kd.batchState].items[0].summarySource,'article_body');

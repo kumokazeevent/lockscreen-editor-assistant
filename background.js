@@ -925,6 +925,44 @@ function validateAiResult(raw, context) {
   return { title, summary, image_query_en: imageQueryEn, language };
 }
 
+function validateAiSummaryResult(raw, context) {
+  const summary = String(raw?.summary || "").replace(/^['\"`]+|['\"`]+$/g, "").trim();
+  const imageQueryEn = String(raw?.image_query_en || raw?.imageQueryEn || "")
+    .replace(/[\r\n\t]+/g, " ").replace(/\s{2,}/g, " ").trim();
+  const language = normalizeLanguageCode(raw?.language);
+  if (!summary || !imageQueryEn || !language) {
+    throw new RequestError("AI 结果缺少 summary、image_query_en 或 language", { code: "AI_INVALID", retryable: true });
+  }
+  if (wordCount(summary) > context.summaryLimit) {
+    throw new RequestError(`AI 简介为 ${wordCount(summary)} 词，超过 ${context.summaryLimit} 词限制`, {
+      code: "AI_INVALID", retryable: true,
+    });
+  }
+  if (/\p{Script=Han}|\p{Script=Cyrillic}|\p{Script=Arabic}/u.test(imageQueryEn)) {
+    throw new RequestError("AI 图片关键词不是英文", { code: "AI_INVALID", retryable: true });
+  }
+  const sourceScript = dominantScript(context.originalTitle);
+  const summaryScript = dominantScript(summary);
+  if (["arabic", "cyrillic", "han"].includes(sourceScript) && sourceScript !== summaryScript) {
+    throw new RequestError("AI 简介与原标题的文字语言不一致", { code: "AI_INVALID", retryable: true });
+  }
+  if (sourceScript === "latin" && ["arabic", "cyrillic", "han"].includes(summaryScript)) {
+    throw new RequestError("AI 简介与原标题的文字语言不一致", { code: "AI_INVALID", retryable: true });
+  }
+  if (context.expectedLanguage && language !== context.expectedLanguage) {
+    throw new RequestError(`AI 返回语言 ${language.toUpperCase()}，与原稿 ${context.expectedLanguage.toUpperCase()} 不一致`, {
+      code: "AI_INVALID", retryable: true,
+    });
+  }
+  const detectedOutput = detectSourceLanguage(summary);
+  if (detectedOutput.confidence >= 0.65 && detectedOutput.code && detectedOutput.code !== language) {
+    throw new RequestError(`AI 标注语言 ${language.toUpperCase()}，但简介疑似 ${detectedOutput.code.toUpperCase()}`, {
+      code: "AI_INVALID", retryable: true,
+    });
+  }
+  return { summary, image_query_en: imageQueryEn, language };
+}
+
 function buildAiMessages(context, correction = "") {
   const languageInstruction = context.expectedLanguage
     ? `The input language is ${context.expectedLanguage.toUpperCase()}. The title and summary MUST stay in that language.`
@@ -933,39 +971,114 @@ function buildAiMessages(context, correction = "") {
     "You are a professional lock-screen magazine title and description editor.",
     LSAWorkflow.wordPrompt(context.rewritePrompt)
       .replaceAll("{titleLimit}", String(context.titleLimit)).replaceAll("{summaryLimit}", String(context.summaryLimit)),
-    "MANDATORY SOURCE PIPELINE: follow these two steps in order. These source rules override any conflicting custom instruction above.",
-    `STEP 1 — SUMMARY: read the supplied ARTICLE BODY and create a faithful, natural summary of at most ${context.summaryLimit} words. The article body is the only factual source for summary. Do not summarize the original title or original description.`,
-    `STEP 2 — TITLE: after the summary is complete, condense ONLY that generated summary into a natural title of at most ${context.titleLimit} words. Do not rewrite, copy or shorten the original title.`,
-    "Generate the summary before the title. Every fact and proper noun in the title must be supported by the generated summary.",
-    "KEEP THE ORIGINAL LANGUAGE: use exactly the same language as the input title. Never translate the title or summary.",
-    `TITLE: at most ${context.titleLimit} words. Count written words, NOT letters or characters. Spaces and punctuation do not count. Hyphenated compounds and contractions are one word; numbers are words.`,
-    "Preserve the summary's core topic, meaning and most important keywords in the title. Keep important names, places and technical terms when possible.",
+    "Use the version 0.13 fallback order for the summary: article body first, then original description, then original title.",
+    `Create a faithful, natural summary of at most ${context.summaryLimit} words. If the article body does not provide usable article content, continue with the original description; if that is also unavailable, use the original title.`,
+    "Do not generate the final title in this request. The title will be generated only after this summary request has completed.",
+    "KEEP THE ORIGINAL LANGUAGE: use exactly the same language as the input title. Never translate the summary.",
     "Never change a stated number of methods, steps, tips or items into a smaller or different number.",
-    `SUMMARY: at most ${context.summaryLimit} words. Preserve the article body's meaning and key information.`,
+    `SUMMARY: at most ${context.summaryLimit} words. Preserve the available source's meaning and key information.`,
     "Remove repetition, background details and excessive modifiers. Do not invent any information.",
     languageInstruction,
-    "The ORIGINAL TITLE is supplied only to identify language, verify the general topic and create image_query_en. The ORIGINAL DESCRIPTION is supplied only as a non-authoritative cross-check. Neither is a source for the summary or final title.",
+    "The final title is not generated in this request. The original title is also used to identify language and create image_query_en.",
     "IMAGE QUERY SOURCE IS STRICT: image_query_en must be 5 to 12 concrete English visual keywords derived EXCLUSIVELY from the ORIGINAL TITLE. Ignore the original description, article text and shortened title for this field.",
     "For people, prefer side profile, back view, silhouette, fully clothed subjects or wide shots. Avoid frontal close-ups, selfies, swimwear, nudity, exposed skin and sexualized poses. Prefer objects or scenery when people are unnecessary.",
     context.bangladeshMode ? "BANGLADESH MODE: avoid religiously sensitive framing, storytelling narration, negative or sad wording, and romantic-love themes. Food content must never mention pork, pig, bacon or ham. Prefer neutral, practical and positive wording." : "",
     "LANGUAGE CODE: language must be the ISO 639-1 two-letter code of the original title: vi, es, en, ru, be, ar, it, zh, fa, ne, si, my, ky, tg, az, bn or id.",
-    "MANDATORY FINAL CHECK: count words in the title and summary before answering. For Vietnamese count space-separated written words/syllables; for Chinese and other unspaced writing use natural word segmentation.",
+    "MANDATORY FINAL CHECK: count words in the summary before answering. For Vietnamese count space-separated written words/syllables; for Chinese and other unspaced writing use natural word segmentation.",
     "Keep internal reasoning concise and reserve enough output budget for the final JSON answer.",
-    `If title exceeds ${context.titleLimit} words, rewrite it shorter and count again. If summary exceeds ${context.summaryLimit} words, rewrite it shorter and count again.`,
-    "Never exceed either limit. Further shortening is always preferable to exceeding a limit.",
+    `If summary exceeds ${context.summaryLimit} words, rewrite it shorter and count again.`,
+    "Never exceed the summary limit. Further shortening is always preferable to exceeding it.",
     "Return exactly one strict JSON object with keys in this exact order and no Markdown, labels, explanations, analysis or word counts:",
-    '{"summary":"...","title":"...","image_query_en":"...","language":"..."}',
+    '{"summary":"...","image_query_en":"...","language":"..."}',
     correction ? `PREVIOUS ATTEMPT FAILED: ${correction}. Correct this failure before returning the new JSON.` : "",
   ].filter(Boolean).join("\n");
   const user = [
-    `原标题（仅用于语言、主题核对与搜图）：${context.originalTitle}`,
-    `原简介（仅用于核对，不得作为生成来源）：${context.originalSummary || "（无）"}`,
-    `文章正文（简介的唯一内容来源）：${context.articleText}`,
+    `原始标题：${context.originalTitle}`,
+    `原始简介：${context.originalSummary || "（无）"}`,
+    `原始文章正文：${context.sourceText || "（未抓取到正文，请依次使用原始简介、原始标题兜底）"}`,
   ].join("\n\n");
   return [
     { role: "system", content: system },
     { role: "user", content: user },
   ];
+}
+
+function buildTitleFromSummaryMessages(summary, context, correction = "") {
+  const languageInstruction = context.expectedLanguage
+    ? `Write the title in ${context.expectedLanguage.toUpperCase()}, the same language as the supplied summary.`
+    : "Write the title in exactly the same language as the supplied summary. Never translate it.";
+  return [
+    {
+      role: "system",
+      content: [
+        "You create a lock-screen magazine title only after the summary has been completed.",
+        `Condense ONLY the supplied summary into one natural title of at most ${context.titleLimit} words.`,
+        "Do not use any original title, original description or article text. They are intentionally not provided.",
+        "Preserve the summary's core topic, important proper nouns and stated numbers. Do not invent information.",
+        "Count written words, not letters or characters. Spaces and punctuation do not count; hyphenated compounds and contractions count as one word.",
+        languageInstruction,
+        `Before answering, recount and shorten again if the title exceeds ${context.titleLimit} words.`,
+        "Return exactly one strict JSON object and nothing else: {\"title\":\"...\"}",
+        correction ? `PREVIOUS ATTEMPT FAILED: ${correction}. Correct it now.` : "",
+      ].filter(Boolean).join("\n"),
+    },
+    { role: "user", content: `已生成简介：\n${summary}` },
+  ];
+}
+
+function validateTitleFromSummary(raw, summary, context) {
+  const title = String(raw?.title || "").replace(/^['\"`]+|['\"`]+$/g, "").trim();
+  if (!title) throw new RequestError("AI 未返回标题", { code: "AI_INVALID", retryable: true });
+  if (wordCount(title) > context.titleLimit) {
+    throw new RequestError(`AI 标题为 ${wordCount(title)} 词，超过 ${context.titleLimit} 词限制`, {
+      code: "AI_INVALID", retryable: true,
+    });
+  }
+  const summaryScript = dominantScript(summary);
+  const titleScript = dominantScript(title);
+  if (["arabic", "cyrillic", "han"].includes(summaryScript) && summaryScript !== titleScript) {
+    throw new RequestError("AI 标题与生成简介的文字语言不一致", { code: "AI_INVALID", retryable: true });
+  }
+  if (summaryScript === "latin" && ["arabic", "cyrillic", "han"].includes(titleScript)) {
+    throw new RequestError("AI 标题与生成简介的文字语言不一致", { code: "AI_INVALID", retryable: true });
+  }
+  return title;
+}
+
+async function generateTitleFromSummary(summary, context, requestContext) {
+  const { endpoint, model, apiKey, timeout, settings, attempt } = requestContext;
+  const requestBody = {
+    model,
+    temperature: 0.1,
+    stream: false,
+    messages: buildTitleFromSummaryMessages(summary, context),
+  };
+  applyCompletionBudget(requestBody, 4096, "max_tokens");
+  configureThinking(requestBody, model, endpoint, settings.thinkingLevel);
+  let response;
+  try {
+    response = await fetchAiJson(endpoint, {
+      method: "POST", headers: aiHeaders(apiKey), body: JSON.stringify(requestBody),
+    }, timeout, "AI 标题浓缩", { attempt, model });
+  } catch (error) {
+    if (!requiresCompletionTokenFieldFallback(error)) throw error;
+    applyCompletionBudget(requestBody, 4096, "max_completion_tokens");
+    response = await fetchAiJson(endpoint, {
+      method: "POST", headers: aiHeaders(apiKey), body: JSON.stringify(requestBody),
+    }, timeout, "AI 标题浓缩", { attempt, model });
+  }
+  const { data, diagnostic } = response;
+  if (isOutputTruncated(data)) {
+    throw new OutputTruncatedError(describeEmptyAiResponse(data), { model, diagnostic, diagnostics: [diagnostic] });
+  }
+  const content = getAiResponseText(data);
+  if (!content) {
+    throw new RequestError(describeEmptyAiResponse(data), {
+      code: "AI_EMPTY", errorType: "EMPTY_RESPONSE", retryable: true,
+      model, diagnostic, diagnostics: [diagnostic],
+    });
+  }
+  return { title: validateTitleFromSummary(extractJson(content), summary, context), diagnostic };
 }
 
 async function reviewAiCandidate(candidate, context, settings, localSecrets, timeout) {
@@ -989,16 +1102,16 @@ async function reviewAiCandidate(candidate, context, settings, localSecrets, tim
         role: "system",
         content: [
           "You are the final quality reviewer for lock-screen magazine copy.",
-          `First correct candidate.summary against original_article, its only factual source, and keep it within ${context.summaryLimit} words. Do not use original_title or original_summary as summary sources.`,
-          `Then replace candidate.title by condensing ONLY the corrected summary into at most ${context.titleLimit} words. Never rewrite, copy or shorten original_title for the final title.`,
-          "The summary and title MUST use the original title's language. Count words, not letters. Spaces and punctuation do not count. Contractions and hyphenated words count as one.",
-          "Preserve the article's core meaning, important proper nouns and every stated number of methods, steps, tips or items. Do not invent facts.",
+          `Correct candidate.summary using the version 0.13 fallback order: original_article, then original_summary, then original_title. Keep it within ${context.summaryLimit} words.`,
+          "Do not generate or review a title. The final title is generated only after this summary review has completed.",
+          "The summary MUST use the original title's language. Count words, not letters. Spaces and punctuation do not count. Contractions and hyphenated words count as one.",
+          "Preserve the available source's core meaning, important proper nouns and every stated number of methods, steps, tips or items. Do not invent facts.",
           context.bangladeshMode ? "BANGLADESH MODE: remove religiously sensitive framing, storytelling narration, negative/sad wording, romantic-love themes and any pork-related food wording while preserving the factual core." : "",
           "image_query_en must remain a concrete English stock-photo query based EXCLUSIVELY on original_title. Ignore original_summary and article text for this field.",
-          "Count the words in title and summary before replying. Rewrite and recount until both word limits are satisfied.",
+          "Count the words in summary before replying. Rewrite and recount until the summary limit is satisfied.",
           "Review quickly and directly. Do not provide analysis or explanations.",
-          "Return exactly one strict JSON object with summary before title and nothing else:",
-          '{"summary":"...","title":"...","image_query_en":"...","language":"..."}',
+          "Return exactly one strict JSON object and nothing else:",
+          '{"summary":"...","image_query_en":"...","language":"..."}',
         ].join("\n"),
       },
       {
@@ -1006,7 +1119,7 @@ async function reviewAiCandidate(candidate, context, settings, localSecrets, tim
         content: JSON.stringify({
           original_title: context.originalTitle,
           original_summary: context.originalSummary,
-          original_article: context.articleText,
+          original_article: context.sourceText,
           candidate,
         }),
       },
@@ -1033,7 +1146,7 @@ async function reviewAiCandidate(candidate, context, settings, localSecrets, tim
     });
   }
   try {
-    return validateAiResult(extractJson(content), context);
+    return validateAiSummaryResult(extractJson(content), context);
   } catch (error) {
     error.model ||= model;
     error.errorType ||= "AI_INVALID";
@@ -1080,13 +1193,11 @@ async function generateBatchItemWithAi(payload = {}, tabId) {
   if (!originalTitle) throw new Error("没有读取到原标题，无法改写");
   const originalSummary = String(item.originalSummary || item.summary || "").trim().slice(0, 2000);
   const articleText = String(item.articleText || "").replace(/\s+/g, " ").trim().slice(0, MAX_AI_ARTICLE_CHARS);
-  if (!articleText) {
-    throw new RequestError("未读取到文章正文，无法生成简介和标题；请确认原文链接有效后重试", {
-      code: "ARTICLE_REQUIRED",
-      retryable: false,
-      errorType: "ARTICLE_REQUIRED",
-    });
-  }
+  const explicitSummarySource = ["article_body", "original_summary", "original_title"].includes(item.summarySource)
+    ? item.summarySource : "";
+  const summarySource = explicitSummarySource || (articleText ? "article_body" : originalSummary ? "original_summary" : "original_title");
+  const sourceText = String(item.sourceText || articleText || originalSummary || originalTitle)
+    .replace(/\s+/g, " ").trim().slice(0, MAX_AI_ARTICLE_CHARS);
   const detected = detectSourceLanguage(`${originalTitle} ${originalSummary}`);
   const normalizedHint = normalizeLanguageCode(item.languageHint || item.language || item.pageLanguage || payload.languageHint);
   const hintedLanguage = SUPPORTED_LANGUAGE_CODES.has(normalizedHint) ? normalizedHint : "";
@@ -1096,7 +1207,8 @@ async function generateBatchItemWithAi(payload = {}, tabId) {
   const context = {
     originalTitle,
     originalSummary,
-    articleText,
+    sourceText,
+    summarySource,
     expectedLanguage,
     rewritePrompt,
     titleLimit: clampNumber(payload.titleLimit ?? settings.titleLimit, 12, 1, 100),
@@ -1178,7 +1290,7 @@ async function generateBatchItemWithAi(payload = {}, tabId) {
         }
         let primaryResult;
         let primaryError;
-        try { primaryResult = validateAiResult(candidate, context); }
+        try { primaryResult = validateAiSummaryResult(candidate, context); }
         catch (error) {
           primaryError = error;
           primaryError.model ||= activeModel;
@@ -1211,14 +1323,19 @@ async function generateBatchItemWithAi(payload = {}, tabId) {
         } else if (!primaryResult) {
           throw primaryError;
         }
+        const titleResponse = await generateTitleFromSummary(result.summary, context, {
+          endpoint, model: activeModel, apiKey, timeout, settings, attempt,
+        });
+        if (titleResponse.diagnostic) allDiagnostics.push(titleResponse.diagnostic);
+        result = validateAiResult({ ...result, title: titleResponse.title }, context);
         return {
           ok: true,
           value: {
             configured: true, result, title: result.title, summary: result.summary,
             image_query_en: result.image_query_en, imageQueryEn: result.image_query_en,
             language: result.language, reviewed, reviewWarning, attempts: totalAttempts,
-            copySource: "article_body_to_summary_to_title",
-            summarySource: "article_body",
+            copySource: `${context.summarySource}_to_summary_to_title`,
+            summarySource: context.summarySource,
             titleSource: "generated_summary",
             model: activeModel, usedFallbackModel, diagnostics: allDiagnostics,
           },

@@ -640,11 +640,18 @@
       setItemStage(item, "article", "working");
       item.status = "fetching";
       await persistBatch({ item, progressOnly: true });
+      const priorSummarySource = cleanText(item.summarySource || "");
+      const hadStoredArticleText = Boolean(item.articleText);
       const articleResponse = !item.articleText && item.sourceUrl
         ? await sendRuntime("FETCH_ARTICLE", { url: item.sourceUrl, sourceUrl: item.sourceUrl }) : {};
-      const articleText = item.articleText || articleTextFromResponse(articleResponse);
-      if (!articleText) throw new Error("未读取到文章正文，无法生成简介和标题；请确认“查看链接”有效后重试");
+      const fetchedArticleText = articleTextFromResponse(articleResponse);
+      const articleText = item.articleText || fetchedArticleText || item.originalSummary || item.originalTitle;
+      const summarySource = hadStoredArticleText || fetchedArticleText ? "article_body"
+        : item.originalSummary ? "original_summary" : "original_title";
+      if (!articleText) throw new Error("没有可用于生成简介的正文、原简介或原标题");
+      const sourceText = articleText;
       item.articleText = articleText;
+      item.summarySource = summarySource;
       item.articleTitle = cleanText(articleResponse.title || articleResponse.article?.title || "");
       setItemStage(item, "article", "done");
 
@@ -653,14 +660,17 @@
       item.status = "rewriting";
       await persistBatch({ item, progressOnly: true });
       const reusedExistingCopy = !item.forceRewrite && item.title && item.summary
-        && item.summarySource === "article_body" && item.titleSource === "generated_summary"
+        && priorSummarySource === summarySource
+        && ["article_body", "original_summary", "original_title"].includes(item.summarySource)
+        && item.titleSource === "generated_summary"
         && textLength(item.title) <= state.settings.titleLimit && textLength(item.summary) <= state.settings.summaryLimit;
       const priorQuerySource = cleanText(item.imageQuerySourceTitle || "");
       const aiResponse = reusedExistingCopy ? { result: item } : await sendRuntime("AI_PROCESS_ITEM", {
         item: {
           index: item.index, id: item.id, originalTitle: item.originalTitle,
           originalSummary: item.originalSummary, articleTitle: item.articleTitle,
-          articleText, sourceUrl: item.sourceUrl, pageLanguage: item.pageLanguage, pageCountry: item.pageCountry,
+          articleText: sourceText, sourceText, summarySource,
+          sourceUrl: item.sourceUrl, pageLanguage: item.pageLanguage, pageCountry: item.pageCountry,
         },
         titleLimit: Number(state.settings.titleLimit || 12),
         summaryLimit: Number(state.settings.summaryLimit || 50),
@@ -1552,12 +1562,17 @@
           await persistBatch({ item: matched, progressOnly: true });
         }
       }
-      if (!articleText) throw new Error("未读取到文章正文，无法生成简介和标题；请先在列表页读取含有效原文链接的批次");
-      setPanelStatus(".lsa-manual-status", state.settings.rewriteMode === "local" ? "正在根据正文生成本地候选…" : "正在根据正文生成简介与标题…");
+      const summarySource = articleText ? "article_body" : source.summary ? "original_summary" : "original_title";
+      const sourceText = articleText || source.summary || source.title;
+      if (!sourceText) throw new Error("没有可用于生成简介的正文、原简介或原标题");
+      const sourceLabel = summarySource === "article_body" ? "正文" : summarySource === "original_summary" ? "原简介兜底" : "原标题兜底";
+      setPanelStatus(".lsa-manual-status", state.settings.rewriteMode === "local" ? `正在根据${sourceLabel}生成本地候选…` : `正在根据${sourceLabel}生成简介与标题…`);
       const response = await sendRuntime("AI_PROCESS_ITEM", { item: {
         originalTitle: source.title,
         originalSummary: source.summary,
-        articleText,
+        articleText: sourceText,
+        sourceText,
+        summarySource,
         sourceUrl,
         pageLanguage: matched?.pageLanguage,
         pageCountry: matched?.pageCountry,

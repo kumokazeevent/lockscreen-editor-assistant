@@ -110,16 +110,17 @@ assert(background.includes("EXCLUSIVELY from the ORIGINAL TITLE") && background.
   "自动或独立图片搜索未限定为原标题来源");
 assert(assistant.includes("priorQuerySource !== cleanText(item.originalTitle)") && assistant.includes("reusedExistingCopy"),
   "自动处理仍可能复用旧版或其他来源的图片关键词");
-assert(background.includes("MANDATORY SOURCE PIPELINE")
-  && background.includes("condense ONLY that generated summary")
-  && background.includes('summarySource: "article_body"')
+assert(background.includes("version 0.13 fallback order")
+  && background.includes("generateTitleFromSummary(result.summary")
+  && background.includes("Condense ONLY the supplied summary")
+  && background.includes('summarySource = explicitSummarySource || (articleText ? "article_body" : originalSummary ? "original_summary" : "original_title")')
   && background.includes('titleSource: "generated_summary"'),
   "AI 文案未强制执行正文→简介→标题来源链");
-assert(assistant.includes("item.summarySource === \"article_body\"")
+assert(assistant.includes('["article_body", "original_summary", "original_title"].includes(item.summarySource)')
   && assistant.includes("item.titleSource === \"generated_summary\"")
-  && !assistant.includes("articleTextFromResponse(articleResponse) || item.originalSummary || item.originalTitle"),
-  "旧文案仍可能被复用，或正文缺失时仍会回退到原简介/原标题");
-assert(workflow.includes('const title = localShorten(summary') && workflow.includes('summarySource: "article_body"'),
+  && assistant.includes("const articleText = item.articleText || fetchedArticleText || item.originalSummary || item.originalTitle"),
+  "旧文案来源标记或正文→原简介→原标题兜底链未实现");
+assert(workflow.includes('const title = localShorten(summary') && workflow.includes('articleText ? "article_body" : originalSummary ? "original_summary" : "original_title"'),
   "本地模式未执行正文→简介→标题来源链");
 assert(content.includes("page.originalTitle || page.boundTitle") && !content.includes("nearbyImageText"),
   "旧式手动替换面板仍可能使用图片说明或页面标题搜索");
