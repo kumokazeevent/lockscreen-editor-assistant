@@ -1771,6 +1771,13 @@
           <p class="lsa-status-text lsa-transfer-status">只显示当前文件夹。导入或读取不同页面时先归档旧批次，不再追加；未知语言国家请手动补全。</p>
         </div>
       </details>`;
+    const recordPanel = `
+      <details class="lsa-record-fold lsa-section-card lsa-fold-card">
+        <summary class="lsa-record-fold-label">批次记录</summary>
+        <div class="lsa-fold-content">
+          <div class="lsa-record-list" role="listbox" aria-label="选择并跳转到批次记录"></div>
+        </div>
+      </details>`;
     root.innerHTML = `
       <header class="lsa-assistant-header">
         <div class="lsa-assistant-logo">锁</div>
@@ -1813,15 +1820,12 @@
           <div class="lsa-section-card">
             <div class="lsa-section-row"><h2 class="lsa-section-title">从批次填入当前编辑页</h2><button class="lsa-text-action lsa-refresh-record" type="button">重新匹配 ID</button></div>
             <p class="lsa-section-hint">优先按当前 URL 的 id 自动匹配；点击下面任一记录会立即跳转到对应编辑页。工具只填入标题和简介，图片由你手动上传，也不会点击后台最终保存。</p>
-            <details class="lsa-record-fold lsa-inner-fold"${getBatchItems().length ? " open" : ""}>
-              <summary class="lsa-record-fold-label">批次记录</summary>
-              <div class="lsa-record-list" role="listbox" aria-label="选择并跳转到批次记录"></div>
-            </details>
             <div class="lsa-selected-record"></div>
             <button class="lsa-primary-button lsa-apply-record" type="button" disabled>填入标题和简介</button>
             <p class="lsa-status-text lsa-edit-status">请先核对匹配记录；图片请在后台手动上传。</p>
           </div>
           ${transferPanel}
+          ${recordPanel}
           ${quickSettings}
         </section>
         <section class="lsa-tab-panel" data-panel="manual" hidden>

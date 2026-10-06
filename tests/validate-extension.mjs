@@ -99,8 +99,11 @@ assert(assistant.includes("lsa-record-option-status") && assistant.includes("sel
   "记录列表未实现编号-状态显示或点击跳转");
 assert(assistant.includes("mountRevision") && assistant.includes("removeAllAssistantNodes"),
   "路由切换未实现挂载竞态保护或残留窗口清理");
-assert(assistant.includes('lsa-record-fold lsa-inner-fold') && assistant.includes('lsa-folder-summary'),
+assert(assistant.includes('lsa-record-fold lsa-section-card lsa-fold-card') && assistant.includes('lsa-folder-summary'),
   "批次记录或当前文件夹未改成折叠区域");
+assert(!assistant.includes('getBatchItems().length ? " open"')
+  && assistant.indexOf('${transferPanel}\n          ${recordPanel}\n          ${quickSettings}') >= 0,
+  "编辑页批次记录必须默认折叠，并位于当前文件夹和当前标签页设置之间");
 assert(assistant.includes("Math.min(4, candidates.length)"), "批量图片下载未提升到最多 4 路并发");
 assert(assistant.includes('item.image?.safetyStatus === "passed"') && assistant.includes("当前没有自动通过的图片"),
   "自动通过图按钮仍错误依赖整条记录状态，或缺少可见反馈");
