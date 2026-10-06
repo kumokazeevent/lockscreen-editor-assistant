@@ -845,7 +845,7 @@ function buildAiMessages(context, correction = "") {
     `SUMMARY: at most ${context.summaryLimit} words. Preserve the original meaning and key information.`,
     "Remove repetition, background details and excessive modifiers. Do not invent any information.",
     languageInstruction,
-    "IMAGE QUERY: image_query_en must be 5 to 12 concrete English visual keywords derived directly from the ORIGINAL title, description and article text, never guessed from the shortened title.",
+    "IMAGE QUERY SOURCE IS STRICT: image_query_en must be 5 to 12 concrete English visual keywords derived EXCLUSIVELY from the ORIGINAL TITLE. Ignore the original description, article text and shortened title for this field.",
     "For people, prefer side profile, back view, silhouette, fully clothed subjects or wide shots. Avoid frontal close-ups, selfies, swimwear, nudity, exposed skin and sexualized poses. Prefer objects or scenery when people are unnecessary.",
     "LANGUAGE CODE: language must be the ISO 639-1 two-letter code of the original title, such as en, vi, es, ru, be, ar or it.",
     "MANDATORY FINAL CHECK: count words in the title and summary before answering. For Vietnamese count space-separated written words/syllables; for Chinese and other unspaced writing use natural word segmentation.",
@@ -892,7 +892,7 @@ async function reviewAiCandidate(candidate, context, settings, localSecrets, tim
           `The final title MUST use the original language and contain at most ${context.titleLimit} words. Count words, not letters. Spaces and punctuation do not count. Contractions and hyphenated words count as one.`,
           `The final summary MUST use the original language and contain at most ${context.summaryLimit} words.`,
           "Preserve the core meaning, important proper nouns and every stated number of methods, steps, tips or items. Do not invent facts.",
-          "image_query_en must remain a concrete English stock-photo query based on the original material.",
+          "image_query_en must remain a concrete English stock-photo query based EXCLUSIVELY on original_title. Ignore original_summary and article text for this field.",
           "Count the words in title and summary before replying. Rewrite and recount until both word limits are satisfied.",
           "Review quickly and directly. Do not provide analysis or explanations.",
           "Return exactly one strict JSON object and nothing else:",
@@ -1070,6 +1070,25 @@ async function generateBatchItemWithAi(payload = {}, tabId) {
   );
 }
 
+function buildImageQueryMessages(title) {
+  const originalTitle = String(title || "").replace(/\s+/g, " ").trim();
+  if (!originalTitle) throw new Error("没有读取到原标题，无法生成图片搜索词");
+  return [
+    {
+      role: "system",
+      content: [
+        "Create a precise stock-photo search query from the ORIGINAL TITLE only.",
+        "Do not use or infer from any description, summary, article body, rewritten title, previously saved query or selected image.",
+        "Return 5 to 10 concrete English visual keywords describing visible subject, named place, object, action, scene and atmosphere stated or directly implied by that title.",
+        "Prefer side profile, back view, silhouette, fully clothed subjects or wide shots. Avoid frontal faces, selfies, swimwear, nudity and excessive exposed skin.",
+        "Preserve visually relevant proper nouns. Do not use abstract words such as news, article, report or photography.",
+        "Return strict JSON only: {\"image_query_en\":\"...\"}",
+      ].join("\n"),
+    },
+    { role: "user", content: `ORIGINAL TITLE ONLY:\n${originalTitle}` },
+  ];
+}
+
 async function generateImageQueryWithAi(payload, tabId) {
   const [{ settings: savedSettings = {} }, { localSecrets = {} }] = await Promise.all([
     chrome.storage.sync.get("settings"),
@@ -1087,19 +1106,7 @@ async function generateImageQueryWithAi(payload, tabId) {
     model,
     temperature: 0.1,
     max_tokens: 2048,
-    messages: [
-      {
-        role: "system",
-        content: [
-          "Convert the ORIGINAL article title and summary into a precise stock-photo search query.",
-          "Return 5 to 10 concrete English visual keywords describing visible subject, named place, object, action, scene and atmosphere.",
-          "Prefer side profile, back view, silhouette, fully clothed subjects or wide shots. Avoid frontal faces, selfies, swimwear, nudity and excessive exposed skin.",
-          "Preserve visually relevant proper nouns. Do not use abstract words such as news, article, report or photography.",
-          "Return strict JSON only: {\"image_query_en\":\"...\"}",
-        ].join("\n"),
-      },
-      { role: "user", content: `${String(payload.title || "")}\n${String(payload.summary || "")}`.trim() },
-    ],
+    messages: buildImageQueryMessages(payload.title),
   };
   configureThinking(requestBody, model, endpoint, settings.thinkingLevel || "medium");
   const data = await fetchJson(endpoint, {

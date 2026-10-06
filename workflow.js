@@ -110,7 +110,7 @@
         pageLanguage: clean(raw.pageLanguage, 40), pageCountry: clean(raw.pageCountry, 40),
         sourcePage: httpUrl(raw.sourcePage || data.sourcePage), pageOrder: number(raw.pageOrder, 0, 600, index),
         articleText: clean(raw.articleText), title: clean(raw.title, 12000), summary: clean(raw.summary, 32000),
-        imageQueryEn: clean(raw.imageQueryEn || raw.image_query_en, 500), language: clean(raw.language, 20),
+        imageQueryEn: clean(raw.imageQueryEn || raw.image_query_en, 500), imageQuerySourceTitle: clean(raw.imageQuerySourceTitle, 2000), language: clean(raw.language, 20),
         image: safeImage(raw.image), rewriteMode: raw.rewriteMode === "local" ? "local" : "ai",
         reviewWarning: clean(raw.reviewWarning, 1000), error: clean(raw.error, 2000), attempts: 0,
         downloadStatus: "", downloadPath: "", manualDuplicate: Boolean(raw.manualDuplicate),
@@ -157,7 +157,8 @@
   function localRewrite(item, settings) {
     const summary = item.originalSummary || item.articleText || item.originalTitle;
     return { title: localShorten(item.originalTitle, settings.titleLimit || 12),
-      summary: localShorten(summary, settings.summaryLimit || 50), imageQueryEn: item.imageQueryEn || "",
+      summary: localShorten(summary, settings.summaryLimit || 50), imageQueryEn: item.originalTitle,
+      imageQuerySourceTitle: item.originalTitle,
       rewriteMode: "local", reviewWarning: "本地词语候选：未做语义理解或翻译，请人工核对原意与专有名词。" };
   }
   globalThis.LSAWorkflow = { words, count, clean, number, DEFAULT_PROMPT, wordPrompt, httpUrl, editUrl, imageKey, recordKey, batchSize, batchMeta, folderName, splitBatchFolders, safeImage, importBatch, localShorten, localRewrite };

@@ -96,6 +96,23 @@ try {
   assert.equal(store.local[ka.batchState].items[0].id,'101');
   assert.equal(store.local[kb.batchState].items[0].id,'202');
   assert.equal(store.local[kb.batchState].items[0].title,'A calm guide to caring for cats at home');
+  assert.equal(store.local[kb.batchState].items[0].imageQuerySourceTitle,'How to care for cats in Room B','自动搜图应记录原标题来源');
+  const beforeManualQueries=messages.filter((message)=>message.action==='GENERATE_IMAGE_QUERY').length;
+  await b.getByRole('button',{name:'换图 / 翻页'}).click();
+  for(let attempt=0;attempt<100&&messages.filter((message)=>message.action==='GENERATE_IMAGE_QUERY').length===beforeManualQueries;attempt++)await new Promise((resolve)=>setTimeout(resolve,20));
+  const manualQueryMessage=messages.filter((message)=>message.action==='GENERATE_IMAGE_QUERY').at(-1);
+  assert.equal(manualQueryMessage.title,'How to care for cats in Room B','手动换图必须重新读取该记录原标题');
+  assert.equal('summary' in manualQueryMessage,false,'手动换图请求不应携带简介');
+  await b.waitForFunction(()=>document.querySelector('.lsa-image-status')?.textContent.includes('第 1 页'));
+  await b.locator('.lsa-stock-query').fill('totally unrelated ASCII words');
+  const beforeForcedOriginal=messages.filter((message)=>message.action==='GENERATE_IMAGE_QUERY').length;
+  await b.locator('.lsa-search-images').click();
+  for(let attempt=0;attempt<100&&messages.filter((message)=>message.action==='GENERATE_IMAGE_QUERY').length===beforeForcedOriginal;attempt++)await new Promise((resolve)=>setTimeout(resolve,20));
+  const forcedOriginalMessage=messages.filter((message)=>message.action==='GENERATE_IMAGE_QUERY').at(-1);
+  assert.equal(forcedOriginalMessage.title,'How to care for cats in Room B','手改输入框后再次搜索也必须回到读取的原标题');
+  assert.equal('summary' in forcedOriginalMessage,false);
+  await b.waitForFunction(()=>document.querySelector('.lsa-image-status')?.textContent.includes('第 1 页'));
+  await b.locator('[data-tab="batch"]').click();
   const reviewCopy=structuredClone(store.local[kb.batchState]);
   reviewCopy.items[0].status='needs_review';reviewCopy.updatedAt=Date.now()+1000;
   await chrome.storage.local.set({[kb.batchState]:reviewCopy});
@@ -196,6 +213,24 @@ try {
   assert.equal(await c.locator('.lsa-page-result').count(),1);
   assert.equal(store.local[kc.batchState].metadata.country,'南非');
   assert.deepEqual(store.local[kb.batchState],bSnapshot,'C的扫描导入切换不影响B');
+  const d=await create(404),kd=await keys(404);
+  const legacyBatch={version:4,countUnit:'words',format:'lockscreen-results',batchId:'legacy-query',createdAt:Date.now(),updatedAt:Date.now(),status:'ready',batchLimit:30,items:[{
+    index:1,id:'404',originalTitle:'Legacy original mountain title',originalSummary:'A summary that must not affect image search',title:'Short mountain guide',summary:'A valid summary',
+    imageQueryEn:'old summary derived beach query',imageQuerySourceTitle:'',sourceUrl:'',editUrl:'https://lockscreen-admin.mofeeds.com/#/nav/overseasDeliver?index=5&type=editEMPTY&id=404',
+    pageKey:'legacy',pageLabel:'旧批次',status:'pending',stages:{article:'done',ai:'done',image:'pending'},rewriteMode:'ai'
+  }]};
+  const beforeLegacyGenerate=messages.filter((message)=>message.tabId===404&&message.action==='GENERATE_IMAGE_QUERY').length;
+  await chrome.storage.local.set({[kd.batchState]:legacyBatch});
+  await d.waitForFunction(()=>document.querySelectorAll('.lsa-batch-card').length===1);
+  await d.locator('.lsa-start-batch').click();
+  await d.waitForFunction(()=>document.querySelector('.lsa-batch-status').textContent.includes('处理完成'));
+  const legacyGenerate=messages.filter((message)=>message.tabId===404&&message.action==='GENERATE_IMAGE_QUERY').at(-1);
+  const legacySearch=messages.filter((message)=>message.tabId===404&&message.action==='SEARCH_PEXELS_BATCH').at(-1);
+  assert.equal(messages.filter((message)=>message.tabId===404&&message.action==='GENERATE_IMAGE_QUERY').length,beforeLegacyGenerate+1,'旧查询缺少原标题来源标记时必须重新生成');
+  assert.equal(legacyGenerate.title,'Legacy original mountain title');
+  assert.equal('summary' in legacyGenerate,false);
+  assert.notEqual(legacySearch.query,'old summary derived beach query','自动处理不得复用旧版非原标题查询');
+  assert.equal(store.local[kd.batchState].items[0].imageQuerySourceTitle,'Legacy original mountain title');
   fs.mkdirSync(path.join(root,'tests','artifacts'),{recursive:true});
   await c.locator('.lsa-restore summary').click();
   await c.evaluate(()=>document.querySelector('.lsa-assistant-body').scrollTop=0);
@@ -226,6 +261,6 @@ try {
   const before=await run('getTabContext(202)');startup();const after=await run('getTabContext(202)');
   assert.notEqual(before.keys.batchState,after.keys.batchState,'浏览器重启后不误认复用的标签ID');
   assert.ok((await run('savedBatches()')).batches.some((batch)=>batch.key===before.keys.batchState),'旧批次保留可恢复');
-  console.log('0.12.1 浏览器测试通过：实际扫描40条、语言国家读取、重复导入不堆积、71条拆3文件夹、归档恢复、JSON目录、30/40切换及原双标签并行测试');
+  console.log('0.12.2 浏览器测试通过：自动与手动换图仅用原标题、旧查询强制刷新、实际扫描40条、文件夹归档、30/40切换及双标签并行');
   await context.close();
 } finally { await browser.close(); }

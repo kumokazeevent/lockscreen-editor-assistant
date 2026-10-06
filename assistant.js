@@ -584,8 +584,10 @@
       setItemStage(item, "ai", "working");
       item.status = "rewriting";
       await persistBatch();
-      const aiResponse = !item.forceRewrite && item.title && item.summary && textLength(item.title) <= state.settings.titleLimit
-        && textLength(item.summary) <= state.settings.summaryLimit ? { result: item } : await sendRuntime("AI_PROCESS_ITEM", {
+      const reusedExistingCopy = !item.forceRewrite && item.title && item.summary && textLength(item.title) <= state.settings.titleLimit
+        && textLength(item.summary) <= state.settings.summaryLimit;
+      const priorQuerySource = cleanText(item.imageQuerySourceTitle || "");
+      const aiResponse = reusedExistingCopy ? { result: item } : await sendRuntime("AI_PROCESS_ITEM", {
         item: {
           index: item.index, id: item.id, originalTitle: item.originalTitle,
           originalSummary: item.originalSummary, articleTitle: item.articleTitle,
@@ -595,10 +597,16 @@
         summaryLimit: Number(state.settings.summaryLimit || 50),
       });
       const ai = normalizeAiResult(aiResponse);
+      if (ai.rewriteMode === "local") {
+        ai.imageQueryEn = item.originalTitle;
+      } else if (reusedExistingCopy && (priorQuerySource !== cleanText(item.originalTitle) || !ai.imageQueryEn)) {
+        ai.imageQueryEn = await makeManualEnglishQuery(item.originalTitle);
+      }
       validateAiResult(ai);
       Object.assign(item, ai);
       item.forceRewrite = false;
       item.imageQueryEn ||= item.originalTitle;
+      item.imageQuerySourceTitle = item.originalTitle;
       setItemStage(item, "ai", "done");
 
       if (token !== state.runToken || !state.workOwned) return;
@@ -979,9 +987,9 @@
         search.addEventListener("click", () => {
           state.imageTargetIndex = item.index;
           state.originalForSearch = { title: item.originalTitle, summary: item.originalSummary };
-          q(".lsa-stock-query").value = item.imageQueryEn || item.originalTitle;
+          q(".lsa-stock-query").value = item.originalTitle;
           switchTab("images");
-          searchManualImages(1, !item.imageQueryEn);
+          searchManualImages(1, true);
         });
         actions.append(search);
       }
@@ -1223,7 +1231,7 @@
       if (state.route.kind === "edit" && !context.boundTitle) return false;
       state.pageContext = context || {};
       const matched = getBatchItems().find(recordMatchesRoute);
-      const title = cleanText(matched?.originalTitle || context.boundTitle || context.heading || context.title || context.selectedText || "");
+      const title = cleanText(matched?.originalTitle || context.originalTitle || context.boundTitle || context.heading || context.title || context.selectedText || "");
       const summary = cleanText(matched?.originalSummary || context.boundSummary || context.description || "");
       state.originalForSearch = { title, summary };
       const original = q(".lsa-original-copy");
@@ -1290,10 +1298,10 @@
     }
   }
 
-  async function makeManualEnglishQuery(source, summary = "") {
+  async function makeManualEnglishQuery(source) {
     if (state.settings.rewriteMode === "local") return source;
     {
-      const response = await sendRuntime("GENERATE_IMAGE_QUERY", { title: source, summary });
+      const response = await sendRuntime("GENERATE_IMAGE_QUERY", { title: source });
       const value = cleanText(response.imageQueryEn || response.query || response.result?.imageQueryEn || "");
       if (value) return value;
     }
@@ -1314,9 +1322,13 @@
     try {
       if (page === 1 && value !== state.imageQuery) {
         const matched = getBatchItems().find((item) => item.index === state.imageTargetIndex) || getBatchItems().find(recordMatchesRoute);
-        if (fromOriginal && matched?.imageQueryEn) value = matched.imageQueryEn;
-        else if (fromOriginal || /[^\x00-\x7f]/.test(value)) {
-          value = await makeManualEnglishQuery(value, state.originalForSearch?.summary || "");
+        if (fromOriginal) {
+          value = cleanText(matched?.originalTitle || state.originalForSearch?.title || value);
+          if (!value) throw new Error("没有读取到原标题，无法搜索图片");
+          input.value = value;
+          value = await makeManualEnglishQuery(value);
+        } else if (/[^\x00-\x7f]/.test(value)) {
+          value = await makeManualEnglishQuery(value);
         }
       }
       if (revision !== state.searchRevision) return;
@@ -1403,7 +1415,7 @@
         choose.addEventListener("click", async () => {
           try {
             await acquireWork();
-            target.image = image; target.imageQueryEn = state.imageQuery; target.downloadStatus = ""; target.downloadError = "";
+            target.image = image; target.imageQueryEn = state.imageQuery; target.imageQuerySourceTitle = target.originalTitle; target.downloadStatus = ""; target.downloadError = "";
             target.stages.image = "done";
             target.status = target.title && target.summary ? (image.safetyStatus === "passed" && target.rewriteMode !== "local" ? "completed" : "needs_review") : "pending";
             await persistBatch();
@@ -1537,8 +1549,8 @@
         <section class="lsa-tab-panel" data-panel="images" hidden>
           <div class="lsa-section-card">
             <div class="lsa-section-row"><h2 class="lsa-section-title">单条竖屏配图</h2><button class="lsa-text-action lsa-read-for-images" type="button">读取原标题</button></div>
-            <p class="lsa-section-hint">自动把原标题总结为英文视觉词；优先 Pexels，必要时回退 Pixabay。只展示可验证为竖向的图片。</p>
-            <div class="lsa-search-row"><input class="lsa-assistant-input lsa-stock-query" type="search" placeholder="原标题或 English keywords"><button class="lsa-primary-button lsa-search-images" type="button">搜索</button></div>
+            <p class="lsa-section-hint">每次搜索都只根据读取到的原标题重新生成英文视觉词；不采用简介、正文、改写标题或旧关键词。优先 Pexels，必要时回退 Pixabay。</p>
+            <div class="lsa-search-row"><input class="lsa-assistant-input lsa-stock-query" type="search" placeholder="读取到的原标题 / 自动生成的英文关键词"><button class="lsa-primary-button lsa-search-images" type="button">按原标题搜索</button></div>
             <p class="lsa-status-text lsa-image-status">正脸与裸露检测存在局限，无法确定的图片会明确标为“需复核”。</p>
             <div class="lsa-image-pager"><button class="lsa-secondary-button lsa-images-prev" type="button" disabled>上一页</button><span class="lsa-images-page">第 1 页</span><button class="lsa-secondary-button lsa-images-next" type="button" disabled>下一页</button></div>
           </div>
@@ -1724,10 +1736,10 @@
     q(".lsa-bind-fields")?.addEventListener("click", () => pageTool("START_BINDING")
       .catch((error) => setPanelStatus(".lsa-manual-status", error.message, true)));
     q(".lsa-draft-copy")?.addEventListener("input", updateManualCounts);
-    q(".lsa-search-images")?.addEventListener("click", () => searchManualImages());
+    q(".lsa-search-images")?.addEventListener("click", () => searchManualImages(1, true));
     q(".lsa-images-prev")?.addEventListener("click", () => searchManualImages(state.imagePage - 1));
     q(".lsa-images-next")?.addEventListener("click", () => searchManualImages(state.imagePage + 1));
-    q(".lsa-stock-query")?.addEventListener("keydown", (event) => { if (event.key === "Enter") searchManualImages(); });
+    q(".lsa-stock-query")?.addEventListener("keydown", (event) => { if (event.key === "Enter") searchManualImages(1, true); });
     q(".lsa-diagnostics")?.addEventListener("toggle", updateDiagnostics);
   }
 

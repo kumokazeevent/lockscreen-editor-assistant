@@ -130,5 +130,12 @@ assert(strictPrompt.includes("at most 12 words"), "提示词缺少标题词数�
 assert(strictPrompt.includes("at most 50 words"), "提示词缺少简介词数限制");
 assert(strictPrompt.includes("PREVIOUS ATTEMPT FAILED"), "重试提示词没有携带上次失败原因");
 assert(strictPrompt.includes("image_query_en"), "提示词丢失英文搜图词要求");
+assert(strictPrompt.includes("EXCLUSIVELY from the ORIGINAL TITLE") && strictPrompt.includes("Ignore the original description"),
+  "批量自动搜图提示词没有严格限定原标题来源");
+const imageQueryMessages = evaluate("buildImageQueryMessages('Почему кошки любят коробки?')");
+assert(imageQueryMessages[1].content.includes("Почему кошки любят коробки?"), "独立搜图请求未传入原标题");
+assert(!imageQueryMessages[1].content.includes("summary") && !imageQueryMessages[1].content.includes("description"),
+  "独立搜图请求混入简介或其他内容");
+assert(imageQueryMessages[0].content.includes("previously saved query"), "手动换图未明确排除旧关键词");
 
 console.log("后台逻辑测试通过");

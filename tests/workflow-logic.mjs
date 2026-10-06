@@ -54,6 +54,8 @@ const batch = run('LSAWorkflow.importBatch(exported, {titleLimit:12,summaryLimit
 assert.equal(batch.items[0].status, 'completed');
 assert.equal(batch.items[0].pageKey, 'a');
 assert.equal(batch.items[0].downloadStatus, '');
+exported.items[0].imageQuerySourceTitle='Cat care';
+assert.equal(run('LSAWorkflow.importBatch(exported).items[0].imageQuerySourceTitle'),'Cat care');
 exported.items[0].title = 'A title with far more than twelve written words exceeds the newly configured limit';
 assert.equal(run('LSAWorkflow.importBatch(exported, {titleLimit:12,summaryLimit:50}).items[0].status'), 'error');
 exported.items[0].editUrl = 'javascript:alert(1)';
@@ -112,4 +114,4 @@ assert.equal(run(`LSAWorkflow.folderName({batchId:'a',metadata:{language:'../英
 const groupedImage = await run(`downloadFinalImage({batchFolder:${JSON.stringify(named)},batchLimit:40,image:{id:'folder-test',source:'pexels',imageUrl:'https://image.test/folder-test.jpg'}},2)`);
 assert.ok(groupedImage.path.includes(named+'/第001组_001-040'));
 assert.ok(!groupedImage.path.includes('标签页-2-'));
-console.log('0.12.1 工作流测试通过：词数、标签隔离、分语言国家归档、元数据保留、安全目录及 30/40 分组边界');
+console.log('0.12.2 工作流测试通过：词数、标签隔离、分语言国家归档、元数据保留、安全目录及 30/40 分组边界');

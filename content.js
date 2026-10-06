@@ -17,6 +17,7 @@
     siteStateSignature: "",
     siteStateTimer: null,
     capturedRecords: [],
+    originalTitles: new Map(),
   };
 
   const ACTION_LABELS = ["查看链接", "编辑", "下载图片", "复用锁屏"];
@@ -330,29 +331,16 @@
     reader.readAsDataURL(file);
   }
 
-  function nearbyImageText(image) {
-    const text = [
-      image.alt,
-      image.title,
-      image.closest("figure")?.querySelector("figcaption")?.textContent,
-      document.querySelector("h1")?.textContent,
-      document.title,
-    ]
-      .filter(Boolean)
-      .join(" ")
-      .replace(/\s+/g, " ")
-      .trim();
-    return text.slice(0, 80);
-  }
-
   async function searchRelatedImage() {
     if (!state.targetImage) return;
-    const query = nearbyImageText(state.targetImage);
+    const page = await getPageContext();
+    const query = cleanText(page.originalTitle || page.boundTitle);
+    if (!query) return setPanelResult("没有读取到原标题，无法搜索替换图片");
     const { settings = {} } = await chrome.storage.sync.get("settings");
     chrome.runtime.sendMessage({
       type: "OPEN_IMAGE_SEARCH",
       engine: settings.defaultEngine || "baidu",
-      query: query || "高清竖屏图片",
+      query,
     });
   }
 
@@ -697,6 +685,10 @@
 
   async function getPageContext() {
     const { titleField, summaryField, bindingStatus } = await resolveSiteFields();
+    const route = getSiteRoute();
+    const boundTitle = readFieldValue(titleField);
+    const originalKey = route.id ? `id:${route.id}` : location.href;
+    if (boundTitle && !state.originalTitles.has(originalKey)) state.originalTitles.set(originalKey, boundTitle);
     return {
       title: document.title || "",
       heading: document.querySelector("h1")?.innerText?.trim() || "",
@@ -705,11 +697,12 @@
         document.querySelector('meta[property="og:description"]')?.content ||
         "",
       selectedText: window.getSelection()?.toString().trim() || "",
-      boundTitle: readFieldValue(titleField),
+      boundTitle,
+      originalTitle: state.originalTitles.get(originalKey) || boundTitle,
       boundSummary: readFieldValue(summaryField),
       hostname: location.hostname,
       url: location.href,
-      route: getSiteRoute(),
+      route,
       bindingStatus,
     };
   }
