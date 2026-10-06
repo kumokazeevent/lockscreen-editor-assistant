@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "锁屏编辑助手",
-  "version": "0.7.9",
+  "version": "0.7.10",
   "description": "为锁屏内容后台批量改写多语言标题与简介、搜索竖屏商用图片并辅助真实上传。",
   "permissions": [
     "contextMenus",

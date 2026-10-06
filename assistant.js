@@ -40,6 +40,7 @@
     resizeObserver: null,
     resizeTimer: null,
     lastLocation: location.href,
+    mountRevision: 0,
   };
 
   function create(tag, className, text) {
@@ -1215,11 +1216,16 @@
     saveAssistantState({ minimized });
   }
 
-  function unmount({ disable = false } = {}) {
+  function removeAllAssistantNodes() {
+    document.querySelectorAll(".lsa-assistant").forEach((node) => node.remove());
+  }
+
+  function unmount({ disable = false, invalidate = true } = {}) {
+    if (invalidate) state.mountRevision += 1;
     clearTimeout(state.resizeTimer);
     state.resizeObserver?.disconnect();
     state.resizeObserver = null;
-    state.root?.remove();
+    removeAllAssistantNodes();
     state.root = null;
     if (disable) saveAssistantState({ enabled: false });
   }
@@ -1263,10 +1269,13 @@
   async function mount(route, { force = false } = {}) {
     if (route.kind === "none" || location.hostname !== TARGET_HOST) return;
     if (state.root && state.route.key === route.key) return;
-    unmount();
+    const revision = state.mountRevision + 1;
+    state.mountRevision = revision;
+    unmount({ invalidate: false });
     const [{ settings = {} }, local] = await Promise.all([
       chrome.storage.sync.get("settings"), chrome.storage.local.get(["batchState", "assistantState"]),
     ]);
+    if (revision !== state.mountRevision) return;
     if (!force && local.assistantState?.enabled === false) return;
     state.settings = { ...DEFAULT_SETTINGS, ...settings };
     state.batch = local.batchState || state.batch;
@@ -1279,6 +1288,7 @@
     }
     state.route = route;
     state.selectedRecordIndex = -1;
+    removeAllAssistantNodes();
     state.root = buildAssistant(route);
     document.documentElement.append(state.root);
     applySize(local.assistantState?.size);
