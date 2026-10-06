@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>锁屏编辑助手设置</title>
+    <link rel="stylesheet" href="options.css" />
+  </head>
+  <body>
+    <main class="settings-shell">
+      <header>
+        <div class="brand">锁</div>
+        <div>
+          <h1>锁屏编辑助手设置</h1>
+          <p>字数规则、默认搜图引擎与后台站点绑定</p>
+        </div>
+      </header>
+
+      <section>
+        <h2>文案规则</h2>
+        <div class="form-grid">
+          <label>标题最多字符<input id="titleLimit" type="number" min="1" max="100" /></label>
+          <label>简介最多字符<input id="summaryLimit" type="number" min="1" max="500" /></label>
+          <label>默认图片搜索
+            <select id="defaultEngine">
+              <option value="baidu">百度图片</option>
+              <option value="bing">必应图片</option>
+              <option value="google">Google 图片</option>
+            </select>
+          </label>
+        </div>
+        <button id="saveSettings" class="primary" type="button">保存设置</button>
+        <span id="saveMessage" class="save-message"></span>
+      </section>
+
+      <section>
+        <div class="section-title">
+          <div>
+            <h2>已绑定网站</h2>
+            <p>在扩展弹窗点击“绑定后台字段”，按页面提示点选即可。</p>
+          </div>
+          <button id="refreshRules" class="secondary" type="button">刷新</button>
+        </div>
+        <div id="ruleList" class="rule-list"></div>
+      </section>
+
+      <section class="privacy-note">
+        <h2>数据与隐私</h2>
+        <p>标题、简介草稿只保存在本机浏览器中；站点绑定与偏好保存在浏览器同步存储中。本扩展不上传稿件，也不调用第三方 AI 接口。</p>
+      </section>
+    </main>
+    <script src="options.js"></script>
+  </body>
+</html>
