@@ -14,9 +14,10 @@
     "lockscreenId", "lockScreenId", "materialId", "itemId", "newsId", "dataId", "id", "_id",
   ];
   const SOURCE_KEYS = [
-    "sourceUrl", "articleUrl", "contentUrl", "targetUrl", "linkUrl", "sourceLink", "viewUrl", "link",
+    "sourceUrl", "articleUrl", "contentUrl", "targetUrl", "linkUrl", "sourceLink", "viewUrl", "link", "url",
   ];
   const EDIT_KEYS = ["editUrl", "editorUrl", "deliverUrl", "manageUrl"];
+  const MAX_CAPTURED_ARTICLE_CHARS = 12000;
 
   function clean(value) {
     return String(value ?? "").replace(/\s+/g, " ").trim();
@@ -36,6 +37,20 @@
     try { return new URL(raw, location.href).href; } catch { return ""; }
   }
 
+  function readableArticleText(value) {
+    if (typeof value !== "string" || !value.trim()) return "";
+    let text = value;
+    if (/<\s*[a-z][^>]*>/i.test(value)) {
+      const doc = new DOMParser().parseFromString(value, "text/html");
+      doc.querySelectorAll("script,style,noscript,template,svg,canvas,iframe,nav,footer,form").forEach((node) => node.remove());
+      text = doc.body?.textContent || "";
+    }
+    text = text.replace(/\u00a0/g, " ").replace(/[\u200b-\u200d\ufeff]/g, "")
+      .replace(/\s+/g, " ").trim().slice(0, MAX_CAPTURED_ARTICLE_CHARS);
+    if (text.length < 320 && /copyright|all rights reserved|版权所有|保留所有权利/i.test(text)) return "";
+    return text;
+  }
+
   function remember(object) {
     if (!object || typeof object !== "object" || Array.isArray(object)) return;
     const title = primitiveFromKeys(object, TITLE_KEYS);
@@ -46,7 +61,14 @@
     const key = `${id}\u0000${title}`;
     const previous = captured.get(key) || {};
     const summary = primitiveFromKeys(object, ["originalSummary", "summary", "description", "intro", "contentDesc"]);
-    captured.set(key, { id, title, summary: summary || previous.summary || "", sourceUrl: sourceUrl || previous.sourceUrl || "", editUrl: editUrl || previous.editUrl || "" });
+    const articleText = readableArticleText(object.content || object.articleContent || object.body || "");
+    captured.set(key, {
+      id, title,
+      summary: summary || previous.summary || "",
+      sourceUrl: sourceUrl || previous.sourceUrl || "",
+      editUrl: editUrl || previous.editUrl || "",
+      articleText: articleText || previous.articleText || "",
+    });
     while (captured.size > 300) captured.delete(captured.keys().next().value);
   }
 

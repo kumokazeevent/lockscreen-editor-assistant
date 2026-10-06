@@ -156,9 +156,9 @@ const strictPrompt = evaluate(`buildAiMessages({
 assert(strictPrompt.includes("MANDATORY FINAL CHECK"), "提示词缺少强制字符复核");
 assert(strictPrompt.includes("version 0.13 fallback order") && strictPrompt.includes("article body first, then original description, then original title"),
   "简介请求没有恢复 0.13 兜底顺序");
-assert(strictPrompt.includes("Do not generate the final title in this request"), "简介请求没有独立于标题生成");
-assert(strictPrompt.includes('{"summary":"...","image_query_en"') && !strictPrompt.includes('{"summary":"...","title"'),
-  "简介请求不应同时返回标题");
+assert(strictPrompt.includes("After writing the summary, derive one natural title using ONLY that newly written summary"), "标题没有限定为根据刚生成的简介浓缩");
+assert(strictPrompt.includes('{"summary":"...","title":"...","image_query_en"'),
+  "单次主 AI 响应必须按简介、标题顺序返回文案");
 assert(!strictPrompt.includes("preserve it unchanged"), "提示词仍可能直接保留原标题");
 assert(strictPrompt.includes("at most 50 words"), "提示词缺少简介词数限制");
 assert(strictPrompt.includes("PREVIOUS ATTEMPT FAILED"), "重试提示词没有携带上次失败原因");

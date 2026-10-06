@@ -40,10 +40,6 @@ const successPayload = {
     image_query_en: "comfortable cat resting quiet home", language: "en",
   }) } }],
 };
-const titlePayload = {
-  model: "returned-model",
-  choices: [{ finish_reason: "stop", message: { content: JSON.stringify({ title: "Care for cats" }) } }],
-};
 const response = (body, status = 200, headers = {}) => new Response(typeof body === "string" ? body : JSON.stringify(body), {
   status, headers: { "content-type": "application/json", ...headers },
 });
@@ -60,9 +56,6 @@ function scenario(responses, settings = {}) {
   context.fetch = async (_url, options = {}) => {
     const requestBody = JSON.parse(options.body);
     context.requestBodies.push(requestBody);
-    if (requestBody.messages?.[0]?.content?.includes("title only after the summary has been completed")) {
-      return response(titlePayload);
-    }
     const next = queue.shift();
     if (next instanceof Error) throw next;
     if (!next) throw new Error("scripted response queue exhausted");
@@ -102,11 +95,10 @@ const recovered = await run("generateBatchItemWithAi({item}, 7)");
 assert.equal(recovered.title, "Care for cats");
 assert.equal(recovered.summarySource, "article_body");
 assert.equal(recovered.titleSource, "generated_summary");
-assert.ok(context.requestBodies.at(-2).messages[0].content.includes("Do not generate the final title in this request"));
-assert.ok(context.requestBodies.at(-2).messages.at(-1).content.includes(item.articleText));
-assert.ok(context.requestBodies.at(-1).messages.at(-1).content.includes("Keep cats comfortable at home"));
-assert.equal(context.requestBodies.at(-1).messages.at(-1).content.includes(item.originalTitle), false,
-  "标题请求不得携带原标题");
+assert.ok(context.requestBodies.at(-1).messages[0].content.includes("After writing the summary, derive one natural title using ONLY that newly written summary"));
+assert.ok(context.requestBodies.at(-1).messages.at(-1).content.includes(item.articleText));
+assert.ok(context.requestBodies.at(-1).messages.at(-1).content.includes(item.originalTitle));
+assert.equal(context.requestBodies.length, 3, "正常恢复后每个尝试只发一条主 AI 请求，不再另发标题请求");
 assert.deepEqual(context.retryWaits, [5000, 15000]);
 assert.ok(progress.some((entry) => entry.status === "waiting" && entry.waitMs === 5000));
 
@@ -117,7 +109,7 @@ scenario([
 const fallback = await run("generateBatchItemWithAi({item}, 7)");
 assert.equal(fallback.model, "backup-model");
 assert.equal(fallback.usedFallbackModel, true);
-assert.deepEqual(context.requestBodies.map((body) => body.model), ["primary-model", "primary-model", "primary-model", "backup-model", "backup-model"]);
+assert.deepEqual(context.requestBodies.map((body) => body.model), ["primary-model", "primary-model", "primary-model", "backup-model"]);
 assert.deepEqual(context.retryWaits, [5000, 15000, 30000]);
 
 scenario([response({ error: { message: "empty proxy" } }), response({ choices: [] }), response("")]);

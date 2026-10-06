@@ -118,7 +118,9 @@ assert(background.includes("version 0.13 fallback order")
   "AI 文案未强制执行正文→简介→标题来源链");
 assert(assistant.includes('["article_body", "original_summary", "original_title"].includes(item.summarySource)')
   && assistant.includes("item.titleSource === \"generated_summary\"")
-  && assistant.includes("const articleText = item.articleText || fetchedArticleText || item.originalSummary || item.originalTitle"),
+  && assistant.includes("const sourceText = articleText || item.originalSummary || item.originalTitle")
+  && assistant.includes("refreshedBodyCount")
+  && assistant.includes("copyrightOnly"),
   "旧文案来源标记或正文→原简介→原标题兜底链未实现");
 assert(workflow.includes('const title = localShorten(summary') && workflow.includes('articleText ? "article_body" : originalSummary ? "original_summary" : "original_title"'),
   "本地模式未执行正文→简介→标题来源链");

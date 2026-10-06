@@ -52,6 +52,7 @@
         summary: cleanText(record?.summary),
         sourceUrl: cleanText(record?.sourceUrl),
         editUrl: cleanText(record?.editUrl),
+        articleText: cleanText(record?.articleText),
       }))
       .filter((record) => record.id && record.title)
       .slice(-300);
@@ -68,22 +69,21 @@
     await new Promise((resolve) => setTimeout(resolve, 90));
   }
 
+  function capturedRecordForId(id) {
+    const key = cleanText(id);
+    if (!key) return null;
+    return state.capturedRecords.find((record) => cleanText(record.id) === key) || null;
+  }
+
   function capturedRecordForTitle(title) {
     const key = normalizedTitleKey(title);
     if (!key) return null;
-    const ranked = state.capturedRecords
-      .map((record) => {
-        const candidate = normalizedTitleKey(record.title);
-        let score = 0;
-        if (candidate === key) score = 100;
-        else if (candidate.includes(key) || key.includes(candidate)) {
-          score = 60 + Math.min(candidate.length, key.length) / Math.max(candidate.length, key.length) * 30;
-        }
-        return { record, score };
-      })
-      .filter((entry) => entry.score >= 70)
-      .sort((left, right) => right.score - left.score);
-    return ranked[0]?.record || null;
+    return state.capturedRecords.find((record) => normalizedTitleKey(record.title) === key) || null;
+  }
+
+  function idFromUrl(value) {
+    try { return new URL(value, location.href).searchParams.get("id") || ""; }
+    catch { return ""; }
   }
 
   function editUrlForId(id) {
@@ -928,8 +928,9 @@
       let sourceUrl = urlFromAction(viewAction, container) || findFallbackUrl(container, "source");
       let editUrl = urlFromAction(editAction, container) || findFallbackUrl(container, "edit");
       const originalTitle = extractOriginalTitle(container);
-      const captured = capturedRecordForTitle(originalTitle);
-      const id = extractItemId(container, editUrl) || captured?.id || "";
+      const pageId = extractItemId(container, editUrl) || idFromUrl(sourceUrl);
+      const captured = pageId ? capturedRecordForId(pageId) : capturedRecordForTitle(originalTitle);
+      const id = pageId || captured?.id || "";
       sourceUrl ||= captured?.sourceUrl || "";
       editUrl ||= captured?.editUrl || editUrlForId(id);
       const missing = [];
@@ -943,6 +944,7 @@
         id,
         originalTitle,
         originalSummary: captured?.summary || "",
+        articleText: captured?.articleText || "",
         title: originalTitle,
         summary: captured?.summary || "",
         sourceUrl,

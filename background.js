@@ -973,13 +973,13 @@ function buildAiMessages(context, correction = "") {
       .replaceAll("{titleLimit}", String(context.titleLimit)).replaceAll("{summaryLimit}", String(context.summaryLimit)),
     "Use the version 0.13 fallback order for the summary: article body first, then original description, then original title.",
     `Create a faithful, natural summary of at most ${context.summaryLimit} words. If the article body does not provide usable article content, continue with the original description; if that is also unavailable, use the original title.`,
-    "Do not generate the final title in this request. The title will be generated only after this summary request has completed.",
+    `After writing the summary, derive one natural title using ONLY that newly written summary. The title must be at most ${context.titleLimit} words. Do not write a title from the original title, original description or article directly.`,
     "KEEP THE ORIGINAL LANGUAGE: use exactly the same language as the input title. Never translate the summary.",
     "Never change a stated number of methods, steps, tips or items into a smaller or different number.",
     `SUMMARY: at most ${context.summaryLimit} words. Preserve the available source's meaning and key information.`,
     "Remove repetition, background details and excessive modifiers. Do not invent any information.",
     languageInstruction,
-    "The final title is not generated in this request. The original title is also used to identify language and create image_query_en.",
+    "Write the summary first, then condense only that summary into the title. The original title is also used to identify language and create image_query_en.",
     "IMAGE QUERY SOURCE IS STRICT: image_query_en must be 5 to 12 concrete English visual keywords derived EXCLUSIVELY from the ORIGINAL TITLE. Ignore the original description, article text and shortened title for this field.",
     "For people, prefer side profile, back view, silhouette, fully clothed subjects or wide shots. Avoid frontal close-ups, selfies, swimwear, nudity, exposed skin and sexualized poses. Prefer objects or scenery when people are unnecessary.",
     context.bangladeshMode ? "BANGLADESH MODE: avoid religiously sensitive framing, storytelling narration, negative or sad wording, and romantic-love themes. Food content must never mention pork, pig, bacon or ham. Prefer neutral, practical and positive wording." : "",
@@ -989,7 +989,7 @@ function buildAiMessages(context, correction = "") {
     `If summary exceeds ${context.summaryLimit} words, rewrite it shorter and count again.`,
     "Never exceed the summary limit. Further shortening is always preferable to exceeding it.",
     "Return exactly one strict JSON object with keys in this exact order and no Markdown, labels, explanations, analysis or word counts:",
-    '{"summary":"...","image_query_en":"...","language":"..."}',
+    '{"summary":"...","title":"...","image_query_en":"...","language":"..."}',
     correction ? `PREVIOUS ATTEMPT FAILED: ${correction}. Correct this failure before returning the new JSON.` : "",
   ].filter(Boolean).join("\n");
   const user = [
@@ -1045,40 +1045,8 @@ function validateTitleFromSummary(raw, summary, context) {
   return title;
 }
 
-async function generateTitleFromSummary(summary, context, requestContext) {
-  const { endpoint, model, apiKey, timeout, settings, attempt } = requestContext;
-  const requestBody = {
-    model,
-    temperature: 0.1,
-    stream: false,
-    messages: buildTitleFromSummaryMessages(summary, context),
-  };
-  applyCompletionBudget(requestBody, 4096, "max_tokens");
-  configureThinking(requestBody, model, endpoint, settings.thinkingLevel);
-  let response;
-  try {
-    response = await fetchAiJson(endpoint, {
-      method: "POST", headers: aiHeaders(apiKey), body: JSON.stringify(requestBody),
-    }, timeout, "AI 标题浓缩", { attempt, model });
-  } catch (error) {
-    if (!requiresCompletionTokenFieldFallback(error)) throw error;
-    applyCompletionBudget(requestBody, 4096, "max_completion_tokens");
-    response = await fetchAiJson(endpoint, {
-      method: "POST", headers: aiHeaders(apiKey), body: JSON.stringify(requestBody),
-    }, timeout, "AI 标题浓缩", { attempt, model });
-  }
-  const { data, diagnostic } = response;
-  if (isOutputTruncated(data)) {
-    throw new OutputTruncatedError(describeEmptyAiResponse(data), { model, diagnostic, diagnostics: [diagnostic] });
-  }
-  const content = getAiResponseText(data);
-  if (!content) {
-    throw new RequestError(describeEmptyAiResponse(data), {
-      code: "AI_EMPTY", errorType: "EMPTY_RESPONSE", retryable: true,
-      model, diagnostic, diagnostics: [diagnostic],
-    });
-  }
-  return { title: validateTitleFromSummary(extractJson(content), summary, context), diagnostic };
+function generateTitleFromSummary(summary, candidate, context) {
+  return validateTitleFromSummary(candidate, summary, context);
 }
 
 async function reviewAiCandidate(candidate, context, settings, localSecrets, timeout) {
@@ -1103,7 +1071,7 @@ async function reviewAiCandidate(candidate, context, settings, localSecrets, tim
         content: [
           "You are the final quality reviewer for lock-screen magazine copy.",
           `Correct candidate.summary using the version 0.13 fallback order: original_article, then original_summary, then original_title. Keep it within ${context.summaryLimit} words.`,
-          "Do not generate or review a title. The final title is generated only after this summary review has completed.",
+          `After correcting the summary, derive the title using ONLY that final summary; it must be at most ${context.titleLimit} words.`,
           "The summary MUST use the original title's language. Count words, not letters. Spaces and punctuation do not count. Contractions and hyphenated words count as one.",
           "Preserve the available source's core meaning, important proper nouns and every stated number of methods, steps, tips or items. Do not invent facts.",
           context.bangladeshMode ? "BANGLADESH MODE: remove religiously sensitive framing, storytelling narration, negative/sad wording, romantic-love themes and any pork-related food wording while preserving the factual core." : "",
@@ -1111,7 +1079,7 @@ async function reviewAiCandidate(candidate, context, settings, localSecrets, tim
           "Count the words in summary before replying. Rewrite and recount until the summary limit is satisfied.",
           "Review quickly and directly. Do not provide analysis or explanations.",
           "Return exactly one strict JSON object and nothing else:",
-          '{"summary":"...","image_query_en":"...","language":"..."}',
+          '{"summary":"...","title":"...","image_query_en":"...","language":"..."}',
         ].join("\n"),
       },
       {
@@ -1146,7 +1114,9 @@ async function reviewAiCandidate(candidate, context, settings, localSecrets, tim
     });
   }
   try {
-    return validateAiSummaryResult(extractJson(content), context);
+    const candidate = extractJson(content);
+    const result = validateAiSummaryResult(candidate, context);
+    return { ...result, title: generateTitleFromSummary(result.summary, candidate, context), diagnostic };
   } catch (error) {
     error.model ||= model;
     error.errorType ||= "AI_INVALID";
@@ -1290,7 +1260,10 @@ async function generateBatchItemWithAi(payload = {}, tabId) {
         }
         let primaryResult;
         let primaryError;
-        try { primaryResult = validateAiSummaryResult(candidate, context); }
+        try {
+          const summaryResult = validateAiSummaryResult(candidate, context);
+          primaryResult = { ...summaryResult, title: generateTitleFromSummary(summaryResult.summary, candidate, context) };
+        }
         catch (error) {
           primaryError = error;
           primaryError.model ||= activeModel;
@@ -1304,6 +1277,7 @@ async function generateBatchItemWithAi(payload = {}, tabId) {
         if (settings.reviewAiEnabled) {
           try {
             result = await reviewAiCandidate(candidate, context, settings, localSecrets, timeout);
+            if (result.diagnostic) allDiagnostics.push(result.diagnostic);
             reviewed = true;
           } catch (reviewError) {
             if (!primaryResult) {
@@ -1323,11 +1297,7 @@ async function generateBatchItemWithAi(payload = {}, tabId) {
         } else if (!primaryResult) {
           throw primaryError;
         }
-        const titleResponse = await generateTitleFromSummary(result.summary, context, {
-          endpoint, model: activeModel, apiKey, timeout, settings, attempt,
-        });
-        if (titleResponse.diagnostic) allDiagnostics.push(titleResponse.diagnostic);
-        result = validateAiResult({ ...result, title: titleResponse.title }, context);
+        result = validateAiResult({ ...result, title: generateTitleFromSummary(result.summary, result, context) }, context);
         return {
           ok: true,
           value: {

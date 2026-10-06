@@ -403,6 +403,7 @@
       id: String(id || ""),
       originalTitle: cleanText(raw.originalTitle || raw.title || raw.name || ""),
       originalSummary: cleanText(raw.originalSummary || raw.summary || raw.description || ""),
+      articleText: String(raw.articleText || ""),
       sourceUrl: raw.sourceUrl || raw.articleUrl || raw.viewUrl || raw.url || "",
       editUrl: raw.editUrl || raw.editorUrl || "",
       pageOrder: raw.pageOrder ?? index,
@@ -411,7 +412,7 @@
       error: "",
       diagnostics: raw.diagnostics || [],
       currentStage: "",
-      stages: { article: "pending", ai: "pending", image: "pending" },
+      stages: { article: raw.articleText ? "done" : "pending", ai: "pending", image: "pending" },
     };
   }
 
@@ -457,7 +458,7 @@
     if (state.workOwned || state.scanning) return;
     const button = q(".lsa-scan-batch");
     if (button) button.disabled = true;
-    setPanelStatus(".lsa-batch-status", "正在按页面左上到右下顺序扫描…");
+    setPanelStatus(".lsa-batch-status", "正在扫描列表并读取后台已返回的正文…");
     try {
       await acquireWork();
       state.scanning = true;
@@ -467,6 +468,8 @@
       if (!response?.items?.length) throw new Error(response?.message || "页面未识别到内容");
       const metadata = LSAWorkflow.batchMeta(response.metadata);
       const rawItems = response.items.slice(0, limit);
+      const articleBodyCount = rawItems.filter((raw) => String(raw.articleText || "").trim()).length;
+      let refreshedBodyCount = 0;
       const samePage = state.batch && state.batch.metadata?.language === metadata.language
         && state.batch.metadata?.country === metadata.country
         && state.batch.items.length === rawItems.length
@@ -483,10 +486,53 @@
             pageKey: batchId, pageLabel: response.pageLabel || "当前页",
             pageLanguage: metadata.language, pageCountry: metadata.country, sourcePage: response.sourcePage || location.href })),
         };
-      } else state.batch.batchLimit = limit;
+      } else {
+        state.batch.batchLimit = limit;
+        for (const raw of rawItems) {
+          const normalized = normalizeScannedItem(raw, 0);
+          const existing = getBatchItems().find((item) => LSAWorkflow.recordKey(item) === LSAWorkflow.recordKey(normalized));
+          if (!existing) continue;
+          existing.originalSummary ||= normalized.originalSummary;
+          existing.sourceUrl ||= normalized.sourceUrl;
+          const freshBody = articleTextFromResponse({ articleText: normalized.articleText });
+          const priorBody = existing.summarySource === "article_body"
+            ? articleTextFromResponse({ articleText: existing.articleText || "" }) : "";
+          if (!freshBody || priorBody) continue;
+          existing.articleText = freshBody;
+          existing.summarySource = "article_body";
+          existing.status = "pending";
+          existing.error = "";
+          existing.errorType = "";
+          existing.error_type = "";
+          existing.reviewWarning = "";
+          existing.retryStatus = "";
+          existing.title = "";
+          existing.titleZh = "";
+          existing.summary = "";
+          existing.copySource = "";
+          existing.titleSource = "";
+          existing.imageQueryEn = "";
+          existing.imageQuerySourceTitle = "";
+          existing.image = null;
+          existing.model = "";
+          existing.aiModel = "";
+          existing.aiDiagnostics = [];
+          existing.aiAttempts = 0;
+          existing.usedFallbackModel = false;
+          existing.articleFetchWarning = "";
+          existing.forceRewrite = false;
+          existing.stages = { article: "done", ai: "pending", image: "pending" };
+          existing.currentStage = "";
+          existing.downloadStatus = "";
+          existing.downloadPath = "";
+          existing.downloadError = "";
+          existing.attempts = 0;
+          refreshedBodyCount += 1;
+        }
+      }
       state.selectedRecordIndex = -1; state.pageFilter = "all";
       await persistBatch();
-      setPanelStatus(".lsa-batch-status", `当前文件夹已读取 ${getBatchItems().length} / ${limit} 条；${samePage ? "相同页面保留已有处理结果。" : "旧批次已归档，不与本页合并。"}${rawItems.length < limit ? "页面不足目标数量，请在网站选择每页显示足够条数后重新读取；工具不会自动翻页。" : ""}`);
+      setPanelStatus(".lsa-batch-status", `当前文件夹已读取 ${getBatchItems().length} / ${limit} 条，正文 ${articleBodyCount} / ${rawItems.length} 条；${samePage ? refreshedBodyCount ? `已补入 ${refreshedBodyCount} 条正文，需重新处理。` : "相同页面保留已有处理结果。" : "旧批次已归档，不与本页合并。"}${rawItems.length < limit ? "页面不足目标数量，请在网站选择每页显示足够条数后重新读取；工具不会自动翻页。" : ""}`);
       setPanelStatus(".lsa-transfer-status", `当前只显示 ${getBatchItems().length} 条；其他结果可在“切换文件夹”中打开，不会叠加在下方。`);
       saveTextSnapshot("original-list", true).catch((error) => {
         setPanelStatus(".lsa-batch-status", `原始 JSON 保存失败：${error.message}`, true);
@@ -502,13 +548,15 @@
   }
 
   function articleTextFromResponse(response) {
-    const direct = response.articleText || response.text || response.content || response.article?.text || response.data?.text;
-    if (direct) return cleanText(direct).slice(0, 12000);
-    const html = response.html || response.article?.html || response.data?.html;
+    const direct = response.articleText || response.text || response.article?.text || response.data?.text
+      || response.content || response.article?.content || response.data?.content;
+    const html = direct || response.html || response.article?.html || response.data?.html;
     if (!html) return "";
     const doc = new DOMParser().parseFromString(String(html), "text/html");
-    doc.querySelectorAll("script,style,noscript,svg,nav,footer,form").forEach((node) => node.remove());
-    return cleanText(doc.body?.textContent || "").slice(0, 12000);
+    doc.querySelectorAll("script,style,noscript,svg,nav,footer,form,iframe").forEach((node) => node.remove());
+    const text = cleanText(doc.body?.textContent || String(html)).slice(0, 12000);
+    const copyrightOnly = text.length < 320 && /copyright|all rights reserved|版权所有|保留所有权利/i.test(text);
+    return copyrightOnly ? "" : text;
   }
 
   function normalizeAiResult(response) {
@@ -641,18 +689,24 @@
       item.status = "fetching";
       await persistBatch({ item, progressOnly: true });
       const priorSummarySource = cleanText(item.summarySource || "");
-      const hadStoredArticleText = Boolean(item.articleText);
-      const articleResponse = !item.articleText && item.sourceUrl
-        ? await sendRuntime("FETCH_ARTICLE", { url: item.sourceUrl, sourceUrl: item.sourceUrl }) : {};
-      const fetchedArticleText = articleTextFromResponse(articleResponse);
-      const articleText = item.articleText || fetchedArticleText || item.originalSummary || item.originalTitle;
-      const summarySource = hadStoredArticleText || fetchedArticleText ? "article_body"
-        : item.originalSummary ? "original_summary" : "original_title";
-      if (!articleText) throw new Error("没有可用于生成简介的正文、原简介或原标题");
-      const sourceText = articleText;
+      const storedArticleText = articleTextFromResponse({ articleText: item.articleText || "" });
+      let fetchedArticleText = "";
+      let articleFetchWarning = "";
+      if (!storedArticleText && item.sourceUrl) {
+        try {
+          const articleResponse = await sendRuntime("FETCH_ARTICLE", { url: item.sourceUrl, sourceUrl: item.sourceUrl });
+          fetchedArticleText = articleTextFromResponse(articleResponse);
+        } catch (error) {
+          articleFetchWarning = error.message || "正文读取失败";
+        }
+      }
+      const articleText = storedArticleText || fetchedArticleText;
+      const summarySource = articleText ? "article_body" : item.originalSummary ? "original_summary" : "original_title";
+      const sourceText = articleText || item.originalSummary || item.originalTitle;
+      if (!sourceText) throw new Error("没有可用于生成简介的正文、原简介或原标题");
       item.articleText = articleText;
+      item.articleFetchWarning = articleFetchWarning;
       item.summarySource = summarySource;
-      item.articleTitle = cleanText(articleResponse.title || articleResponse.article?.title || "");
       setItemStage(item, "article", "done");
 
       if (token !== state.runToken || !state.workOwned) return;
@@ -683,6 +737,10 @@
       }
       validateAiResult(ai);
       Object.assign(item, ai);
+      if (articleFetchWarning) {
+        const fallbackName = summarySource === "original_summary" ? "原简介" : "原标题";
+        item.reviewWarning = [item.reviewWarning, `正文未能读取，已使用${fallbackName}兜底：${articleFetchWarning}`].filter(Boolean).join("；");
+      }
       item.forceRewrite = false;
       item.imageQueryEn ||= item.originalTitle;
       item.imageQuerySourceTitle = item.originalTitle;
