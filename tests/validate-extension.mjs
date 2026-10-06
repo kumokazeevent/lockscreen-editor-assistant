@@ -13,7 +13,7 @@ function assert(condition, message) {
 }
 
 assert(manifest.manifest_version === 3, "必须使用 Manifest V3");
-assert(manifest.version === "0.7.2", "构建版本应为 0.7.2");
+assert(manifest.version === "0.7.3", "构建版本应为 0.7.3");
 assert(manifest.permissions.includes("downloads"), "缺少下载权限");
 assert(manifest.permissions.includes("storage"), "缺少存储权限");
 assert(
@@ -61,6 +61,7 @@ for (const message of ["GET_SITE_ROUTE", "SCAN_LIST_ITEMS", "APPLY_BATCH_RECORD"
 }
 assert(content.includes("DataTransfer"), "真实上传流程缺少 DataTransfer");
 assert(content.includes("input[type=\"file\"]") || content.includes("input[type='file']"), "未查找真实文件上传控件");
+assert(content.includes('"未投递"') && content.includes("isCardMetaText"), "标题扫描未排除卡片投递状态");
 
 const assistant = read("assistant.js");
 assert(assistant.includes("batchState"), "批任务未持久化");
@@ -70,4 +71,4 @@ for (const file of ["page-bridge.js", "background.js", "content.js", "assistant.
   execFileSync(process.execPath, ["--check", path.join(root, file)], { stdio: "inherit" });
 }
 
-console.log("锁屏编辑助手 0.7.2 静态验证通过");
+console.log("锁屏编辑助手 0.7.3 静态验证通过");

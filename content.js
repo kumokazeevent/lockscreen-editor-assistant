@@ -20,6 +20,23 @@
   };
 
   const ACTION_LABELS = ["查看链接", "编辑", "下载图片", "复用锁屏"];
+  const CARD_META_EXACT = new Set([
+    "未投递", "已投递", "待投递", "投递中", "投递失败", "停止投递",
+    "未审核", "待审核", "审核中", "已审核", "审核失败", "审核通过", "审核不通过",
+    "未发布", "待发布", "发布中", "已发布", "发布失败",
+    "未处理", "处理中", "处理成功", "处理失败",
+    "草稿", "已下线", "已上线", "启用", "停用",
+  ]);
+
+  function isCardMetaText(value) {
+    const text = cleanText(value).replace(/[：:]+$/g, "");
+    if (!text) return true;
+    if (CARD_META_EXACT.has(text)) return true;
+    if (/^(?:未|已|待)?(?:投递|审核|发布|处理)(?:中|成功|失败|通过|不通过)?(?:\s*[（(]\d+[）)])?$/i.test(text)) return true;
+    if (/^(?:状态|投递状态|审核状态|发布状态)\s*[：:]?/i.test(text)) return true;
+    if (/^(?:创建|更新|发布|投递)?时间\s*[：:]?/i.test(text)) return true;
+    return false;
+  }
 
   function normalizedTitleKey(value) {
     return cleanText(value).toLocaleLowerCase().replace(/[\p{P}\p{S}\s]+/gu, "");
@@ -853,14 +870,19 @@
     const identity = `${element.className || ""} ${element.getAttribute("data-field") || ""}`;
     const rect = element.getBoundingClientRect();
     let score = 0;
+    if (isCardMetaText(text)) return -1000;
     if (/^h[1-6]$/.test(tag)) score += 18;
     if (/(^|[-_\s])(title|headline|subject)([-_\s]|$)/i.test(identity)) score += 24;
+    if (/(^|[-_\s])(status|state|tag|badge|delivery|deliver-status)([-_\s]|$)/i.test(identity)) score -= 45;
     if (text.length >= 4 && text.length <= 80) score += 8;
     else if (text.length <= 140) score += 2;
     if (/^(原标题|标题|title)\s*[:：]/i.test(text)) score += 8;
     if (/(简介|摘要|创建时间|更新时间|发布时间|状态|国家|语言|作者|来源|下载|复用)/i.test(text)) score -= 16;
     if (/^\d{1,8}$/.test(text) || /^https?:\/\//i.test(text)) score -= 18;
     if (rect.top >= cardRect.top - 2 && rect.top < cardRect.top + cardRect.height * 0.65) score += 4;
+    const nearRightEdge = rect.left > cardRect.left + cardRect.width * 0.68;
+    const nearTopEdge = rect.top < cardRect.top + cardRect.height * 0.35;
+    if (nearRightEdge && nearTopEdge && text.length <= 10) score -= 18;
     score -= domIndex / 10000;
     return score;
   }
@@ -877,7 +899,8 @@
       .map((element, domIndex) => {
         let text = cleanText(element.textContent);
         text = text.replace(/^(原标题|标题|title)\s*[:：]\s*/i, "");
-        if (!text || seen.has(text) || text.length > 200 || ACTION_LABELS.some((label) => text === label)) return null;
+        if (!text || seen.has(text) || text.length > 200 || isCardMetaText(text)
+          || ACTION_LABELS.some((label) => text === label)) return null;
         seen.add(text);
         return { element, text, score: titleCandidateScore(element, text, cardRect, domIndex) };
       })
