@@ -1,5 +1,9 @@
 # 锁屏编辑助手 0.14.3
 
+本项目已迁移至私有仓库 [kumokazeevent/lockscreen-editor-assistant](https://github.com/kumokazeevent/lockscreen-editor-assistant)。从 0.1.0 开始的 39 份源码快照均有独立 Git 提交和版本标签；完整功能变化、实现目的、缺失版本与编号异常见 [版本归档](docs/VERSIONS.md)。
+
+克隆后直接从仓库根目录加载扩展。历史版本可在仓库 Tags 中选择，原有三次真实 Git 提交保留在 `codex/original-handoff` 分支。历史提交时间为本次归档时间，实际开发日期未知。
+
 用于锁屏后台的 Chrome / Edge 扩展：读取原稿、同语种改写、搜索竖屏图片，在编辑页填写标题和简介。图片由你手动上传，后台最终保存也由你确认。
 
 ## 0.14.3 批量下载后台右侧预览图

@@ -12,7 +12,7 @@
 
 ## 目录结构
 
-本文件所在目录是扩展根目录；其父目录是当前 Git 仓库根目录，父目录还包含多份历史快照和其他文件，提交时不要误纳入。
+本文件所在目录同时是扩展和 GitHub main 分支的仓库根目录。GitHub 已归档从 0.1.0 开始的 39 份源码快照，见 docs/VERSIONS.md 和版本标签。codex/original-handoff 分支保留迁移前真实 Git 提交及旧子目录布局。原本地工作区仍位于本仓库外，包含旧快照与其他项目，不要误纳入本仓库。
 
 ```text
 lockscreen-editor-assistant/
@@ -41,6 +41,7 @@ lockscreen-editor-assistant/
 ├─ tests/                    # Node 逻辑测试、Playwright 模拟浏览器测试
 │  └─ artifacts/             # 既有界面截图
 └─ docs/
+   ├─ VERSIONS.md            # 39 份历史源码标签、功能变化及归档边界
    ├─ iterations/           # 基于现有证据重建的历史迭代记录
    ├─ decisions/            # 技术决策记录
    └─ HANDOFF.md             # 可直接转交下一位 Agent 的摘要
@@ -115,7 +116,7 @@ node tests/backend-preview-ui.mjs
 
 ## 历史变更摘要
 
-当前仓库在建立本交接文档前没有 Git 提交。下列版本节点据 `README.md`、`agent.md`、现存版本快照及代码整理，日期无法从 Git 还原；详情见 `docs/iterations/README.md`。
+迁移前的真实 Git 历史从交接整理阶段开始，已保存在 codex/original-handoff 分支。main 于 2026-10-06 按 39 份现存快照重建版本提交与标签；这些日期是迁移时间，不能还原早期开发日期。下列功能节点据原说明重建，详情见 docs/VERSIONS.md 和 docs/iterations/README.md。
 
 | 阶段 | 主要实现 |
 | --- | --- |
