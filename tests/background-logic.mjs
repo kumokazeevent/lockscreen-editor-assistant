@@ -86,4 +86,14 @@ try {
 }
 assert(overLimitRejected, "超长标题没有被拒绝");
 
+const strictPrompt = evaluate(`buildAiMessages({
+  originalTitle:'How to grow peonies at home', originalSummary:'A practical guide to planting and caring for peonies.',
+  articleText:'', expectedLanguage:'en', titleLimit:12, summaryLimit:50
+}, 'AI title was 27 characters, exceeding the 12 character limit')[0].content`);
+assert(strictPrompt.includes("MANDATORY FINAL CHECK"), "提示词缺少强制字符复核");
+assert(strictPrompt.includes("at most 12 Unicode characters"), "提示词缺少标题字符限制");
+assert(strictPrompt.includes("at most 50 Unicode characters"), "提示词缺少简介字符限制");
+assert(strictPrompt.includes("PREVIOUS ATTEMPT FAILED"), "重试提示词没有携带上次失败原因");
+assert(strictPrompt.includes("image_query_en"), "提示词丢失英文搜图词要求");
+
 console.log("后台逻辑测试通过");

@@ -13,7 +13,7 @@ function assert(condition, message) {
 }
 
 assert(manifest.manifest_version === 3, "必须使用 Manifest V3");
-assert(manifest.version === "0.7.5", "构建版本应为 0.7.5");
+assert(manifest.version === "0.7.6", "构建版本应为 0.7.6");
 assert(manifest.permissions.includes("downloads"), "缺少下载权限");
 assert(manifest.permissions.includes("storage"), "缺少存储权限");
 assert(
@@ -73,4 +73,4 @@ for (const file of ["page-bridge.js", "background.js", "content.js", "assistant.
   execFileSync(process.execPath, ["--check", path.join(root, file)], { stdio: "inherit" });
 }
 
-console.log("锁屏编辑助手 0.7.5 静态验证通过");
+console.log("锁屏编辑助手 0.7.6 静态验证通过");

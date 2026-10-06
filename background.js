@@ -755,24 +755,31 @@ function validateAiResult(raw, context) {
   return { title, summary, image_query_en: imageQueryEn, language };
 }
 
-function buildAiMessages(context) {
+function buildAiMessages(context, correction = "") {
   const languageInstruction = context.expectedLanguage
-    ? `原标题语言已识别为 ${context.expectedLanguage.toUpperCase()}；title 和 summary 必须严格使用该语言。`
-    : "先识别原标题语言；title 和 summary 必须严格沿用原标题语言，禁止默认改成中文或其他语言。";
+    ? `The input language is ${context.expectedLanguage.toUpperCase()}. The title and summary MUST stay in that language.`
+    : "Detect the title's original language first. The title and summary MUST stay in that language and MUST NOT default to Chinese or English.";
   const system = [
-    "你是专业的标题优化与锁屏杂志内容编辑，要在尽可能快的情况下准确完成一次改写和配图关键词生成。",
-    `标题不得超过 ${context.titleLimit} 个 Unicode 字符（空格和标点也计数）。`,
-    "标题须准确传达原标题核心含义，不改变原意；趣味性和吸引力优先，要有记忆点并能激发好奇心，可使用悬念、对比、疑问或感叹，但不能捏造事实。",
-    "必须保留关键地名、人名、专业术语等重要专有名词；专有名词本身过长时，先使用该语言通用公认缩写或昵称；没有合适缩写时去掉修饰词，只保留名词核心。",
-    "若原标题已经在字符限制内且表达完整，优先原样保留。不得把“几种方法/步骤/技巧”擅自减少成更小数量。",
-    `简介不得超过 ${context.summaryLimit} 个 Unicode 字符，需忠实概括文章内容，不得只做机械截断。`,
+    "You are a professional lock-screen magazine title and description editor.",
+    "Shorten the supplied title and description by rewriting them naturally. Do not merely cut off the text.",
+    "KEEP THE ORIGINAL LANGUAGE: use exactly the same language as the input title. Never translate the title or summary.",
+    `TITLE: at most ${context.titleLimit} Unicode characters. Spaces, punctuation, numbers and letters all count as characters.`,
+    "Preserve the core topic, meaning and most important keywords. Keep important names, places and technical terms when possible.",
+    "If the original title is already within the limit and reads naturally, preserve it unchanged.",
+    "Never change a stated number of methods, steps, tips or items into a smaller or different number.",
+    `SUMMARY: at most ${context.summaryLimit} Unicode characters. Preserve the original meaning and key information.`,
+    "Remove repetition, background details and excessive modifiers. Do not invent any information.",
     languageInstruction,
-    "image_query_en 必须直接从原始标题、原始简介和文章正文总结，绝对不能从改写后的短标题猜测。",
-    "image_query_en 必须是 5 至 12 个具体英文视觉关键词，表达可见主体、地点、动作、场景与氛围。",
-    "配图关键词优先侧脸、背影、人物剪影、全身着装或远景，避免正脸特写、自拍、泳装、裸露皮肤和性感姿势；若主题不需要人物则优先物体或场景。",
-    "language 返回 ISO 639-1 两字母代码（例如 en、vi、es、ru、be、ar）。",
-    "只返回单个严格 JSON 对象，不要 Markdown、代码块或解释。结构必须为：{\"title\":\"...\",\"summary\":\"...\",\"image_query_en\":\"...\",\"language\":\"...\"}",
-  ].join("\n");
+    "IMAGE QUERY: image_query_en must be 5 to 12 concrete English visual keywords derived directly from the ORIGINAL title, description and article text, never guessed from the shortened title.",
+    "For people, prefer side profile, back view, silhouette, fully clothed subjects or wide shots. Avoid frontal close-ups, selfies, swimwear, nudity, exposed skin and sexualized poses. Prefer objects or scenery when people are unnecessary.",
+    "LANGUAGE CODE: language must be the ISO 639-1 two-letter code of the original title, such as en, vi, es, ru, be, ar or it.",
+    "MANDATORY FINAL CHECK: count every Unicode character in title and summary before answering.",
+    `If title exceeds ${context.titleLimit} characters, rewrite it shorter and count again. If summary exceeds ${context.summaryLimit} characters, rewrite it shorter and count again.`,
+    "Never exceed either limit. Further shortening is always preferable to exceeding a limit.",
+    "Return exactly one strict JSON object with no Markdown, labels, explanations, analysis or character counts:",
+    '{"title":"...","summary":"...","image_query_en":"...","language":"..."}',
+    correction ? `PREVIOUS ATTEMPT FAILED: ${correction}. Correct this failure before returning the new JSON.` : "",
+  ].filter(Boolean).join("\n");
   const user = [
     `原始标题：${context.originalTitle}`,
     `原始简介：${context.originalSummary || "（无）"}`,
@@ -838,7 +845,7 @@ async function generateBatchItemWithAi(payload = {}) {
       temperature: 0.1,
       max_tokens: 500,
       stream: false,
-      messages: buildAiMessages(context),
+      messages: buildAiMessages(context, attempt > 0 ? cleanErrorMessage(lastError, "The previous output was invalid") : ""),
     };
     if (shouldDisableThinking(model, endpoint)) {
       requestBody.thinking = { type: "disabled" };
