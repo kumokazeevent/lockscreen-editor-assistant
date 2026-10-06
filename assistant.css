@@ -1037,6 +1037,9 @@
 .lsa-assistant .lsa-field-label { font-size: 12px; }
 .lsa-assistant .lsa-field-label:has(.lsa-page-filter) { display: block; }
 .lsa-assistant .lsa-page-filter { display: block; }
+.lsa-assistant [hidden] { display: none !important; }
+.lsa-current-folder { overflow-wrap: anywhere; font-weight: 700; color: #176345; }
+.lsa-saved-batches { display: block; width: 100%; min-width: 0; margin: 8px 0; padding: 8px; }
 .lsa-assistant .lsa-total-progress-head, .lsa-assistant .lsa-original-title { font-size: 14px; }
 .lsa-assistant .lsa-stock-title, .lsa-assistant .lsa-stock-meta { font-size: 12px; }
 

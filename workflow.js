@@ -51,6 +51,38 @@
     } catch { return ""; }
   }
   function recordKey(item) { return item.id ? `id:${item.id}` : `${item.sourceUrl || item.editUrl}|${item.originalTitle}`; }
+  const batchSize = (value) => Number(value) === 40 ? 40 : 30;
+  function batchMeta(raw = {}, fallback = {}) {
+    const stamp = raw.capturedAt || fallback.capturedAt || Date.now();
+    return { language: clean(raw.language || fallback.language || "未知语言", 40),
+      country: clean(raw.country || fallback.country || "未知国家", 40),
+      capturedAt: Number.isFinite(new Date(stamp).getTime()) ? new Date(stamp).getTime() : Date.now() };
+  }
+  function folderName(batch = {}) {
+    const meta = batchMeta(batch.metadata, { capturedAt: batch.createdAt });
+    const safe = (value) => value.replace(/[<>:"/\\|?*\x00-\x1f]/g, "_").replace(/[. ]+$/g, "") || "未知";
+    const date = new Date(meta.capturedAt), pad = (value, width = 2) => String(value).padStart(width, "0");
+    const stamp = `${date.getFullYear()}${pad(date.getMonth()+1)}${pad(date.getDate())}-${pad(date.getHours())}${pad(date.getMinutes())}${pad(date.getSeconds())}${pad(date.getMilliseconds(),3)}`;
+    // A stable suffix prevents simultaneous tabs/pages with identical timestamps colliding.
+    let hash = 0;
+    for (const ch of String(batch.batchId || "")) hash = (hash * 31 + ch.codePointAt(0)) | 0;
+    return `${safe(meta.language)}_${safe(meta.country)}_${stamp}-${(hash >>> 0).toString(36)}`;
+  }
+  function splitBatchFolders(batch) {
+    const groups = new Map();
+    for (const item of batch.items) {
+      const key = JSON.stringify([item.pageKey || "imported", item.pageLanguage || batch.metadata?.language || item.language || "未知语言", item.pageCountry || batch.metadata?.country || "未知国家"]);
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(item);
+    }
+    return [...groups.values()].map((items, index) => {
+      const first = items[0];
+      const metadata = batchMeta({ language: first.pageLanguage || batch.metadata?.language || first.language,
+        country: first.pageCountry || batch.metadata?.country, capturedAt: batch.metadata?.capturedAt || batch.createdAt });
+      return { ...batch, metadata, batchId: groups.size === 1 ? batch.batchId : `${batch.batchId}-p${index+1}`,
+        items: items.map((item, i) => ({ ...item, index: i+1 })) };
+    });
+  }
   function safeImage(raw) {
     if (!raw || typeof raw !== "object") return null;
     const width = Number(raw.width), height = Number(raw.height);
@@ -75,6 +107,7 @@
         index: index + 1, id, originalTitle: clean(raw.originalTitle, 2000), originalSummary: clean(raw.originalSummary, 4000),
         sourceUrl: httpUrl(raw.sourceUrl), editUrl: editUrl(raw.editUrl, id),
         pageKey: clean(raw.pageKey || "imported", 160), pageLabel: clean(raw.pageLabel || "导入页面", 160),
+        pageLanguage: clean(raw.pageLanguage, 40), pageCountry: clean(raw.pageCountry, 40),
         sourcePage: httpUrl(raw.sourcePage || data.sourcePage), pageOrder: number(raw.pageOrder, 0, 600, index),
         articleText: clean(raw.articleText), title: clean(raw.title, 12000), summary: clean(raw.summary, 32000),
         imageQueryEn: clean(raw.imageQueryEn || raw.image_query_en, 500), language: clean(raw.language, 20),
@@ -98,7 +131,9 @@
       return item;
     }).filter((item) => { const key = recordKey(item); if (seen.has(key)) return false; seen.add(key); return true; });
     return { version: 4, countUnit: "words", format: "lockscreen-results", batchId: clean(data.batchId, 100) || `import-${Date.now()}`,
-      sourcePage: httpUrl(data.sourcePage), createdAt: Date.now(), updatedAt: Date.now(), status: "ready", items };
+      sourcePage: httpUrl(data.sourcePage), metadata: data.metadata ? batchMeta(data.metadata) : null,
+      batchLimit: batchSize(data.batchLimit || settings.batchLimit),
+      createdAt: Number.isFinite(new Date(data.createdAt).getTime()) ? new Date(data.createdAt).getTime() : Date.now(), updatedAt: Date.now(), status: "ready", items };
   }
   function localShorten(text, limit) {
     const source = clean(text);
@@ -125,5 +160,5 @@
       summary: localShorten(summary, settings.summaryLimit || 50), imageQueryEn: item.imageQueryEn || "",
       rewriteMode: "local", reviewWarning: "本地词语候选：未做语义理解或翻译，请人工核对原意与专有名词。" };
   }
-  globalThis.LSAWorkflow = { words, count, clean, number, DEFAULT_PROMPT, wordPrompt, httpUrl, editUrl, imageKey, recordKey, safeImage, importBatch, localShorten, localRewrite };
+  globalThis.LSAWorkflow = { words, count, clean, number, DEFAULT_PROMPT, wordPrompt, httpUrl, editUrl, imageKey, recordKey, batchSize, batchMeta, folderName, splitBatchFolders, safeImage, importBatch, localShorten, localRewrite };
 })();

@@ -10,7 +10,7 @@ const require = createRequire(path.join(process.env.LSA_NODE_MODULES || 'C:/User
 const { chromium } = require('playwright');
 const browser = await chromium.launch({channel:'chrome',headless:true});
 const store = {local:{localSecrets:{aiApiKey:'test-key',pexelsApiKey:'test-key'}},sync:{settings:{aiEndpoint:'https://api.test/chat/completions',aiModel:'exact-test-model',titleLimit:12,summaryLimit:50,rewriteMode:'ai',autoSearch:false}}};
-const pages = new Map(), messages = [], savedExports = [];
+const pages = new Map(), messages = [], savedExports = [], savedPaths = [];
 let handler, startup, activeAi = 0, peakAi = 0;
 const gates = new Map();
 const noop = () => {};
@@ -27,7 +27,7 @@ const chrome={
   storage:{local:storageArea('local'),sync:storageArea('sync')},
   runtime:{onMessage:{addListener:(fn)=>handler=fn},onInstalled:event(),onStartup:{addListener:(fn)=>startup=fn}},
   action:{onClicked:event()},contextMenus:{onClicked:event()},
-  downloads:{onChanged:event(),download:async(data)=>{if(data.url.startsWith('data:application/json'))savedExports.push(JSON.parse(Buffer.from(data.url.split(',')[1],'base64').toString()));return savedExports.length+1;}},
+  downloads:{onChanged:event(),download:async(data)=>{savedPaths.push(data.filename);if(data.url.startsWith('data:application/json'))savedExports.push(JSON.parse(Buffer.from(data.url.split(',')[1],'base64').toString()));return savedPaths.length;}},
 };
 const sandbox=vm.createContext({chrome,console,crypto:webcrypto,URL,URLSearchParams,TextEncoder,Uint8Array,ArrayBuffer,AbortController,setTimeout,clearTimeout,btoa,atob,importScripts:noop,
   fetch:async(url,options={})=>{
@@ -66,6 +66,7 @@ try {
     await page.addStyleTag({path:path.join(root,'assistant.css')});
     for(const file of ['workflow.js','content.js'])await page.addScriptTag({path:path.join(root,file)});
     await page.evaluate(()=>{
+      window.realPageSnapshot = window.__lsaPageTools.scanPageSnapshot;
       window.__lsaPageTools.scanPageSnapshot=async()=>({ok:true,pageLabel:'当前页',sourcePage:location.href,items:[{id:String(window.fixtureId),originalTitle:'How to care for cats in Room '+(window.fixtureId===101?'A':'B'),originalSummary:'Give your cats a comfortable home',editUrl:'https://lockscreen-admin.mofeeds.com/#/nav/overseasDeliver?index=5&type=editEMPTY&id='+window.fixtureId}]});
     });
     await page.addScriptTag({path:path.join(root,'assistant.js')});
@@ -115,6 +116,74 @@ try {
   assert.equal(await b.locator('.lsa-batch-card').count(),1,'刷新恢复当前标签页');
   const c=await create(303);
   assert.equal(await c.locator('.lsa-batch-card').count(),0,'同一个URL的新标签页不继承其他批次');
+  const kc=await keys(303);
+  await c.evaluate(()=>{
+    document.querySelector('#fixture').innerHTML='<div><label>语言：<select><option>俄语</option></select></label><label>国家：<select><option>白俄罗斯</option></select></label></div><section id="cards"></section>';
+    for(let i=1;i<=45;i++) {
+      const article=document.createElement('article');article.style.cssText='width:260px;height:100px';
+      article.innerHTML=`<h3>Care for cats at home ${i}</h3><a href="https://article.test/${i}">查看链接</a><a href="https://lockscreen-admin.mofeeds.com/#/nav/overseasDeliver?index=5&type=editEMPTY&id=${i+1000}">编辑</a>`;
+      document.querySelector('#cards').append(article);
+    }
+    window.__lsaPageTools.scanPageSnapshot=window.realPageSnapshot;
+  });
+  await c.locator('[data-setting="batchLimit"]').selectOption('40');
+  await c.locator('.lsa-scan-batch').click();
+  await c.waitForFunction(()=>document.querySelectorAll('.lsa-batch-card').length===40);
+  assert.equal(store.local[kc.batchState].items.length,40,'实际 content.js 必须突破旧30条上限');
+  assert.equal(store.local[kc.batchState].metadata.language,'俄语');
+  assert.equal(store.local[kc.batchState].metadata.country,'白俄罗斯');
+  assert.equal(store.local[kc.batchState].batchLimit,40);
+  assert.match(await c.locator('.lsa-current-folder').textContent(),/^俄语_白俄罗斯_\d{8}-/);
+  const cOriginal=structuredClone(store.local[kc.batchState]);
+  await c.locator('.lsa-scan-batch').click();
+  await c.waitForFunction(()=>document.querySelector('.lsa-batch-status').textContent.includes('相同页面保留'));
+  assert.equal(store.local[kc.batchState].batchId,cOriginal.batchId,'重读相同页面不新建或追加');
+  const mixed={version:4,batchId:'import-mixed-71',createdAt:1788508800000,batchLimit:40,items:Array.from({length:71},(_,i)=>({
+    ...bSnapshot.items[0],id:'import-'+i,pageKey:i<30?'page1':i<60?'page2':'page3',
+    pageLabel:'列表第 '+(Math.floor(i/30)+1)+' 页',pageLanguage:i<30?'英语':'俄语',pageCountry:i<30?'南非':'白俄罗斯'
+  }))};
+  const uploadMixed=async()=>{
+    await c.locator('.lsa-import-file').setInputFiles({name:'mixed.json',mimeType:'application/json',buffer:Buffer.from(JSON.stringify(mixed))});
+    await c.waitForFunction(()=>document.querySelector('.lsa-transfer-status').textContent.includes('分为 3 个文件夹'));
+  };
+  await uploadMixed();
+  assert.equal(store.local[kc.batchState].items.length,30,'71条导入不追加到原40条');
+  assert.equal(await c.locator('.lsa-page-result').count(),1,'界面只显示一个文件夹的页面进度');
+  const folderCount=()=>Object.keys(store.local).filter(key=>key.startsWith(kc.batchState+':folder:')).length;
+  const countBefore=folderCount();
+  await uploadMixed();
+  assert.equal(store.local[kc.batchState].items.length,30,'重复导入不叠加');
+  assert.equal(folderCount(),countBefore,'重复导入不无限创建归档');
+  await c.locator('.lsa-restore summary').click();
+  await c.locator('.lsa-list-saved').click();
+  const oldFolderKey=Object.keys(store.local).find(key=>key.startsWith(kc.batchState+':folder:')&&store.local[key].batchId===cOriginal.batchId);
+  assert.ok(oldFolderKey,'旧40条批次应保留');
+  await c.locator('.lsa-saved-batches').selectOption(oldFolderKey);
+  await c.locator('.lsa-restore-saved').click();
+  await c.waitForFunction(()=>document.querySelector('.lsa-transfer-status').textContent.includes('已导入 40 条'));
+  assert.equal(await c.locator('.lsa-batch-card').count(),40);
+  assert.equal(store.local[kc.batchState].batchId,cOriginal.batchId,'可以切回旧文件夹');
+  await c.locator('.lsa-save-batch-json').click();
+  await c.waitForFunction(()=>document.querySelector('.lsa-batch-status').textContent.includes('已保存'));
+  assert.ok(savedPaths.some(name=>name.includes('俄语_白俄罗斯_')&&name.endsWith('批次结果.json')),'JSON 保存到语言国家时间目录');
+  await c.locator('[data-setting="batchLimit"]').selectOption('30');
+  await c.waitForFunction(async(key)=>(await window.chrome.storage.local.get(key))[key]?.batchLimit===30,kc.batchState);
+  assert.equal(store.local[kc.batchState].items.length,40,'切换30档不删除已有记录');
+  assert.equal(store.local[kc.batchState].batchLimit,30);
+  await c.evaluate(()=>{
+    const filters=document.querySelectorAll('#fixture select');
+    filters[0].selectedOptions[0].textContent='英语';filters[1].selectedOptions[0].textContent='南非';
+  });
+  await c.locator('.lsa-scan-batch').click();
+  await c.waitForFunction(()=>document.querySelector('.lsa-batch-status').textContent.includes('已读取 30 / 30'));
+  assert.equal(store.local[kc.batchState].items.length,30,'切换后台语言国家后读取建立新文件夹，不追加');
+  assert.equal(await c.locator('.lsa-page-result').count(),1);
+  assert.equal(store.local[kc.batchState].metadata.country,'南非');
+  assert.deepEqual(store.local[kb.batchState],bSnapshot,'C的扫描导入切换不影响B');
+  fs.mkdirSync(path.join(root,'tests','artifacts'),{recursive:true});
+  await c.locator('.lsa-restore summary').click();
+  await c.evaluate(()=>document.querySelector('.lsa-assistant-body').scrollTop=0);
+  await c.screenshot({path:path.join(root,'tests','artifacts','folders-0.11.png')});
   await b.evaluate(()=>{
     document.querySelector('#fixture').innerHTML='<label>标题<input id="title" value="Original title"></label><label>简介<textarea id="summary">Original summary</textarea></label><input id="picture" type="file">';
     location.hash='#/nav/overseasDeliver?index=5&type=editEMPTY&id=202';
@@ -136,6 +205,6 @@ try {
   const before=await run('getTabContext(202)');startup();const after=await run('getTabContext(202)');
   assert.notEqual(before.keys.batchState,after.keys.batchState,'浏览器重启后不误认复用的标签ID');
   assert.ok((await run('savedBatches()')).batches.some((batch)=>batch.key===before.keys.batchState),'旧批次保留可恢复');
-  console.log('真实后台逻辑 + 双标签浏览器测试通过：并行AI、独立暂停/导入/清空/窗口/词数设置、刷新恢复、新标签隔离、按词校验与填写、保留手动上传、旧批次恢复');
+  console.log('0.11.0 浏览器测试通过：实际扫描40条、语言国家读取、重复导入不堆积、71条拆3文件夹、归档恢复、JSON目录、30/40切换及原双标签并行测试');
   await context.close();
 } finally { await browser.close(); }

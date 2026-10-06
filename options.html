@@ -12,7 +12,7 @@
         <div class="brand">锁</div>
         <div>
           <h1>锁屏编辑助手设置</h1>
-          <p>0.10.0 · 标签页独立并行，标题与简介按词计数</p>
+          <p>0.11.0 · 标签页独立并行，标题与简介按词计数</p>
         </div>
       </header>
 
@@ -35,7 +35,7 @@
         <div class="form-grid">
           <label>请求超时（秒）<input id="aiTimeoutSeconds" type="number" min="10" max="120" /></label>
           <label>并发任务数<input id="batchConcurrency" type="number" min="1" max="2" /></label>
-          <label>每页最多条数<input id="batchLimit" type="number" min="1" max="30" /></label>
+          <label>每批读取 / 图片分组<select id="batchLimit"><option value="30">30 条 / 组</option><option value="40">40 条 / 组</option></select></label>
           <label>改写方式<select id="rewriteMode"><option value="ai">AI 改写</option><option value="local">本地词语候选（需人工核对）</option></select></label>
           <label>AI 思考强度<select id="thinkingLevel"><option value="off">关闭</option><option value="low">低</option><option value="medium">中等</option><option value="high">高</option><option value="max">最高</option><option value="provider">跟随提供商默认</option></select></label>
         </div>

@@ -56,12 +56,14 @@ async function tabOverrides(tabId) {
   if (!Number.isInteger(tabId)) return {};
   const { keys } = await getTabContext(tabId);
   const saved = (await chrome.storage.local.get(keys.settings))[keys.settings] || {};
-  return Object.fromEntries(["titleLimit", "summaryLimit", "rewriteMode", "thinkingLevel", "batchConcurrency"].filter((key) => saved[key] !== undefined).map((key) => [key, saved[key]]));
+  return Object.fromEntries(["titleLimit", "summaryLimit", "rewriteMode", "thinkingLevel", "batchConcurrency", "batchLimit"].filter((key) => saved[key] !== undefined).map((key) => [key, saved[key]]));
 }
 async function savedBatches() {
   const all = await chrome.storage.local.get(null);
-  return { batches: Object.entries(all).filter(([key, batch]) => (key === "batchState" || /^lsaTab:.*:batchState$/.test(key)) && batch?.items?.length)
-    .map(([key, batch]) => ({ key, batchId: batch.batchId, count: batch.items.length, updatedAt: batch.updatedAt || 0 }))
+  const entries = Object.entries(all).filter(([key, batch]) => (key === "batchState" || /^lsaTab:.*:batchState(?::folder:.*)?$/.test(key)) && batch?.items?.length);
+  const active = new Set(entries.filter(([key]) => !key.includes(':folder:')).map(([key,batch]) => `${key}|${batch.batchId}`));
+  return { batches: entries.filter(([key,batch]) => !key.includes(':folder:') || !active.has(`${key.split(':folder:')[0]}|${batch.batchId}`))
+    .map(([key, batch]) => ({ key, batchId: batch.batchId, folderName: LSAWorkflow.folderName(batch), count: batch.items.length, updatedAt: batch.updatedAt || 0 }))
     .sort((a, b) => b.updatedAt - a.updatedAt) };
 }
 
@@ -1320,20 +1322,22 @@ function buildFinalImageName(item = {}, image = {}) {
 
 let finalImageFolderReservation = Promise.resolve();
 
-function reserveFinalImageFolder(baseFolder) {
+function reserveFinalImageFolder(baseFolder, batchLimit = 30) {
+  const size = LSAWorkflow.batchSize(batchLimit);
   const reservation = finalImageFolderReservation.then(async () => {
     const storageKey = "finalImageFolderCounters";
     const stored = await chrome.storage.local.get(storageKey);
     const counters = stored?.[storageKey] && typeof stored[storageKey] === "object"
       ? { ...stored[storageKey] }
       : {};
-    const nextNumber = Math.max(0, Number(counters[baseFolder]) || 0) + 1;
-    counters[baseFolder] = nextNumber;
+    const counterKey = size === 30 ? baseFolder : `${baseFolder}|40`;
+    const nextNumber = Math.max(0, Number(counters[counterKey]) || 0) + 1;
+    counters[counterKey] = nextNumber;
     await chrome.storage.local.set({ [storageKey]: counters });
 
-    const group = Math.ceil(nextNumber / 30);
-    const first = (group - 1) * 30 + 1;
-    const last = group * 30;
+    const group = Math.ceil(nextNumber / size);
+    const first = (group - 1) * size + 1;
+    const last = group * size;
     const groupFolder = `第${String(group).padStart(3, "0")}组_${String(first).padStart(3, "0")}-${String(last).padStart(3, "0")}`;
     return {
       folder: joinDownloadPath(baseFolder, groupFolder),
@@ -1390,8 +1394,8 @@ async function downloadFinalImage(payload = {}, tabId) {
   if (settings.duplicateCheck !== false && !payload.force && (isDuplicate(fresh[key]) || duplicate)) {
     return { skipped: true, duplicate: true, path: (duplicate || fresh[key])?.path || "", reason: "图片已存在（素材或文件内容相同）" };
   }
-  const baseFolder = joinDownloadPath(sanitizeRelativeFolder(payload.folder, settings.imageFolder), tab?.folder || "");
-  const allocation = await reserveFinalImageFolder(baseFolder);
+  const baseFolder = joinDownloadPath(sanitizeRelativeFolder(payload.folder, settings.imageFolder), payload.batchFolder ? sanitizePathSegment(payload.batchFolder, "未命名批次") : tab?.folder || "");
+  const allocation = await reserveFinalImageFolder(baseFolder, payload.batchLimit);
   const folder = allocation.folder;
   const fileName = sanitizeFileName(payload.fileName || file.fileName, "lockscreen-image.jpg");
   const path = joinDownloadPath(folder, fileName);
@@ -1526,7 +1530,7 @@ chrome.runtime.onMessage.addListener((message = {}, _sender, sendResponse) => {
     const save = async () => {
       const tab = await getTabContext(_sender.tab?.id);
       const settings = await getBatchSettings();
-      return saveTextFile({ ...message, folder: joinDownloadPath(sanitizeRelativeFolder(message.folder, settings.originalFolder), tab.folder) });
+      return saveTextFile({ ...message, folder: joinDownloadPath(sanitizeRelativeFolder(message.folder, settings.originalFolder), message.batchFolder ? sanitizePathSegment(message.batchFolder, "未命名批次") : tab.folder) });
     };
     return respondAsync(sendResponse, save(), "内容文件保存失败");
   }

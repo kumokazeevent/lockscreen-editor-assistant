@@ -86,4 +86,30 @@ await run("markDuplicate({image:{id:'shared',source:'pexels'},marked:true}, 1)")
 const independent = await run("downloadFinalImage({image:{id:'shared',source:'pexels',imageUrl:'https://image.test/shared.jpg'}}, 2)");
 assert.equal(independent.skipped,undefined,'A标重复不阻止B独立下载');
 assert.ok(independent.path.includes('标签页-2-'));
-console.log('0.10.0 工作流测试通过：多语言词数、旧提示词单位转换、同标签防重入、跨标签并行、独立重复标记与下载目录');
+assert.equal(run('LSAWorkflow.batchSize(40)'),40);
+assert.equal(run('LSAWorkflow.batchSize("40")'),40);
+assert.equal(run('LSAWorkflow.batchSize(50)'),30);
+for (let i = 1; i <= 41; i++) {
+  const result = await run("reserveFinalImageFolder('40-mode-test',40)");
+  assert.equal(result.sequenceNumber,i);
+  assert.ok(result.folder.endsWith(i <= 40 ? '第001组_001-040' : '第002组_041-080'));
+}
+const backTo30 = await run("reserveFinalImageFolder('40-mode-test',30)");
+assert.equal(backTo30.sequenceNumber,1,'切换档位的计数互不混淆');
+context.mixed={version:4,batchId:'mixed',createdAt:1788508800000,batchLimit:40,items:[
+  {...exported.items[0],id:'x1',pageKey:'p1',pageLanguage:'英语',pageCountry:'南非'},
+  {...exported.items[0],id:'x2',pageKey:'p2',pageLanguage:'俄语',pageCountry:'白俄罗斯'},
+  {...exported.items[0],id:'x3',pageKey:'p2',pageLanguage:'俄语',pageCountry:'白俄罗斯'}]};
+const grouped=run('LSAWorkflow.splitBatchFolders(LSAWorkflow.importBatch(mixed))');
+assert.equal(grouped.length,2);
+assert.equal(grouped[1].items.length,2);
+assert.equal(grouped[1].metadata.country,'白俄罗斯');
+assert.equal(grouped[1].batchLimit,40);
+assert.equal(grouped[1].metadata.capturedAt,context.mixed.createdAt);
+const named=run('LSAWorkflow.folderName(LSAWorkflow.splitBatchFolders(LSAWorkflow.importBatch(mixed))[1])');
+assert.match(named,/^俄语_白俄罗斯_\d{8}-\d{9}-/);
+assert.equal(run(`LSAWorkflow.folderName({batchId:'a',metadata:{language:'../英语',country:'南非/..',capturedAt:1788508800000}})`).includes('/'),false);
+const groupedImage = await run(`downloadFinalImage({batchFolder:${JSON.stringify(named)},batchLimit:40,image:{id:'folder-test',source:'pexels',imageUrl:'https://image.test/folder-test.jpg'}},2)`);
+assert.ok(groupedImage.path.includes(named+'/第001组_001-040'));
+assert.ok(!groupedImage.path.includes('标签页-2-'));
+console.log('0.11.0 工作流测试通过：词数、标签隔离、分语言国家归档、元数据保留、安全目录及 30/40 分组边界');

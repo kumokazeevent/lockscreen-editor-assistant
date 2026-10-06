@@ -288,13 +288,30 @@
     return [...pages.values()];
   }
 
+  function currentBatchLimit() { return LSAWorkflow.batchSize(state.batch?.batchLimit || state.settings.batchLimit); }
+  function currentFolder() { return state.batch ? LSAWorkflow.folderName(state.batch) : ""; }
+  async function archiveBatch(batch = cloneBatch()) {
+    if (!batch?.items?.length) return;
+    const key = `${state.tabContext.keys.batchState}:folder:${encodeURIComponent(batch.batchId)}`;
+    await chrome.storage.local.set({ [key]: batch });
+  }
+  async function selectFolder(batch) {
+    await archiveBatch();
+    state.batch = batch;
+    state.selectedRecordIndex = -1; state.pageFilter = "all";
+    state.tabSettings = { ...state.tabSettings, batchLimit: LSAWorkflow.batchSize(batch.batchLimit) };
+    state.settings.batchLimit = state.tabSettings.batchLimit;
+    await chrome.storage.local.set({ [state.tabContext.keys.settings]: state.tabSettings });
+    await persistBatch();
+  }
+
   async function exportResults(pageKey = null) {
     if (!state.batch) return;
     const pages = pagesInBatch().filter((page) => pageKey ? page.key === pageKey
       : page.items.every((item) => ["completed", "needs_review"].includes(item.status)));
     const items = pages.flatMap((page) => page.items);
     if (!items.length) return setPanelStatus(".lsa-transfer-status", "尚无已完成页面；可保存完整批次 JSON 保留当前进度", true);
-    await sendRuntime("SAVE_TEXT_FILE", { folder: state.settings.originalFolder,
+    await sendRuntime("SAVE_TEXT_FILE", { folder: state.settings.originalFolder, batchFolder: currentFolder(),
       fileName: `${state.batch.batchId}-${pageKey ? pages[0].label : "已完成页面"}.json`,
       text: JSON.stringify({ ...cloneBatch(), version: 4, countUnit: "words", format: "lockscreen-results", items: items.map((item) => ({ ...item, manualDuplicate: Boolean(state.imageHistory[LSAWorkflow.imageKey(item.image || {})]?.manual) })) }, null, 2) });
     setPanelStatus(".lsa-transfer-status", `已导出 ${pages.length} 页、${items.length} 条结果`);
@@ -303,21 +320,22 @@
   async function importResults(file) {
     if (!file) return;
     if (state.workOwned) return setPanelStatus(".lsa-transfer-status", "请先暂停当前读取或处理", true);
+    setPanelStatus(".lsa-transfer-status", "正在读取 JSON 并整理文件夹…");
     try {
       if (file.size > 32 * 1024 * 1024) throw new Error("JSON 超过 32MB，请按页面导入");
       const batch = LSAWorkflow.importBatch(JSON.parse(await file.text()), state.settings);
       await acquireWork();
-      const existing = new Map(getBatchItems().map((item) => [LSAWorkflow.recordKey(item), item]));
-      batch.items.forEach((item) => existing.set(LSAWorkflow.recordKey(item), item));
-      if (existing.size > 600) throw new Error("合并后超过 600 条，请先导出当前结果并新建批次");
+      const folders = LSAWorkflow.splitBatchFolders(batch);
       for (const item of batch.items) {
         if (item.manualDuplicate && item.image) await sendRuntime("MARK_IMAGE_DUPLICATE", { image: item.image, marked: true });
       }
-      state.batch = { ...batch, items: [...existing.values()].map((item, i) => ({ ...item, index: i + 1 })) };
-      state.selectedRecordIndex = -1;
-      state.pageFilter = "all";
-      await persistBatch();
-      setPanelStatus(".lsa-transfer-status", `已导入 ${batch.items.length} 条并按内容 ID 合并；编辑页会自动匹配结果`);
+      // Preserve the old batch before switching; never append unrelated imported records.
+      await archiveBatch();
+      for (const folder of folders) await archiveBatch(folder);
+      const selected = folders.find((folder) => folder.items.some(recordMatchesRoute)) || folders[0];
+      state.batch = null;
+      await selectFolder(selected);
+      setPanelStatus(".lsa-transfer-status", `已导入 ${batch.items.length} 条，分为 ${folders.length} 个文件夹；当前显示 ${selected.items.length} 条，旧批次已归档，不再追加。可在文件夹列表切换。`);
     } catch (error) { setPanelStatus(".lsa-transfer-status", `导入失败：${error.message}`, true); }
     finally { if (state.workOwned) await releaseWork(); }
   }
@@ -351,6 +369,7 @@
   function serializeOriginalSnapshot() {
     return JSON.stringify({
       batchId: state.batch.batchId,
+      metadata: state.batch.metadata, batchLimit: currentBatchLimit(),
       sourcePage: state.batch.sourcePage,
       createdAt: new Date(state.batch.createdAt).toISOString(),
       items: getBatchItems().map((item) => ({
@@ -372,6 +391,7 @@
     try {
       const response = await sendRuntime("SAVE_TEXT_FILE", {
         folder: state.settings.originalFolder,
+        batchFolder: currentFolder(),
         fileName,
         text: isOriginal ? serializeOriginalSnapshot() : serializableBatch(),
         mimeType: "application/json;charset=utf-8",
@@ -393,39 +413,32 @@
       await acquireWork();
       state.scanning = true;
       state.pauseRequested = false;
-      const limit = Math.max(1, Math.min(30, Number(state.settings.batchLimit) || 30));
-      state.batch ||= {
-        version: 4, countUnit: "words", format: "lockscreen-results",
-        batchId: makeBatchId(),
-        sourcePage: location.href,
-        createdAt: Date.now(),
-        updatedAt: Date.now(),
-        status: "ready",
-        originalFolder: state.settings.originalFolder,
-        imageFolder: state.settings.imageFolder,
-        preferredRatio: state.settings.preferredRatio,
-        diagnostics: [], items: [],
-      };
-      const mergePage = async (response) => {
-        if (!response?.items?.length) throw new Error(response?.message || "页面未识别到内容");
-        const keys = new Set(getBatchItems().map(LSAWorkflow.recordKey));
-        const pageKey = response.items.map((item) => item.id || item.originalTitle).join("|");
-        let hash = 0;
-        for (const char of pageKey) hash = (hash * 31 + char.codePointAt(0)) | 0;
-        for (const raw of response.items) {
-          const item = normalizeScannedItem(raw, state.batch.items.length);
-          if (keys.has(LSAWorkflow.recordKey(item))) continue;
-          if (state.batch.items.length >= 600) throw new Error("当前批次已达 600 条，请导出并新建批次");
-          Object.assign(item, { pageKey: `page-${hash >>> 0}`, pageLabel: response.pageLabel || "当前页", sourcePage: response.sourcePage || location.href });
-          state.batch.items.push(item); keys.add(LSAWorkflow.recordKey(item));
-        }
-        state.batch.status = "ready";
-        await persistBatch();
-      };
-      await mergePage(await pageTool("SCAN_PAGE_SNAPSHOT", limit));
-      state.selectedRecordIndex = -1;
+      const limit = LSAWorkflow.batchSize(state.settings.batchLimit);
+      const response = await pageTool("SCAN_PAGE_SNAPSHOT", limit);
+      if (!response?.items?.length) throw new Error(response?.message || "页面未识别到内容");
+      const metadata = LSAWorkflow.batchMeta(response.metadata);
+      const rawItems = response.items.slice(0, limit);
+      const samePage = state.batch && state.batch.metadata?.language === metadata.language
+        && state.batch.metadata?.country === metadata.country
+        && state.batch.items.length === rawItems.length
+        && rawItems.every((raw) => getBatchItems().some((item) => LSAWorkflow.recordKey(item) === LSAWorkflow.recordKey(normalizeScannedItem(raw, 0))));
+      if (!samePage) {
+        await archiveBatch();
+        const batchId = makeBatchId() + "-" + String(Date.now()).slice(-3);
+        state.batch = {
+          version: 4, countUnit: "words", format: "lockscreen-results", batchId, metadata, batchLimit: limit,
+          sourcePage: location.href, createdAt: Date.now(), updatedAt: Date.now(), status: "ready",
+          originalFolder: state.settings.originalFolder, imageFolder: state.settings.imageFolder,
+          preferredRatio: state.settings.preferredRatio, diagnostics: response.diagnostics?.warnings || [],
+          items: rawItems.map((raw, index) => ({ ...normalizeScannedItem(raw, index),
+            pageKey: batchId, pageLabel: response.pageLabel || "当前页",
+            pageLanguage: metadata.language, pageCountry: metadata.country, sourcePage: response.sourcePage || location.href })),
+        };
+      } else state.batch.batchLimit = limit;
+      state.selectedRecordIndex = -1; state.pageFilter = "all";
       await persistBatch();
-      setPanelStatus(".lsa-batch-status", `已保存 ${pagesInBatch().length} 页、${getBatchItems().length} 条；相同 ID 自动去重。${Array.isArray(state.batch.diagnostics) ? state.batch.diagnostics.join("；") : ""}`);
+      setPanelStatus(".lsa-batch-status", `当前文件夹已读取 ${getBatchItems().length} / ${limit} 条；${samePage ? "相同页面保留已有处理结果。" : "旧批次已归档，不与本页合并。"}${rawItems.length < limit ? "页面不足目标数量，请在网站选择每页显示足够条数后重新读取；工具不会自动翻页。" : ""}`);
+      setPanelStatus(".lsa-transfer-status", `当前只显示 ${getBatchItems().length} 条；其他结果可在“切换文件夹”中打开，不会叠加在下方。`);
       saveTextSnapshot("original-list", true).catch((error) => {
         setPanelStatus(".lsa-batch-status", `原始 JSON 保存失败：${error.message}`, true);
       });
@@ -757,13 +770,16 @@
     return button;
   }
 
-  async function downloadFinalImage(item, button, force = false) {
+  function downloadDestination() {
+    return { folder: state.settings.imageFolder, batchFolder: currentFolder(), batchLimit: currentBatchLimit() };
+  }
+  async function downloadFinalImage(item, button, force = false, destination = downloadDestination()) {
     if (!item?.image) throw new Error("该条还没有可下载图片");
     if (button) { button.disabled = true; button.textContent = "下载中…"; }
     try {
       const response = await sendRuntime("DOWNLOAD_FINAL_IMAGE", {
         item, record: item, image: item.image, index: item.index,
-        folder: state.settings.imageFolder, preferredRatio: state.settings.preferredRatio,
+        ...destination, preferredRatio: state.settings.preferredRatio,
         force,
       });
       if (response.skipped) {
@@ -772,7 +788,7 @@
         if (button) {
           const retry = create("button", "lsa-secondary-button", "仍然下载这张图");
           retry.type = "button";
-          retry.addEventListener("click", () => { retry.remove(); downloadFinalImage(item, button, true).catch(() => {}); });
+          retry.addEventListener("click", () => { retry.remove(); downloadFinalImage(item, button, true, destination).catch(() => {}); });
           button.after(retry);
         }
         return response;
@@ -798,6 +814,7 @@
   }
 
   async function downloadAllImages() {
+    const destination = downloadDestination();
     const candidates = getBatchItems().filter((item) => item.image && item.status === "completed"
       && item.image.safetyStatus === "passed");
     if (!candidates.length) return setPanelStatus(".lsa-batch-status", "没有可下载的成品图", true);
@@ -806,16 +823,16 @@
     let cursor = 0;
     let failed = 0;
     let skipped = 0;
-    setPanelStatus(".lsa-batch-status", `正在下载 ${candidates.length} 张成品图；每累计 30 张自动新建一个分组目录…`);
+    setPanelStatus(".lsa-batch-status", `正在下载 ${candidates.length} 张成品图；每累计 ${destination.batchLimit} 张自动新建一个分组目录…`);
     const worker = async () => {
       while (cursor < candidates.length) {
         const item = candidates[cursor++];
-        try { const result = await downloadFinalImage(item); if (result.skipped) skipped += 1; } catch { failed += 1; }
+        try { const result = await downloadFinalImage(item, null, false, destination); if (result.skipped) skipped += 1; } catch { failed += 1; }
       }
     };
     await Promise.all([worker(), worker()]);
     if (button) button.disabled = false;
-    setPanelStatus(".lsa-batch-status", `下载结束：${candidates.length - failed - skipped} 张加入下载，跳过重复 ${skipped} 张，失败 ${failed} 张；每 30 张分组。`, Boolean(failed));
+    if (currentFolder() === destination.batchFolder) setPanelStatus(".lsa-batch-status", `下载结束：${candidates.length - failed - skipped} 张加入下载，跳过重复 ${skipped} 张，失败 ${failed} 张；每 ${destination.batchLimit} 张分组。`, Boolean(failed));
   }
 
   function stageStatusText(status) {
@@ -881,7 +898,7 @@
     wrap.replaceChildren();
     const items = getBatchItems().filter((item) => state.pageFilter === "all" || (item.pageKey || "legacy") === state.pageFilter);
     if (!items.length) {
-      wrap.append(create("div", "lsa-empty-result", "点击“读取当前页”，最多读取 30 条；每个标签页拥有独立批次"));
+      wrap.append(create("div", "lsa-empty-result", `点击“读取当前页”，最多读取 ${LSAWorkflow.batchSize(state.settings.batchLimit)} 条；每个标签页拥有独立批次`));
       return;
     }
     const visibleItems = state.pageFilter === "all" ? items.slice(0, 60) : items;
@@ -971,6 +988,15 @@
 
   function renderBatch() {
     if (!state.root) return;
+    const folder = q(".lsa-current-folder");
+    if (folder) folder.textContent = state.batch ? currentFolder() : "尚未选择文件夹；读取或导入后建立";
+    for (const key of ["language", "country"]) {
+      const input = q(`[data-meta="${key}"]`);
+      if (input && input !== document.activeElement) input.value = state.batch?.metadata?.[key] || "";
+      if (input) input.disabled = !state.batch || state.workOwned;
+    }
+    const size = q('[data-setting="batchLimit"]');
+    if (size) { size.value = currentBatchLimit(); size.disabled = state.workOwned; }
     const counts = batchCounts();
     const summary = q(".lsa-batch-summary");
     if (summary) {
@@ -1005,6 +1031,7 @@
     const filter = q(".lsa-page-filter");
     const pages = pagesInBatch();
     if (filter) {
+      filter.parentElement.hidden = pages.length <= 1;
       filter.replaceChildren(create("option", "", "全部页面")); filter.firstChild.value = "all";
       pages.forEach((page) => { const option = create("option", "", page.label); option.value = page.key; filter.append(option); });
       filter.value = state.pageFilter;
@@ -1408,10 +1435,17 @@
           </div><p class="lsa-status-text lsa-quick-status">只修改当前标签页。空格和标点不计词数，连字符词与缩写计 1 词。底部“设置”管理通用默认值与 API。</p>
         </details>
         <div class="lsa-section-card lsa-transfer">
+          <strong>当前文件夹</strong><p class="lsa-current-folder lsa-status-text"></p>
+          <div class="lsa-quick-grid">
+            <label>语言<input data-meta="language" placeholder="例如：俄语"></label>
+            <label>国家<input data-meta="country" placeholder="例如：白俄罗斯"></label>
+            <label>每批读取 / 图片分组<select data-setting="batchLimit"><option value="30">30 条 / 组</option><option value="40">40 条 / 组</option></select></label>
+            <button class="lsa-secondary-button lsa-save-meta" type="button">保存语言国家</button>
+          </div>
           <div class="lsa-button-row"><button class="lsa-secondary-button lsa-import-json" type="button">导入结果 JSON</button><button class="lsa-secondary-button lsa-export-completed" type="button">导出已完成页面</button><button class="lsa-text-action lsa-new-batch" type="button">导出并新建批次</button></div>
           <input class="lsa-import-file" type="file" accept=".json,application/json" hidden>
-          <details class="lsa-restore"><summary>恢复本机已存批次（含旧版本）</summary><button class="lsa-text-action lsa-list-saved" type="button">查看已存批次</button><select class="lsa-saved-batches" aria-label="选择要恢复的批次"></select><button class="lsa-secondary-button lsa-restore-saved" type="button">复制恢复到当前标签页</button></details>
-          <p class="lsa-status-text lsa-transfer-status">导入只影响当前标签页；同一标签页进入编辑页后自动匹配。</p>
+          <details class="lsa-restore"><summary>切换文件夹 / 恢复旧版批次</summary><button class="lsa-text-action lsa-list-saved" type="button">刷新文件夹列表</button><select class="lsa-saved-batches" aria-label="选择要恢复的批次"></select><button class="lsa-secondary-button lsa-restore-saved" type="button">打开选中文件夹</button></details>
+          <p class="lsa-status-text lsa-transfer-status">只显示当前文件夹。导入或读取不同页面时先归档旧批次，不再追加；未知语言国家请手动补全。</p>
         </div>
         ${isList ? `
         <section class="lsa-tab-panel" data-panel="batch">
@@ -1551,13 +1585,25 @@
   }
 
   function bindAssistantEvents() {
+    q(".lsa-save-meta")?.addEventListener("click", async () => {
+      if (!state.batch || state.workOwned) return setPanelStatus(".lsa-transfer-status", "请先读取 / 导入批次，并暂停处理后修改", true);
+      try {
+        await acquireWork();
+        state.batch.metadata = LSAWorkflow.batchMeta({ ...state.batch.metadata,
+          language: q('[data-meta="language"]').value, country: q('[data-meta="country"]').value });
+        for (const item of getBatchItems()) { item.pageLanguage = state.batch.metadata.language; item.pageCountry = state.batch.metadata.country; }
+        await persistBatch();
+        setPanelStatus(".lsa-transfer-status", "文件夹名称已更新；之后的下载使用新目录，已下载文件不会移动。");
+      } catch (error) { setPanelStatus(".lsa-transfer-status", error.message, true); }
+      finally { if (state.workOwned) await releaseWork(); }
+    });
     q(".lsa-list-saved")?.addEventListener("click", async () => {
       try {
         const response = await sendRuntime("LIST_SAVED_BATCHES");
         state.savedBatchKeys = new Set(response.batches.map((batch) => batch.key));
         const select = q(".lsa-saved-batches"); select.replaceChildren();
         for (const batch of response.batches) {
-          const option = create("option", "", `${batch.batchId || "旧版批次"} · ${batch.count} 条${batch.key === state.tabContext.keys.batchState ? "（当前标签页）" : ""}`);
+          const option = create("option", "", `${batch.folderName || batch.batchId || "旧版批次"} · ${batch.count} 条${batch.key === state.tabContext.keys.batchState ? "（当前）" : ""}`);
           option.value = batch.key; select.append(option);
         }
         if (!response.batches.length) setPanelStatus(".lsa-transfer-status", "本机没有已存批次");
@@ -1574,9 +1620,11 @@
       input.value = state.settings[input.dataset.setting];
       input.addEventListener("change", async () => {
         const key = input.dataset.setting;
-        const value = input.type === "number" ? LSAWorkflow.number(input.value, 1, key === "titleLimit" ? 100 : 500, state.settings[key]) : input.value;
+        if (key === "batchLimit" && state.workOwned) { input.value = currentBatchLimit(); return; }
+        const value = key === "batchLimit" ? LSAWorkflow.batchSize(input.value) : input.type === "number" ? LSAWorkflow.number(input.value, 1, key === "titleLimit" ? 100 : 500, state.settings[key]) : input.value;
         state.tabSettings = { ...state.tabSettings, [key]: value };
         await chrome.storage.local.set({ [state.tabContext.keys.settings]: state.tabSettings });
+        if (key === "batchLimit" && state.batch) { state.batch.batchLimit = value; await persistBatch(); }
         input.value = value; setPanelStatus(".lsa-quick-status", "已保存到当前标签页；其他标签页不受影响");
       });
     });
@@ -1589,6 +1637,7 @@
       try {
         await acquireWork();
         if (getBatchItems().length) await saveTextSnapshot("batch");
+        await archiveBatch();
         state.batch = null;
         await chrome.storage.local.set({ [state.tabContext.keys.batchState]: null });
         state.pageFilter = "all"; state.selectedRecordIndex = -1; renderBatch();
@@ -1649,10 +1698,20 @@
     const assistantState = local[keys.assistantState] || {};
     if (!force && assistantState.enabled === false) return;
     state.globalSettings = settings;
-    state.tabSettings = local[keys.settings] || Object.fromEntries(["titleLimit", "summaryLimit", "rewriteMode", "thinkingLevel", "batchConcurrency"].map((key) => [key, settings[key] ?? DEFAULT_SETTINGS[key]]));
+    state.tabSettings = { batchLimit: LSAWorkflow.batchSize(settings.batchLimit), ...(local[keys.settings] || Object.fromEntries(["titleLimit", "summaryLimit", "rewriteMode", "thinkingLevel", "batchConcurrency"].map((key) => [key, settings[key] ?? DEFAULT_SETTINGS[key]]))) };
     if (!local[keys.settings]) await chrome.storage.local.set({ [keys.settings]: state.tabSettings });
     state.settings = { ...DEFAULT_SETTINGS, ...settings, ...state.tabSettings };
     if (!state.workOwned) state.batch = local[keys.batchState] || null;
+    if (!state.workOwned && state.batch?.items?.length) {
+      const folders = LSAWorkflow.splitBatchFolders(state.batch);
+      if (folders.length > 1 || !state.batch.metadata) {
+        // Migrate stacked legacy pages once, retaining the original for recovery.
+        await archiveBatch(state.batch);
+        for (const folder of folders) await archiveBatch(folder);
+        state.batch = folders.find((folder) => folder.items.some((item) => String(item.id) === route.id)) || folders[0];
+        await persistBatch({ render: false });
+      }
+    }
     state.imageHistory = local[keys.imageHistory] || {};
     const lease = await sendRuntime("WORK_LOCK", { operation: "status", token: state.workToken });
     if (revision !== state.mountRevision) return;

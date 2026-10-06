@@ -86,7 +86,7 @@ async function loadSettings() {
   fields.rewritePrompt.value = LSAWorkflow.wordPrompt(rewritePrompt);
   fields.titleLimit.value = settings.titleLimit;
   fields.summaryLimit.value = settings.summaryLimit;
-  fields.batchLimit.value = settings.batchLimit;
+  fields.batchLimit.value = LSAWorkflow.batchSize(settings.batchLimit);
   fields.batchConcurrency.value = settings.batchConcurrency;
   fields.aiTimeoutSeconds.value = Math.round(settings.aiTimeoutMs / 1000);
   fields.aiEndpoint.value = settings.aiEndpoint || "";
@@ -175,7 +175,7 @@ async function saveAllSettings() {
       duplicateCheck: fields.duplicateCheck.checked,
       titleLimit: clamp(fields.titleLimit.value, 1, 100, 12),
       summaryLimit: clamp(fields.summaryLimit.value, 1, 500, 50),
-      batchLimit: clamp(fields.batchLimit.value, 1, 30, 30),
+      batchLimit: LSAWorkflow.batchSize(fields.batchLimit.value),
       batchConcurrency: clamp(fields.batchConcurrency.value, 1, 2, 2),
       aiTimeoutMs: clamp(fields.aiTimeoutSeconds.value, 10, 120, 30) * 1000,
       aiEndpoint: endpoint,

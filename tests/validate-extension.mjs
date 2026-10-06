@@ -13,7 +13,7 @@ function assert(condition, message) {
 }
 
 assert(manifest.manifest_version === 3, "必须使用 Manifest V3");
-assert(manifest.version === "0.10.0", "构建版本应为 0.10.0");
+assert(manifest.version === "0.11.0", "构建版本应为 0.11.0");
 assert(manifest.permissions.includes("downloads"), "缺少下载权限");
 assert(manifest.permissions.includes("storage"), "缺少存储权限");
 assert(
@@ -74,8 +74,8 @@ assert(assistant.includes("batchState"), "批任务未持久化");
 assert(assistant.includes("APPLY_BATCH_RECORD"), "编辑页未接入批次文案填充");
 assert(assistant.includes("填入标题和简介") && !assistant.includes("填入文案并上传图片"),
   "编辑页按钮应只填写标题和简介");
-assert(background.includes("finalImageFolderCounters") && background.includes("Math.ceil(nextNumber / 30)"),
-  "成品图未实现每 30 张自动分组目录");
+assert(background.includes("finalImageFolderCounters") && background.includes("Math.ceil(nextNumber / size)") && background.includes("LSAWorkflow.batchSize(batchLimit)"),
+  "成品图未实现 30 / 40 张切换分组目录");
 assert(assistant.includes("lsa-record-option-status") && assistant.includes("selectAndNavigateRecord"),
   "记录列表未实现编号-状态显示或点击跳转");
 assert(assistant.includes("mountRevision") && assistant.includes("removeAllAssistantNodes"),
@@ -91,4 +91,4 @@ for (const file of ["workflow.js", "page-bridge.js", "background.js", "content.j
   execFileSync(process.execPath, ["--check", path.join(root, file)], { stdio: "inherit" });
 }
 
-console.log("锁屏编辑助手 0.10.0 静态验证通过");
+console.log("锁屏编辑助手 0.11.0 静态验证通过");

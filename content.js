@@ -909,7 +909,7 @@
   async function scanListItems(limit = 30) {
     await requestBridgeRecords();
     const route = getSiteRoute();
-    const numericLimit = Math.max(1, Math.min(30, Number(limit) || 30));
+    const numericLimit = Math.max(1, Math.min(40, Number(limit) || 30));
     if (!route.isList) {
       return {
         ok: false,
@@ -981,6 +981,28 @@
     return cleanText(document.querySelector('.el-pagination .el-pager .active, .ant-pagination-item-active, [aria-current="page"]')?.textContent) || "当前页";
   }
 
+  function readListMetadata() {
+    const readFilter = (label) => {
+      const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+      while (walker.nextNode()) {
+        const node = walker.currentNode;
+        if (!new RegExp(`^${label}\\s*[:：]?$`).test(cleanText(node.textContent)) || node.parentElement?.closest('.lsa-assistant')) continue;
+        const parent = node.parentElement;
+        const candidates = [node.nextSibling, parent?.nextElementSibling, parent, parent?.parentElement];
+        for (const candidate of candidates) {
+          if (!(candidate instanceof Element)) continue;
+          if (candidate.querySelectorAll('input:not([type="hidden"]), select, .ant-select-selection-item').length > 1) continue;
+          const control = candidate.matches('input, select') ? candidate : candidate.querySelector('input:not([type="hidden"]), select, .ant-select-selection-item');
+          if (!control || control.closest('.lsa-assistant')) continue;
+          const value = cleanText(control instanceof HTMLSelectElement ? control.selectedOptions[0]?.textContent : control.value || control.textContent);
+          if (value && !/^(全部|请选择|语言|国家|分类)$/.test(value)) return value;
+        }
+      }
+      return '';
+    };
+    return { language: readFilter('语言'), country: readFilter('国家'), capturedAt: Date.now() };
+  }
+
   async function scanPageSnapshot(limit = 30) {
     const route = getSiteRoute();
     if (route.isEdit) {
@@ -990,7 +1012,8 @@
         items: [{ id: route.id, originalTitle: context.boundTitle, originalSummary: context.boundSummary, editUrl: location.href }] };
     }
     const result = await scanListItems(limit);
-    return { ...result, sourcePage: location.href, pageLabel: `列表第 ${listPageNumber()} 页` };
+    const page = listPageNumber();
+    return { ...result, metadata: readListMetadata(), sourcePage: location.href, pageLabel: page === "当前页" ? "当前列表页" : `列表第 ${page} 页` };
   }
 
   function dataUrlToBlob(dataUrl, fallbackMime = "image/jpeg") {
