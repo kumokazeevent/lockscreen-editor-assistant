@@ -1,902 +1,993 @@
 (() => {
+  "use strict";
+
   if (globalThis.__lockscreenFloatingAssistantLoaded) return;
   globalThis.__lockscreenFloatingAssistantLoaded = true;
 
+  const TARGET_HOST = "lockscreen-admin.mofeeds.com";
   const DEFAULT_SETTINGS = {
     titleLimit: 12,
     summaryLimit: 50,
-    defaultEngine: "baidu",
-    siteRules: {},
+    batchLimit: 30,
+    batchConcurrency: 2,
+    preferredRatio: "auto",
+    originalFolder: "锁屏批次/原始内容",
+    imageFolder: "锁屏批次/成品图片",
   };
-
-  const STOP_WORDS = new Set([
-    "的", "了", "和", "与", "及", "或", "在", "将", "是", "为", "对", "从", "到", "让",
-    "这", "那", "一个", "一种", "如何", "为什么", "最新", "今日", "目前", "相关", "进行",
-    "the", "and", "for", "with", "from", "this", "that", "into", "your", "about",
-  ]);
-
-  const ENGLISH_STOP_WORDS = new Set([
-    "the", "and", "for", "with", "from", "this", "that", "these", "those", "into", "about",
-    "according", "report", "reports", "reported", "news", "latest", "today", "says", "said",
-    "will", "would", "has", "have", "had", "are", "was", "were", "been", "being", "their",
-    "more", "than", "after", "before", "over", "under", "during", "through", "while", "which",
-  ]);
-
-  const VISUAL_TRANSLATIONS = [
-    ["人工智能", "artificial intelligence"], ["机器人", "robot"], ["科技", "technology"],
-    ["手机", "smartphone"], ["电脑", "computer"], ["芯片", "microchip"], ["互联网", "internet"],
-    ["汽车", "car"], ["新能源", "electric vehicle"], ["交通", "transportation"], ["高铁", "high speed train"],
-    ["飞机", "airplane"], ["航天", "space exploration"], ["火箭", "rocket"], ["卫星", "satellite"],
-    ["城市", "city"], ["建筑", "architecture"], ["乡村", "countryside"], ["旅游", "travel"],
-    ["自然", "nature"], ["风景", "landscape"], ["森林", "forest"], ["山", "mountain"],
-    ["海", "ocean"], ["河流", "river"], ["湖", "lake"], ["沙漠", "desert"],
-    ["天气", "weather"], ["暴雨", "rainstorm"], ["雨", "rain"], ["雪", "snow"],
-    ["春天", "spring"], ["夏天", "summer"], ["秋天", "autumn"], ["冬天", "winter"],
-    ["健康", "healthcare"], ["医生", "doctor"], ["医院", "hospital"], ["运动", "sports"],
-    ["足球", "football"], ["篮球", "basketball"], ["教育", "education"], ["学校", "school"],
-    ["学生", "students"], ["文化", "culture"], ["艺术", "art"], ["博物馆", "museum"],
-    ["音乐", "music"], ["电影", "cinema"], ["美食", "food"], ["农业", "agriculture"],
-    ["家庭", "family"], ["儿童", "children"], ["老人", "elderly people"], ["女性", "woman"],
-    ["男性", "man"], ["工作", "workplace"], ["商业", "business"], ["经济", "economy"],
-    ["环保", "environment"], ["能源", "energy"], ["动物", "wildlife"], ["宠物", "pets"],
-  ];
-
-  const LANGUAGE_NAMES = {
-    vi: "越南语 / Vietnamese",
-    es: "西班牙语 / Spanish",
-    ru: "俄语 / Russian",
-    be: "白俄罗斯语 / Belarusian",
-    en: "英语 / English",
-    ar: "阿拉伯语 / Arabic",
-    zh: "中文 / Chinese",
+  const RATIO_TARGETS = { "9:16": 9 / 16, "9:20": 9 / 20 };
+  const STATUS_LABELS = {
+    pending: "待处理", fetching: "读取文章", rewriting: "AI 改写", searching: "搜索配图",
+    completed: "已完成", needs_review: "图片需复核", error: "处理失败",
   };
 
   const state = {
     root: null,
+    route: { kind: "none", key: "none" },
     settings: { ...DEFAULT_SETTINGS },
+    batch: null,
+    runToken: 0,
+    pauseRequested: false,
+    storageChain: Promise.resolve(),
+    selectedRecordIndex: -1,
     pageContext: {},
-    selectedKeywords: new Set(),
-    keywords: [],
-    searchPage: 1,
-    searchHasNext: false,
-    saveTimer: null,
+    manualResults: [],
     dragging: null,
-    originalCopy: { title: "", summary: "" },
-    hasRewritten: false,
-    titleAlignment: null,
-    sourceLanguage: { code: "und", label: "原稿语言" },
+    resizeObserver: null,
+    resizeTimer: null,
+    lastLocation: location.href,
   };
+
+  function create(tag, className, text) {
+    const node = document.createElement(tag);
+    if (className) node.className = className;
+    if (text !== undefined) node.textContent = text;
+    return node;
+  }
+
+  function q(selector) {
+    return state.root?.querySelector(selector) || null;
+  }
+
+  function qa(selector) {
+    return [...(state.root?.querySelectorAll(selector) || [])];
+  }
+
+  function cleanText(value = "") {
+    return String(value).replace(/<[^>]*>/g, " ").replace(/[\u200b-\u200d\ufeff]/g, "")
+      .replace(/\s+/g, " ").trim();
+  }
 
   function graphemes(value = "") {
     if (typeof Intl.Segmenter === "function") {
-      return [...new Intl.Segmenter("zh-CN", { granularity: "grapheme" }).segment(value)].map(
-        (part) => part.segment,
-      );
+      return [...new Intl.Segmenter(undefined, { granularity: "grapheme" }).segment(String(value))]
+        .map((part) => part.segment);
     }
-    return Array.from(value);
+    return Array.from(String(value));
   }
 
   function textLength(value) {
     return graphemes(value).length;
   }
 
-  function cleanText(value = "") {
-    return String(value)
-      .replace(/<[^>]+>/g, "")
-      .replace(/[\u200b-\u200d\ufeff]/g, "")
-      .replace(/\s+/g, " ")
-      .trim();
+  function formatOriginal(title = "", summary = "") {
+    return title || summary ? `${cleanText(title)}////${cleanText(summary)}` : "";
   }
 
-  function normalizeLanguageCode(code = "") {
-    const base = String(code).toLowerCase().split(/[-_]/)[0];
-    if (base === "iw") return "he";
-    return base || "und";
+  function parseOriginal(value = "") {
+    const at = String(value).indexOf("////");
+    if (at < 0) return { title: cleanText(value), summary: "" };
+    return { title: cleanText(String(value).slice(0, at)), summary: cleanText(String(value).slice(at + 4)) };
   }
 
-  function fallbackLanguageDetection(value) {
-    const text = cleanText(value);
-    if (/[\u0600-\u06ff]/.test(text)) return "ar";
-    if (/[ăâđêôơưĂÂĐÊÔƠƯàáạảãầấậẩẫằắặẳẵèéẹẻẽềếệểễìíịỉĩòóọỏõồốộổỗờớợởỡùúụủũừứựửữỳýỵỷỹ]/i.test(text)) return "vi";
-    if (/[ñ¿¡]/i.test(text) || /\b(?:el|la|los|las|una|para|con|por|del|que)\b/i.test(text)) return "es";
-    if (/[\u0400-\u04ff]/.test(text)) return "ru";
-    if (/[A-Za-z]/.test(text)) return "en";
-    if (/[\u3400-\u9fff]/.test(text)) return "zh";
-    return "und";
+  function parseDraft(value = "") {
+    const lines = String(value).replace(/\r\n?/g, "\n").split("\n");
+    while (lines.length && !lines[0].trim()) lines.shift();
+    return { title: cleanText(lines.shift() || ""), summary: cleanText(lines.join(" ")) };
   }
 
-  async function detectTextLanguage(value) {
-    const text = cleanText(value).slice(0, 1000);
-    let code = fallbackLanguageDetection(text);
-    let reliable = false;
-    let confidence = 0;
+  function routeFromLocation() {
+    if (location.hostname !== TARGET_HOST) return { kind: "none", key: "none" };
+    const raw = location.hash.replace(/^#/, "");
+    const question = raw.indexOf("?");
+    const path = question >= 0 ? raw.slice(0, question) : raw;
+    const params = new URLSearchParams(question >= 0 ? raw.slice(question + 1) : "");
+    if (/^\/nav\/overseasContent\/?$/i.test(path) && params.get("index") === "5") {
+      return { kind: "list", key: `list:${params.get("index") || ""}`, params };
+    }
+    if (/^\/nav\/overseasDeliver\/?$/i.test(path)
+      && params.get("index") === "5" && params.get("type") === "editEMPTY") {
+      const id = params.get("id") || "";
+      return { kind: "edit", id, key: `edit:${id}`, params };
+    }
+    return { kind: "none", key: "none", params };
+  }
+
+  async function sendRuntime(type, payload = {}) {
+    const response = await chrome.runtime.sendMessage({ type, action: type, ...payload });
+    if (!response) throw new Error(`${type} 未返回结果，请重新加载插件`);
+    if (response.ok === false) throw new Error(response.error || response.message || `${type} 执行失败`);
+    return response;
+  }
+
+  async function pageTool(name, ...args) {
+    const methodMap = {
+      GET_SITE_ROUTE: "getSiteRoute", SCAN_LIST_ITEMS: "scanListItems", GET_PAGE_CONTEXT: "getPageContext",
+      APPLY_BATCH_RECORD: "applyBatchRecord", APPLY_DRAFT: "applyDraft", START_BINDING: "startBindingMode",
+    };
+    const method = globalThis.__lsaPageTools?.[methodMap[name]];
+    if (typeof method !== "function") {
+      throw new Error(`页面适配器缺少 ${name}，请在扩展管理页点击“重新加载”后再试`);
+    }
+    return method(...args);
+  }
+
+  function setPanelStatus(selector, message, isError = false) {
+    const node = q(selector);
+    if (!node) return;
+    node.textContent = message;
+    node.classList.toggle("is-error", isError);
+  }
+
+  function switchTab(name) {
+    qa(".lsa-tab-button").forEach((button) => button.classList.toggle("is-active", button.dataset.tab === name));
+    qa(".lsa-tab-panel").forEach((panel) => { panel.hidden = panel.dataset.panel !== name; });
+  }
+
+  function getBatchItems() {
+    return Array.isArray(state.batch?.items) ? state.batch.items : [];
+  }
+
+  function batchCounts() {
+    const counts = { total: 0, done: 0, review: 0, failed: 0, pending: 0, working: 0 };
+    for (const item of getBatchItems()) {
+      counts.total += 1;
+      if (item.status === "completed") counts.done += 1;
+      else if (item.status === "needs_review") counts.review += 1;
+      else if (item.status === "error") counts.failed += 1;
+      else if (["fetching", "rewriting", "searching"].includes(item.status)) counts.working += 1;
+      else counts.pending += 1;
+    }
+    return counts;
+  }
+
+  function cloneBatch() {
+    return state.batch ? JSON.parse(JSON.stringify(state.batch)) : null;
+  }
+
+  function persistBatch({ render = true } = {}) {
+    if (!state.batch) return Promise.resolve();
+    state.batch.updatedAt = Date.now();
+    const snapshot = cloneBatch();
+    state.storageChain = state.storageChain.catch(() => {})
+      .then(() => chrome.storage.local.set({ batchState: snapshot }));
+    if (render) renderBatch();
+    return state.storageChain;
+  }
+
+  function makeBatchId() {
+    const now = new Date();
+    const pad = (value) => String(value).padStart(2, "0");
+    return [now.getFullYear(), pad(now.getMonth() + 1), pad(now.getDate()), "-",
+      pad(now.getHours()), pad(now.getMinutes()), pad(now.getSeconds())].join("");
+  }
+
+  function normalizeScannedItem(raw, index) {
+    const id = raw.id ?? raw.contentId ?? raw.articleId ?? "";
+    return {
+      index: index + 1,
+      id: String(id || ""),
+      originalTitle: cleanText(raw.originalTitle || raw.title || raw.name || ""),
+      originalSummary: cleanText(raw.originalSummary || raw.summary || raw.description || ""),
+      sourceUrl: raw.sourceUrl || raw.articleUrl || raw.viewUrl || raw.url || "",
+      editUrl: raw.editUrl || raw.editorUrl || "",
+      pageOrder: raw.pageOrder ?? index,
+      status: "pending",
+      attempts: 0,
+      error: "",
+      diagnostics: raw.diagnostics || [],
+    };
+  }
+
+  function serializeOriginalSnapshot() {
+    return JSON.stringify({
+      batchId: state.batch.batchId,
+      sourcePage: state.batch.sourcePage,
+      createdAt: new Date(state.batch.createdAt).toISOString(),
+      items: getBatchItems().map((item) => ({
+        index: item.index, id: item.id, title: item.originalTitle, summary: item.originalSummary,
+        sourceUrl: item.sourceUrl, editUrl: item.editUrl, articleText: item.articleText || "",
+      })),
+    }, null, 2);
+  }
+
+  function serializableBatch() {
+    return JSON.stringify(cloneBatch(), null, 2);
+  }
+
+  async function saveTextSnapshot(kind, quiet = false) {
+    if (!state.batch) throw new Error("当前没有批次");
+    const isOriginal = kind === "original" || kind === "original-list";
+    const label = kind === "original-list" ? "原始列表" : isOriginal ? "原始内容" : "批次结果";
+    const fileName = `${state.batch.batchId}-${label}.json`;
     try {
-      const result = await chrome.i18n.detectLanguage(text);
-      const primary = result?.languages?.[0];
-      if (primary?.language) {
-        code = normalizeLanguageCode(primary.language);
-        confidence = Number(primary.percentage) || 0;
-        reliable = Boolean(result.isReliable) || confidence >= 65;
-      }
-    } catch {
-      // The script-based fallback above covers the editorial languages in use.
+      const response = await sendRuntime("SAVE_TEXT_FILE", {
+        folder: state.settings.originalFolder,
+        fileName,
+        text: isOriginal ? serializeOriginalSnapshot() : serializableBatch(),
+        mimeType: "application/json;charset=utf-8",
+      });
+      if (!quiet) setPanelStatus(".lsa-batch-status", `已保存 ${response.fileName || fileName}`);
+      return response;
+    } catch (error) {
+      if (!quiet) setPanelStatus(".lsa-batch-status", `保存 JSON 失败：${error.message}`, true);
+      throw error;
     }
+  }
+
+  async function scanListItems() {
+    const button = q(".lsa-scan-batch");
+    if (button) button.disabled = true;
+    setPanelStatus(".lsa-batch-status", "正在按页面左上到右下顺序扫描…");
+    try {
+      const limit = Math.max(1, Math.min(30, Number(state.settings.batchLimit) || 30));
+      const response = await pageTool("SCAN_LIST_ITEMS", limit);
+      const rawItems = Array.isArray(response) ? response : response?.items;
+      if (!Array.isArray(rawItems) || !rawItems.length) {
+        throw new Error(response?.message || "没有识别到内容卡片；请确认位于海外内容列表页，或在诊断信息中检查选择器");
+      }
+      const items = rawItems.slice(0, limit).map(normalizeScannedItem);
+      state.batch = {
+        version: 2,
+        batchId: makeBatchId(),
+        sourcePage: location.href,
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+        status: "ready",
+        originalFolder: state.settings.originalFolder,
+        imageFolder: state.settings.imageFolder,
+        preferredRatio: state.settings.preferredRatio,
+        diagnostics: response?.diagnostics || [],
+        items,
+      };
+      state.selectedRecordIndex = -1;
+      await persistBatch();
+      setPanelStatus(".lsa-batch-status", `已扫描 ${items.length} 条；编号顺序为页面左上到右下。`);
+      saveTextSnapshot("original-list", true).catch((error) => {
+        setPanelStatus(".lsa-batch-status", `已扫描 ${items.length} 条，但原始 JSON 保存失败：${error.message}`, true);
+      });
+    } catch (error) {
+      setPanelStatus(".lsa-batch-status", error.message || "扫描失败", true);
+    } finally {
+      if (button) button.disabled = false;
+      renderBatch();
+    }
+  }
+
+  function articleTextFromResponse(response) {
+    const direct = response.articleText || response.text || response.content || response.article?.text || response.data?.text;
+    if (direct) return cleanText(direct).slice(0, 12000);
+    const html = response.html || response.article?.html || response.data?.html;
+    if (!html) return "";
+    const doc = new DOMParser().parseFromString(String(html), "text/html");
+    doc.querySelectorAll("script,style,noscript,svg,nav,footer,form").forEach((node) => node.remove());
+    return cleanText(doc.body?.textContent || "").slice(0, 12000);
+  }
+
+  function normalizeAiResult(response) {
+    const data = response.result || response.data || response.output || response;
     return {
-      code,
-      label: LANGUAGE_NAMES[code] || code.toUpperCase() || "原稿语言",
-      reliable,
-      confidence,
+      title: cleanText(data.title || data.optimizedTitle || data.shortTitle || ""),
+      summary: cleanText(data.summary || data.description || data.shortSummary || ""),
+      imageQueryEn: cleanText(data.imageQueryEn || data.image_query_en || data.imageQuery || data.query || ""),
+      language: cleanText(data.language || data.languageCode || ""),
     };
   }
 
-  function stripEditorialFiller(value = "") {
-    return cleanText(value)
-      .replace(/^(?:重磅|速看|必看|刚刚|最新消息|记者获悉|据了解|据悉|近日|今日)[！!：:\s]*/g, "")
-      .replace(/(?:值得注意的是|众所周知|不难发现|可以看到|有消息称|相关消息显示)[，,：:]*/g, "")
-      .replace(/[“”‘’]/g, "")
-      .replace(/\s*[-_|｜]\s*[^，。！？]{1,18}$/g, "")
-      .trim();
+  function safetyCode(image) {
+    const value = String(image.safetyStatus || image.safety || image.safety_state || "").toLowerCase();
+    if (["passed", "pass", "safe", "ok", "approved"].includes(value)) return "passed";
+    if (["rejected", "reject", "unsafe", "blocked"].includes(value)) return "rejected";
+    return "review";
   }
 
-  function segmentWords(value) {
-    if (typeof Intl.Segmenter !== "function") return graphemes(value);
-    return [...new Intl.Segmenter("zh-CN", { granularity: "word" }).segment(value)]
-      .filter((part) => part.isWordLike || /^[，。！？：；、,.!?:;،؛؟]$/.test(part.segment))
-      .map((part) => part.segment);
+  function ratioDistance(image, preferred = state.settings.preferredRatio) {
+    const width = Number(image.width);
+    const height = Number(image.height);
+    if (!width || !height) return Number.POSITIVE_INFINITY;
+    const ratio = width / height;
+    if (RATIO_TARGETS[preferred]) return Math.abs(ratio - RATIO_TARGETS[preferred]);
+    return Math.min(...Object.values(RATIO_TARGETS).map((target) => Math.abs(ratio - target)));
   }
 
-  function usesWordSpaces() {
-    return !["zh", "ja", "ko"].includes(state.sourceLanguage.code);
+  function closestRatioLabel(image) {
+    if (image.aspectLabel || image.targetRatio) return image.aspectLabel || image.targetRatio;
+    const width = Number(image.width);
+    const height = Number(image.height);
+    if (!width || !height) return "比例未知";
+    return Math.abs(width / height - RATIO_TARGETS["9:16"]) <= Math.abs(width / height - RATIO_TARGETS["9:20"])
+      ? "接近 9:16" : "接近 9:20";
   }
 
-  function sentenceTerminator() {
-    return state.sourceLanguage.code === "zh" ? "。" : ".";
-  }
-
-  function clauseSeparator() {
-    if (state.sourceLanguage.code === "zh") return "，";
-    if (state.sourceLanguage.code === "ar") return "، ";
-    return ", ";
-  }
-
-  function fitAtBoundary(value, limit) {
-    const cleaned = cleanText(value);
-    if (textLength(cleaned) <= limit) return cleaned;
-    const words = segmentWords(cleaned);
-    const output = [];
-    let size = 0;
-    for (const word of words) {
-      const previous = output.at(-1) || "";
-      const punctuation = /^[，。！？：；、,.!?:;،؛؟]$/.test(word);
-      const previousPunctuation = /^[，。！？：；、,.!?:;،؛؟]$/.test(previous);
-      const spacer = usesWordSpaces() && output.length && !punctuation && !previousPunctuation ? " " : "";
-      const wordSize = textLength(word);
-      if (size + textLength(spacer) + wordSize > limit) break;
-      if (spacer) output.push(spacer);
-      output.push(word);
-      size += textLength(spacer) + wordSize;
-    }
-    let result = output.join("").replace(/[，、：；,;،؛的和与及将把被在于\s]$/g, "");
-    if (!result) result = graphemes(cleaned).slice(0, limit).join("");
-    return result;
-  }
-
-  function rewriteSummaryLocally(summary, title, limit) {
-    let source = stripEditorialFiller(summary || title);
-    source = source
-      .replace(/(?:对此|同时|此外|另外)[，,]/g, "")
-      .replace(/([。！？])\1+/g, "$1");
-    if (textLength(source) <= limit) {
-      return /[。！？.!?؟]$/.test(source) || textLength(source) === limit
-        ? source
-        : `${source}${sentenceTerminator()}`;
-    }
-
-    const titleTerms = new Set(segmentWords(title).filter((word) => textLength(word) >= 2));
-    const clauses = source
-      .split(/[。！？.!?؟；;؛]/)
-      .flatMap((sentence) => sentence.split(/[，,،]/))
-      .map(cleanText)
-      .filter((clause) => textLength(clause) >= 3)
-      .map((clause, index) => ({
-        clause,
-        index,
-        score: (index === 0 ? 5 : 0) + segmentWords(clause).filter((word) => titleTerms.has(word)).length * 4,
-      }))
-      .sort((left, right) => right.score - left.score || left.index - right.index);
-
-    const selected = [];
-    let used = 1;
-    for (const item of clauses) {
-      const separator = selected.length ? textLength(clauseSeparator()) : 0;
-      if (used + separator + textLength(item.clause) <= limit) {
-        selected.push(item);
-        used += separator + textLength(item.clause);
-      }
-    }
-    selected.sort((left, right) => left.index - right.index);
-    let result = selected.map((item) => item.clause).join(clauseSeparator());
-    if (!result) result = fitAtBoundary(source, Math.max(1, limit - 1));
-    result = result.replace(/[，、：；,;،؛的和与及将把被在于\s]$/g, "");
-    if (textLength(result) < limit && !/[。！？.!?؟]$/.test(result)) result += sentenceTerminator();
-    return fitAtBoundary(result, limit);
-  }
-
-  function extractEnglishKeywords(value) {
-    const words = cleanText(value).match(/[A-Za-z][A-Za-z'-]{1,30}|\d{2,4}/g) || [];
-    const selected = [];
-    for (const word of words) {
-      const normalized = word.toLowerCase();
-      if (ENGLISH_STOP_WORDS.has(normalized) || selected.includes(normalized)) continue;
-      selected.push(normalized);
-      if (selected.length >= 10) break;
-    }
-    return selected.join(" ");
-  }
-
-  function dictionaryEnglishQuery(title, summary) {
-    const source = `${title} ${summary}`;
-    const terms = [];
-    const latinTerms = source.match(/[A-Za-z][A-Za-z0-9.+#_-]{1,24}/g) || [];
-    for (const term of latinTerms) {
-      if (
-        state.sourceLanguage.code !== "en" &&
-        !/\d/.test(term) &&
-        !/^[A-Z]{2,}$/.test(term)
-      ) continue;
-      const normalized = term.toLowerCase();
-      if (!terms.includes(normalized)) terms.push(normalized);
-    }
-    for (const [chinese, english] of VISUAL_TRANSLATIONS) {
-      if (source.includes(chinese) && !terms.includes(english)) terms.push(english);
-      if (terms.length >= 8) break;
-    }
-    if (!terms.length) terms.push("editorial", "documentary", "news", "photography");
-    return terms.slice(0, 10).join(" ");
-  }
-
-  function applyEnglishQuery(value) {
-    const englishQuery = extractEnglishKeywords(value) || value.trim();
-    const input = query(".lsa-stock-query");
-    if (input) input.value = englishQuery;
-    state.keywords = englishQuery.split(/\s+/).filter(Boolean).slice(0, 10);
-    state.selectedKeywords = new Set(state.keywords);
-    renderKeywords();
-    scheduleDraftSave();
-    return englishQuery;
-  }
-
-  async function generateEnglishQuery() {
-    const title = state.originalCopy.title || query(".lsa-floating-title")?.value || "";
-    const summary = state.originalCopy.summary || query(".lsa-floating-summary")?.value || "";
-    const source = cleanText(`${title}。${summary}`);
-    if (!source.replace(/[。\s]/g, "")) {
-      setSearchStatus("请先读取原标题和原简介", true);
-      return "";
-    }
-
-    if (state.sourceLanguage.code === "und") {
-      state.sourceLanguage = await detectTextLanguage(source);
-    }
-
-    if (state.sourceLanguage.code === "en") {
-      const englishQuery = extractEnglishKeywords(source) || "editorial documentary photography";
-      applyEnglishQuery(englishQuery);
-      setSearchStatus("原标题和原简介为英语，已直接提取英文视觉关键词");
-      return englishQuery;
-    }
-
-    setSearchStatus("正在从原标题和原简介生成英文视觉关键词…");
-    if ("Translator" in globalThis) {
-      try {
-        const availability = await globalThis.Translator.availability({
-          sourceLanguage: state.sourceLanguage.code,
-          targetLanguage: "en",
-        });
-        if (availability !== "unavailable") {
-          const translator = await globalThis.Translator.create({
-            sourceLanguage: state.sourceLanguage.code,
-            targetLanguage: "en",
-            monitor(monitor) {
-              monitor.addEventListener("downloadprogress", (event) => {
-                setSearchStatus(`首次使用正在下载本地翻译模型：${Math.round(event.loaded * 100)}%`);
-              });
-            },
-          });
-          const translated = await translator.translate(source);
-          translator.destroy?.();
-          const queryText = applyEnglishQuery(translated);
-          setSearchStatus("已根据改写前原稿生成英文素材关键词（Chrome 本地翻译）");
-          return queryText;
-        }
-      } catch (error) {
-        setSearchStatus(`本地翻译暂不可用，已使用内置视觉词典：${error.message}`, true);
-      }
-    }
-
-    const fallback = dictionaryEnglishQuery(title, summary);
-    applyEnglishQuery(fallback);
-    if (!query(".lsa-search-status")?.classList.contains("is-error")) {
-      setSearchStatus("当前浏览器没有本地翻译模型，已使用内置视觉词典生成英文关键词");
-    }
-    return fallback;
-  }
-
-  function create(tag, className, text) {
-    const element = document.createElement(tag);
-    if (className) element.className = className;
-    if (text !== undefined) element.textContent = text;
-    return element;
-  }
-
-  function query(selector) {
-    return state.root?.querySelector(selector) || null;
-  }
-
-  function setStatus(message, isError = false) {
-    const status = query(".lsa-copy-status");
-    if (!status) return;
-    status.textContent = message;
-    status.classList.toggle("is-error", isError);
-  }
-
-  function updateCounts() {
-    const title = query(".lsa-floating-title")?.value || "";
-    const summary = query(".lsa-floating-summary")?.value || "";
-    const titleCount = query(".lsa-title-count");
-    const summaryCount = query(".lsa-summary-count");
-    if (titleCount) {
-      titleCount.textContent = `${textLength(title)} / ${state.settings.titleLimit}`;
-      titleCount.classList.toggle("is-over", textLength(title) > state.settings.titleLimit);
-    }
-    if (summaryCount) {
-      summaryCount.textContent = `${textLength(summary)} / ${state.settings.summaryLimit}`;
-      summaryCount.classList.toggle("is-over", textLength(summary) > state.settings.summaryLimit);
-    }
-  }
-
-  function alignmentComparable(value = "") {
-    return String(value)
-      .normalize("NFKC")
-      .toLocaleLowerCase()
-      .replace(/[\p{P}\p{S}\s]+/gu, "");
-  }
-
-  function normalizeTitleAlignment(response, originalTitle) {
-    const original = cleanText(originalTitle);
-    const sourceTokens = (Array.isArray(response?.sourceTokens) ? response.sourceTokens : [])
-      .map((token) => String(token || "").trim())
-      .filter(Boolean);
-    if (!original || !sourceTokens.length || sourceTokens.length > 80) {
-      throw new Error("AI 未返回有效的原标题分词");
-    }
-    if (usesWordSpaces() && sourceTokens.some((token) => /\s/.test(token))) {
-      throw new Error("AI 未把原标题拆分为逐词按钮");
-    }
-    if (alignmentComparable(sourceTokens.join("")) !== alignmentComparable(original)) {
-      throw new Error("AI 返回的外语词并非完整来自原标题");
-    }
-    let cursor = 0;
-    for (const token of sourceTokens) {
-      const tokenPosition = original.indexOf(token, cursor);
-      if (tokenPosition < 0) throw new Error("AI 改动了原标题中的原词");
-      cursor = tokenPosition + token.length;
-    }
-
-    const zhTokens = (Array.isArray(response?.zhTokens) ? response.zhTokens : [])
-      .map((token) => {
-        const text = cleanText(token?.text || "");
-        const rawIndices = token?.source_indices || token?.sourceIndices || [];
-        const sourceIndices = [...new Set(rawIndices
-          .map(Number)
-          .filter((index) => Number.isInteger(index) && index >= 0 && index < sourceTokens.length))];
-        return { text, sourceIndices };
-      })
-      .filter((token) => token.text && token.sourceIndices.length);
-    if (!zhTokens.length || zhTokens.length > 80) throw new Error("AI 未返回有效的中文分词对照");
-    const coveredSourceIndices = new Set(zhTokens.flatMap((token) => token.sourceIndices));
-    if (coveredSourceIndices.size !== sourceTokens.length) {
-      throw new Error("AI 的中外词语对照不完整，请重新生成");
-    }
-
-    return {
-      originalTitle: original,
-      translationZh: cleanText(response.titleTranslationZh) || zhTokens.map((token) => token.text).join(""),
-      sourceTokens,
-      zhTokens,
-      selectedZhIndices: new Set(),
+  function normalizeImage(raw) {
+    const image = {
+      id: raw.id || raw.photoId || "",
+      source: raw.source || raw.provider || "Pexels",
+      previewUrl: raw.previewUrl || raw.preview || raw.src?.medium || raw.src?.small || raw.imageUrl || raw.url || "",
+      imageUrl: raw.imageUrl || raw.originalUrl || raw.uploadUrl || raw.downloadUrl || raw.src?.original || raw.url || "",
+      originalUrl: raw.originalUrl || raw.imageUrl || raw.src?.original || "",
+      uploadUrl: raw.uploadUrl || raw.originalUrl || raw.imageUrl || "",
+      downloadUrl: raw.downloadUrl || raw.originalUrl || raw.imageUrl || "",
+      pageUrl: raw.pageUrl || raw.pexelsUrl || raw.sourceUrl || "",
+      creator: raw.creator || raw.photographer || raw.user || "",
+      width: Number(raw.width || raw.srcWidth || 0),
+      height: Number(raw.height || raw.srcHeight || 0),
+      safetyStatus: safetyCode(raw),
+      safetyReason: cleanText(raw.safetyReason || raw.safety_reason || raw.reviewReason || raw.reason || ""),
+      aspectLabel: raw.aspectLabel || raw.targetRatio || "",
+      fileName: raw.fileName || "",
+      cropUrls: raw.cropUrls || null,
+      suggestedCropUrl: raw.suggestedCropUrl || "",
     };
-  }
-
-  function selectedSourceIndices(alignment = state.titleAlignment, selectedZh = alignment?.selectedZhIndices) {
-    const selected = new Set();
-    if (!alignment || !selectedZh) return selected;
-    for (const zhIndex of selectedZh) {
-      for (const sourceIndex of alignment.zhTokens[zhIndex]?.sourceIndices || []) selected.add(sourceIndex);
+    image.aspectLabel = closestRatioLabel(image);
+    if (image.safetyStatus === "review" && !image.safetyReason) {
+      image.safetyReason = "自动检测无法可靠确认正脸或裸露程度";
     }
-    return selected;
+    return image;
   }
 
-  function composeAlignedTitle(alignment = state.titleAlignment, selectedZh = alignment?.selectedZhIndices) {
-    if (!alignment) return "";
-    const selectedSources = selectedSourceIndices(alignment, selectedZh);
-    if (!selectedSources.size) return "";
-    if (
-      selectedSources.size === alignment.sourceTokens.length &&
-      textLength(alignment.originalTitle) <= state.settings.titleLimit
-    ) {
-      return alignment.originalTitle;
-    }
-    return alignment.sourceTokens
-      .filter((_token, index) => selectedSources.has(index))
-      .join(usesWordSpaces() ? " " : "");
-  }
-
-  function serializeTitleAlignment() {
-    if (!state.titleAlignment) return null;
-    return {
-      originalTitle: state.titleAlignment.originalTitle,
-      translationZh: state.titleAlignment.translationZh,
-      sourceTokens: state.titleAlignment.sourceTokens,
-      zhTokens: state.titleAlignment.zhTokens,
-      selectedZhIndices: [...state.titleAlignment.selectedZhIndices],
-    };
-  }
-
-  function renderTitleAlignment() {
-    const panel = query(".lsa-title-alignment");
-    if (!panel) return;
-    const alignment = state.titleAlignment;
-    panel.hidden = !alignment;
-    if (!alignment) return;
-
-    const selectedSources = selectedSourceIndices(alignment);
-    const sourceWrap = query(".lsa-source-token-list");
-    const zhWrap = query(".lsa-zh-token-list");
-    const translation = query(".lsa-title-translation");
-    sourceWrap.replaceChildren();
-    zhWrap.replaceChildren();
-    translation.textContent = alignment.translationZh;
-
-    alignment.sourceTokens.forEach((token, index) => {
-      const button = create("button", "lsa-alignment-token is-source", token);
-      button.type = "button";
-      button.dir = "auto";
-      button.tabIndex = -1;
-      button.setAttribute("aria-disabled", "true");
-      button.classList.toggle("is-selected", selectedSources.has(index));
-      sourceWrap.append(button);
+  function selectBestImage(response) {
+    const raw = response.items || response.images || response.results || response.data?.items || [];
+    const vertical = raw.map(normalizeImage)
+      .filter((image) => image.width > 0 && image.height > image.width && image.imageUrl);
+    if (!vertical.length) throw new Error("没有找到尺寸可验证的竖屏图片（宽度必须小于高度）");
+    const candidates = vertical.filter((image) => image.safetyStatus !== "rejected");
+    if (!candidates.length) throw new Error("搜索结果均未通过图片安全初筛，请更换关键词后重试");
+    candidates.sort((left, right) => {
+      const safety = Number(right.safetyStatus === "passed") - Number(left.safetyStatus === "passed");
+      return safety || ratioDistance(left) - ratioDistance(right);
     });
-
-    alignment.zhTokens.forEach((token, index) => {
-      const mappedWords = token.sourceIndices.map((sourceIndex) => alignment.sourceTokens[sourceIndex]).join(" ");
-      const button = create("button", "lsa-alignment-token is-zh", token.text);
-      button.type = "button";
-      button.dir = "auto";
-      button.title = `对应原标题：${mappedWords}`;
-      button.setAttribute("aria-pressed", String(alignment.selectedZhIndices.has(index)));
-      button.classList.toggle("is-selected", alignment.selectedZhIndices.has(index));
-      button.addEventListener("click", () => toggleChineseTitleToken(index));
-      zhWrap.append(button);
-    });
-
-    const selectedTitle = composeAlignedTitle(alignment);
-    query(".lsa-alignment-selection").textContent = selectedTitle
-      ? `已选外语原词：${selectedTitle}`
-      : "点击中文词，系统会按整句对齐关系选择外语原词";
+    return candidates[0];
   }
 
-  function toggleChineseTitleToken(index) {
-    const alignment = state.titleAlignment;
-    if (!alignment) return;
-    const nextSelected = new Set(alignment.selectedZhIndices);
-    const isRemoving = nextSelected.has(index);
-    if (isRemoving) nextSelected.delete(index);
-    else nextSelected.add(index);
-    const nextTitle = composeAlignedTitle(alignment, nextSelected);
-    if (!isRemoving && textLength(nextTitle) > state.settings.titleLimit) {
-      setStatus(`加入该词后外语标题为 ${textLength(nextTitle)} 字符，超过 ${state.settings.titleLimit} 字符限制`, true);
+  function validateAiResult(result) {
+    if (!result.title || !result.summary) throw new Error("AI 未返回完整标题和简介");
+    if (!result.imageQueryEn) throw new Error("AI 未返回英文图片搜索词");
+    if (textLength(result.title) > Number(state.settings.titleLimit || 12)) {
+      throw new Error(`AI 标题为 ${textLength(result.title)} 字，超过 ${state.settings.titleLimit} 字；未自动截断，请重试`);
+    }
+    if (textLength(result.summary) > Number(state.settings.summaryLimit || 50)) {
+      throw new Error(`AI 简介为 ${textLength(result.summary)} 字，超过 ${state.settings.summaryLimit} 字；未自动截断，请重试`);
+    }
+  }
+
+  async function processItem(item, token) {
+    if (token !== state.runToken || state.pauseRequested) return;
+    item.attempts = Number(item.attempts || 0) + 1;
+    item.error = "";
+    try {
+      if (!item.sourceUrl) throw new Error("未读取到“查看链接”的文章地址");
+      item.status = "fetching";
+      await persistBatch();
+      const articleResponse = await sendRuntime("FETCH_ARTICLE", { url: item.sourceUrl, sourceUrl: item.sourceUrl });
+      const articleText = articleTextFromResponse(articleResponse);
+      if (!articleText) throw new Error("文章链接已打开，但没有提取到正文");
+      item.articleText = articleText;
+      item.articleTitle = cleanText(articleResponse.title || articleResponse.article?.title || "");
+
+      if (token !== state.runToken) return;
+      item.status = "rewriting";
+      await persistBatch();
+      const aiResponse = await sendRuntime("AI_PROCESS_ITEM", {
+        item: {
+          index: item.index, id: item.id, originalTitle: item.originalTitle,
+          originalSummary: item.originalSummary, articleTitle: item.articleTitle,
+          articleText, sourceUrl: item.sourceUrl,
+        },
+        titleLimit: Number(state.settings.titleLimit || 12),
+        summaryLimit: Number(state.settings.summaryLimit || 50),
+      });
+      const ai = normalizeAiResult(aiResponse);
+      validateAiResult(ai);
+      Object.assign(item, ai);
+
+      if (token !== state.runToken) return;
+      item.status = "searching";
+      await persistBatch();
+      const imageResponse = await sendRuntime("SEARCH_PEXELS_BATCH", {
+        query: ai.imageQueryEn, imageQueryEn: ai.imageQueryEn,
+        preferredRatio: state.settings.preferredRatio, orientation: "portrait",
+      });
+      item.image = selectBestImage(imageResponse);
+      item.status = item.image.safetyStatus === "passed" ? "completed" : "needs_review";
+      item.error = "";
+    } catch (error) {
+      item.status = "error";
+      item.error = error.message || "处理失败";
+    }
+    await persistBatch();
+  }
+
+  async function runBatch() {
+    if (!state.batch || !getBatchItems().length) {
+      setPanelStatus(".lsa-batch-status", "请先扫描当前列表", true);
       return;
     }
-    alignment.selectedZhIndices = nextSelected;
-    query(".lsa-floating-title").value = nextTitle;
-    renderTitleAlignment();
-    updateCounts();
-    refreshKeywords(false);
-    scheduleDraftSave();
-    setStatus(nextTitle
-      ? `已按原标题顺序选中外语原词（${textLength(nextTitle)} / ${state.settings.titleLimit}）`
-      : "已清空标题选择，请点击中文词重新组合");
-  }
+    if (state.batch.status === "running") return;
+    state.pauseRequested = false;
+    state.runToken += 1;
+    const token = state.runToken;
+    state.batch.status = "running";
+    getBatchItems().forEach((item) => {
+      if (["fetching", "rewriting", "searching"].includes(item.status)) item.status = "pending";
+    });
+    await persistBatch();
+    setPanelStatus(".lsa-batch-status", "批处理已开始；并发数最多为 2。切换页面不会丢失已完成记录。");
 
-  function clearTitleAlignment() {
-    state.titleAlignment = null;
-    const panel = query(".lsa-title-alignment");
-    if (panel) panel.hidden = true;
-    const titleInput = query(".lsa-floating-title");
-    if (titleInput) titleInput.readOnly = false;
-  }
-
-  function scheduleDraftSave() {
-    clearTimeout(state.saveTimer);
-    state.saveTimer = setTimeout(() => {
-      chrome.storage.local.set({
-        draft: {
-          title: query(".lsa-floating-title")?.value || "",
-          summary: query(".lsa-floating-summary")?.value || "",
-          query: query(".lsa-stock-query")?.value || "",
-          originalTitle: state.originalCopy.title,
-          originalSummary: state.originalCopy.summary,
-          hasRewritten: state.hasRewritten,
-          titleAlignment: serializeTitleAlignment(),
-          pageUrl: location.href,
-          updatedAt: Date.now(),
-        },
-      });
-    }, 250);
-  }
-
-  function tokenize(value, weight, scores) {
-    const text = cleanText(value);
-    if (!text) return;
-    const add = (token, score) => {
-      const normalized = token.replace(/^[\p{P}\p{S}\s]+|[\p{P}\p{S}\s]+$/gu, "");
-      const size = textLength(normalized);
-      if (size < 2 || size > 12 || STOP_WORDS.has(normalized.toLowerCase())) return;
-      scores.set(normalized, (scores.get(normalized) || 0) + score + Math.min(size, 5) * .1);
+    const concurrency = Math.max(1, Math.min(2, Number(state.settings.batchConcurrency) || 2));
+    const claimNext = () => {
+      if (state.pauseRequested || token !== state.runToken) return null;
+      return getBatchItems().find((item) => item.status === "pending") || null;
     };
-    const words = segmentWords(text).filter((word) => !/^[，。！？：；、]$/.test(word));
-    words.forEach((word) => add(word, weight));
-    for (let index = 0; index < words.length - 1; index += 1) {
-      const separator = /^[\x00-\x7F]/.test(words[index + 1]) ? " " : "";
-      add(`${words[index]}${separator}${words[index + 1]}`, weight * .72);
+    const workers = Array.from({ length: concurrency }, async () => {
+      while (!state.pauseRequested && token === state.runToken) {
+        const item = claimNext();
+        if (!item) break;
+        item.status = "fetching";
+        await processItem(item, token);
+      }
+    });
+    await Promise.all(workers);
+    if (token !== state.runToken) return;
+    const counts = batchCounts();
+    if (state.pauseRequested) {
+      state.batch.status = "paused";
+      setPanelStatus(".lsa-batch-status", "已暂停；正在执行的请求已完成并保存，可稍后继续。");
+    } else if (counts.failed) {
+      state.batch.status = "partial";
+      setPanelStatus(".lsa-batch-status", `本轮完成，${counts.failed} 条失败。请查看原因后点击“重试失败项”。`, true);
+    } else {
+      state.batch.status = "completed";
+      setPanelStatus(".lsa-batch-status", `处理完成：${counts.done} 条通过自动初筛，${counts.review} 条图片需人工复核。`);
+    }
+    await persistBatch();
+    Promise.allSettled([
+      saveTextSnapshot("original", true),
+      saveTextSnapshot("batch", true),
+    ]).catch(() => {});
+  }
+
+  function pauseBatch() {
+    if (!state.batch || state.batch.status !== "running") return;
+    state.pauseRequested = true;
+    state.batch.status = "pausing";
+    persistBatch();
+    setPanelStatus(".lsa-batch-status", "正在暂停；不会强行中断当前两条网络请求…");
+  }
+
+  function retryFailed(index = null) {
+    if (!state.batch) return;
+    const targets = index === null
+      ? getBatchItems().filter((item) => item.status === "error")
+      : getBatchItems().filter((item) => item.index === index);
+    if (!targets.length) {
+      setPanelStatus(".lsa-batch-status", "没有需要重试的失败项");
+      return;
+    }
+    targets.forEach((item) => { item.status = "pending"; item.error = ""; });
+    state.batch.status = "ready";
+    persistBatch();
+    runBatch();
+  }
+
+  function safetyText(image) {
+    if (!image) return "无图片";
+    if (image.safetyStatus === "passed") return "自动初筛通过";
+    if (image.safetyStatus === "rejected") return "已拒绝";
+    return `需复核：${image.safetyReason || "无法可靠判断正脸或裸露程度"}`;
+  }
+
+  function imageMeta(image) {
+    if (!image) return "尚未选择图片";
+    const size = image.width && image.height ? `${image.width}×${image.height}` : "尺寸未知";
+    return `${image.source || "素材源未知"} · ${size} · ${image.aspectLabel || closestRatioLabel(image)} · ${safetyText(image)}`;
+  }
+
+  async function downloadFinalImage(item, button) {
+    if (!item?.image) throw new Error("该条还没有可下载图片");
+    if (button) { button.disabled = true; button.textContent = "下载中…"; }
+    try {
+      const response = await sendRuntime("DOWNLOAD_FINAL_IMAGE", {
+        item, record: item, image: item.image, index: item.index,
+        folder: state.settings.imageFolder, preferredRatio: state.settings.preferredRatio,
+      });
+      item.downloadStatus = "completed";
+      item.downloadFileName = response.fileName || response.filename || "";
+      item.downloadError = "";
+      if (state.batch?.items?.includes(item)) await persistBatch();
+      return response;
+    } catch (error) {
+      item.downloadStatus = "error";
+      item.downloadError = error.message;
+      if (state.batch?.items?.includes(item)) await persistBatch();
+      throw error;
+    } finally {
+      if (button) {
+        button.disabled = false;
+        button.textContent = item.downloadStatus === "completed" ? "重新下载" : "下载成品图";
+      }
     }
   }
 
-  function refreshKeywords(updateSearch = true) {
-    const scores = new Map();
-    tokenize(query(".lsa-floating-title")?.value, 7, scores);
-    tokenize(query(".lsa-floating-summary")?.value, 3, scores);
-    tokenize(state.pageContext.selectedText, 5, scores);
-    state.keywords = [...scores.entries()]
-      .sort((left, right) => right[1] - left[1])
-      .map(([word]) => word)
-      .filter((word, index, all) => !all.slice(0, index).some((prior) => prior.includes(word)))
-      .slice(0, 8);
-    if (!state.keywords.length) state.keywords = ["新闻配图", "高清横图", "杂志锁屏"];
-    state.selectedKeywords = new Set(state.keywords.slice(0, 3));
-    renderKeywords();
-    if (updateSearch) updateSearchFromKeywords();
+  async function downloadAllImages() {
+    const candidates = getBatchItems().filter((item) => item.image && item.status === "completed"
+      && item.image.safetyStatus === "passed");
+    if (!candidates.length) return setPanelStatus(".lsa-batch-status", "没有可下载的成品图", true);
+    const button = q(".lsa-download-all");
+    if (button) button.disabled = true;
+    let cursor = 0;
+    let failed = 0;
+    setPanelStatus(".lsa-batch-status", `正在下载 ${candidates.length} 张成品图到 ${state.settings.imageFolder}…`);
+    const worker = async () => {
+      while (cursor < candidates.length) {
+        const item = candidates[cursor++];
+        try { await downloadFinalImage(item); } catch { failed += 1; }
+      }
+    };
+    await Promise.all([worker(), worker()]);
+    if (button) button.disabled = false;
+    setPanelStatus(".lsa-batch-status", failed
+      ? `下载结束：${candidates.length - failed} 张成功，${failed} 张失败。`
+      : `已加入下载列表：${candidates.length} 张。`, Boolean(failed));
   }
 
-  function renderKeywords() {
-    const wrap = query(".lsa-keyword-chips");
+  function renderBatchItems() {
+    const wrap = q(".lsa-batch-items");
     if (!wrap) return;
     wrap.replaceChildren();
-    for (const keyword of state.keywords) {
-      const chip = create("button", "lsa-keyword-chip", keyword);
-      chip.type = "button";
-      chip.classList.toggle("is-active", state.selectedKeywords.has(keyword));
-      chip.addEventListener("click", () => {
-        if (state.selectedKeywords.has(keyword)) state.selectedKeywords.delete(keyword);
-        else state.selectedKeywords.add(keyword);
-        chip.classList.toggle("is-active", state.selectedKeywords.has(keyword));
-        updateSearchFromKeywords();
-      });
-      wrap.append(chip);
+    const items = getBatchItems();
+    if (!items.length) {
+      wrap.append(create("div", "lsa-empty-result", "点击“扫描当前页”，最多读取 30 条内容"));
+      return;
     }
-  }
-
-  function updateSearchFromKeywords() {
-    const input = query(".lsa-stock-query");
-    if (!input) return;
-    input.value = state.keywords.filter((word) => state.selectedKeywords.has(word)).join(" ");
-    scheduleDraftSave();
-  }
-
-  async function readPage(force = true) {
-    if (!globalThis.__lsaPageTools) return;
-    try {
-      state.pageContext = await globalThis.__lsaPageTools.getPageContext();
-      const sourceTitle = state.pageContext.boundTitle || state.pageContext.selectedText ||
-        state.pageContext.heading || state.pageContext.title;
-      const sourceSummary = state.pageContext.boundSummary || state.pageContext.description ||
-        state.pageContext.selectedText;
-      const titleInput = query(".lsa-floating-title");
-      const summaryInput = query(".lsa-floating-summary");
-      if (force || !titleInput.value) titleInput.value = cleanText(sourceTitle);
-      if (force || !summaryInput.value) summaryInput.value = cleanText(sourceSummary);
-      if (force || (!state.originalCopy.title && !state.originalCopy.summary)) {
-        state.originalCopy = {
-          title: cleanText(sourceTitle),
-          summary: cleanText(sourceSummary),
-        };
-        state.hasRewritten = false;
-        clearTitleAlignment();
-      }
-      state.sourceLanguage = await detectTextLanguage(
-        `${state.originalCopy.title} ${state.originalCopy.summary}`,
-      );
-      const host = query(".lsa-assistant-host");
-      if (host) host.textContent = state.pageContext.hostname || "当前网页";
-      updateCounts();
-      refreshKeywords(false);
-      scheduleDraftSave();
-      setStatus(`已读取页面原文，识别为${state.sourceLanguage.label}；可生成中外标题对照`);
-    } catch (error) {
-      setStatus(error.message || "读取页面失败", true);
-    }
-  }
-
-  async function rewriteCopy() {
-    const titleInput = query(".lsa-floating-title");
-    const summaryInput = query(".lsa-floating-summary");
-    if (!titleInput.value.trim() && !summaryInput.value.trim()) {
-      return setStatus("请先输入或读取原文", true);
-    }
-    const button = query(".lsa-rewrite-button");
-    if (!state.hasRewritten) {
-      state.originalCopy = { title: titleInput.value.trim(), summary: summaryInput.value.trim() };
-    }
-    state.sourceLanguage = await detectTextLanguage(
-      `${state.originalCopy.title} ${state.originalCopy.summary}`,
-    );
-    button.disabled = true;
-    button.textContent = "正在翻译与对齐…";
-    setStatus("正在整句翻译原标题、建立中外词语对照并精简简介");
-
-    let rewrittenSummary = rewriteSummaryLocally(
-      state.originalCopy.summary,
-      state.originalCopy.title,
-      state.settings.summaryLimit,
-    );
-    let usedAi = false;
-    let aiImageQuery = "";
-    let rewriteError = "";
-    const previousAlignment = state.titleAlignment;
-    const previousTitle = titleInput.value;
-    try {
-      const response = await chrome.runtime.sendMessage({
-        type: "REWRITE_COPY",
-        title: state.originalCopy.title,
-        summary: state.originalCopy.summary,
-        context: state.pageContext.boundTitle || state.pageContext.boundSummary
-          ? ""
-          : [state.pageContext.heading, state.pageContext.description].filter(Boolean).join("；"),
-        titleLimit: state.settings.titleLimit,
-        summaryLimit: state.settings.summaryLimit,
-        sourceLanguage: state.sourceLanguage.code,
-        sourceLanguageLabel: state.sourceLanguage.label,
-      });
-      if (!response?.ok) throw new Error(response?.error || "AI 改写失败");
-      if (response.configured) {
-        const outputLanguage = response.summary ? await detectTextLanguage(response.summary) : { code: "und" };
-        if (
-          response.summary &&
-          state.sourceLanguage.code !== "und" &&
-          outputLanguage.code !== "und" &&
-          state.sourceLanguage.code !== outputLanguage.code &&
-          (outputLanguage.reliable || outputLanguage.confidence >= 70)
-        ) {
-          throw new Error(`AI 返回了${outputLanguage.label}，与原稿${state.sourceLanguage.label}不一致`);
-        }
-        rewrittenSummary = rewriteSummaryLocally(
-          response.summary || state.originalCopy.summary,
-          state.originalCopy.title,
-          state.settings.summaryLimit,
-        );
-        if (state.originalCopy.title) {
-          const alignment = normalizeTitleAlignment(response, state.originalCopy.title);
-          if (textLength(state.originalCopy.title) <= state.settings.titleLimit) {
-            alignment.selectedZhIndices = new Set(alignment.zhTokens.map((_token, index) => index));
-            titleInput.value = state.originalCopy.title;
-          } else {
-            titleInput.value = "";
-          }
-          state.titleAlignment = alignment;
-          titleInput.readOnly = true;
-          renderTitleAlignment();
-        } else {
-          clearTitleAlignment();
-          titleInput.value = "";
-        }
-        usedAi = true;
-        aiImageQuery = response.imageQueryEn || "";
-      } else {
-        clearTitleAlignment();
-        titleInput.value = state.originalCopy.title;
-      }
-    } catch (error) {
-      rewriteError = error.message || "AI 翻译对齐失败";
-      if (previousAlignment) {
-        state.titleAlignment = previousAlignment;
-        titleInput.value = previousTitle;
-        renderTitleAlignment();
-      } else {
-        clearTitleAlignment();
-        titleInput.value = state.originalCopy.title;
-      }
-    }
-
-    summaryInput.value = rewrittenSummary;
-    state.hasRewritten = true;
-    updateCounts();
-    refreshKeywords(false);
-    scheduleDraftSave();
-    if (aiImageQuery) applyEnglishQuery(aiImageQuery);
-    else await generateEnglishQuery();
-    if (rewriteError) {
-      setStatus(`标题翻译对齐不可用；简介已本地精简：${rewriteError}`, true);
-    } else if (usedAi) {
-      setStatus(textLength(state.originalCopy.title) <= state.settings.titleLimit
-        ? `原标题未超限，已原样保留并生成中文词语对照；简介保持${state.sourceLanguage.label}`
-        : `请点击中文词选择对应外语原词；简介已保持${state.sourceLanguage.label}并精简`);
-    } else {
-      setStatus("未配置 AI：简介已本地精简；标题双语分词对照需要配置 AI", true);
-    }
-    button.disabled = false;
-    button.textContent = "翻译标题并精简简介";
-  }
-
-  async function applyDraft() {
-    const title = query(".lsa-floating-title").value.trim();
-    const summary = query(".lsa-floating-summary").value.trim();
-    if (!title) return setStatus("请先点击中文词，选择对应的外语原标题词", true);
-    if (textLength(title) > state.settings.titleLimit || textLength(summary) > state.settings.summaryLimit) {
-      return setStatus(
-        `文案仍然超限：标题需不超过${state.settings.titleLimit}字符，简介需不超过${state.settings.summaryLimit}字符`,
-        true,
-      );
-    }
-    const result = await globalThis.__lsaPageTools.applyDraft(title, summary);
-    setStatus(result.message, !result.ok);
-  }
-
-  function switchTab(tabName) {
-    state.root.querySelectorAll(".lsa-tab-button").forEach((button) => {
-      button.classList.toggle("is-active", button.dataset.tab === tabName);
-    });
-    state.root.querySelectorAll(".lsa-tab-panel").forEach((panel) => {
-      panel.hidden = panel.dataset.panel !== tabName;
-    });
-  }
-
-  function renderSearchMessage(message, className = "lsa-empty-result") {
-    const results = query(".lsa-stock-results");
-    results.replaceChildren(create("div", className, message));
-  }
-
-  function createLink(label, url) {
-    const link = create("a", "", label);
-    link.href = url;
-    link.target = "_blank";
-    link.rel = "noopener noreferrer";
-    return link;
-  }
-
-  function renderStockResults(items) {
-    const results = query(".lsa-stock-results");
-    results.replaceChildren();
-    if (!items.length) return renderSearchMessage("没有找到匹配素材，请换一组关键词");
     for (const item of items) {
-      const card = create("article", "lsa-stock-card");
-      const image = create("img", "lsa-stock-image");
-      image.src = item.previewUrl;
-      image.alt = item.title;
-      image.loading = "lazy";
+      const card = create("article", `lsa-batch-card is-${item.status || "pending"}`);
+      const header = create("div", "lsa-batch-card-header");
+      header.append(create("span", "lsa-item-number", String(item.index).padStart(2, "0")));
+      const title = create("strong", "lsa-original-title", item.originalTitle || "（未读取到原标题）");
+      title.title = item.originalTitle || "";
+      header.append(title, create("span", "lsa-item-status", STATUS_LABELS[item.status] || item.status || "待处理"));
+      card.append(header);
+      if (item.title || item.summary) {
+        const output = create("div", "lsa-item-output");
+        output.append(create("b", "", item.title || "—"), create("p", "", item.summary || "—"));
+        card.append(output);
+      }
+      if (item.image) {
+        const media = create("div", "lsa-item-media");
+        const image = create("img", "lsa-item-thumb");
+        image.src = item.image.previewUrl || item.image.imageUrl;
+        image.alt = item.imageQueryEn || item.originalTitle;
+        image.loading = "lazy";
+        image.referrerPolicy = "no-referrer";
+        const meta = create("div", "lsa-item-image-copy");
+        meta.append(create("p", "", item.imageQueryEn || ""),
+          create("small", item.image.safetyStatus === "passed" ? "" : "is-warning", imageMeta(item.image)));
+        media.append(image, meta);
+        card.append(media);
+      }
+      if (item.error) card.append(create("p", "lsa-item-error", item.error));
+      if (item.downloadStatus === "completed") {
+        card.append(create("p", "lsa-item-download", `已下载：${item.downloadFileName || "浏览器下载目录"}`));
+      } else if (item.downloadError) {
+        card.append(create("p", "lsa-item-error", `下载失败：${item.downloadError}`));
+      }
+      const actions = create("div", "lsa-item-actions");
+      if (item.status === "error") {
+        const retry = create("button", "lsa-secondary-button", "重试此项");
+        retry.type = "button";
+        retry.addEventListener("click", () => retryFailed(item.index));
+        actions.append(retry);
+      }
+      if (item.image) {
+        const download = create("button", "lsa-secondary-button",
+          item.downloadStatus === "completed" ? "重新下载" : "下载成品图");
+        download.type = "button";
+        download.addEventListener("click", () => downloadFinalImage(item, download).catch((error) => {
+          setPanelStatus(".lsa-batch-status", `第 ${item.index} 条下载失败：${error.message}`, true);
+        }));
+        actions.append(download);
+      }
+      if (item.editUrl) {
+        const edit = create("a", "lsa-link-button", "打开编辑页");
+        edit.href = item.editUrl;
+        actions.append(edit);
+      }
+      if (actions.childNodes.length) card.append(actions);
+      wrap.append(card);
+    }
+  }
+
+  function renderBatch() {
+    if (!state.root) return;
+    const counts = batchCounts();
+    const summary = q(".lsa-batch-summary");
+    if (summary) {
+      summary.textContent = state.batch
+        ? `${state.batch.batchId} · 共 ${counts.total} · 完成 ${counts.done} · 需复核 ${counts.review} · 失败 ${counts.failed} · 待处理 ${counts.pending + counts.working}`
+        : "尚未建立批次";
+    }
+    const start = q(".lsa-start-batch");
+    const pause = q(".lsa-pause-batch");
+    const retry = q(".lsa-retry-failed");
+    if (start) {
+      start.disabled = !counts.total || state.batch?.status === "running" || state.batch?.status === "pausing"
+        || (!counts.pending && !counts.working);
+      start.textContent = state.batch?.status === "paused" ? "继续处理" : "开始处理";
+    }
+    if (pause) pause.disabled = state.batch?.status !== "running";
+    if (retry) retry.disabled = !counts.failed || state.batch?.status === "running";
+    const save = q(".lsa-save-batch-json");
+    const downloadAll = q(".lsa-download-all");
+    if (save) save.disabled = !counts.total;
+    if (downloadAll) downloadAll.disabled = !counts.done;
+    renderBatchItems();
+    renderEditRecordSelector();
+  }
+
+  function recordMatchesRoute(item) {
+    if (!item || state.route.kind !== "edit") return false;
+    if (state.route.id && String(item.id) === String(state.route.id)) return true;
+    if (state.route.id && item.editUrl) {
+      try {
+        const hash = new URL(item.editUrl, location.href).hash;
+        const params = new URLSearchParams(hash.split("?")[1] || "");
+        return String(params.get("id") || "") === String(state.route.id);
+      } catch { return item.editUrl.includes(`id=${encodeURIComponent(state.route.id)}`); }
+    }
+    return false;
+  }
+
+  function selectedRecord() {
+    const items = getBatchItems();
+    if (state.selectedRecordIndex >= 0 && items[state.selectedRecordIndex]) return items[state.selectedRecordIndex];
+    return items.find(recordMatchesRoute) || null;
+  }
+
+  function renderEditRecordSelector() {
+    const select = q(".lsa-record-select");
+    if (!select) return;
+    const items = getBatchItems();
+    const automatic = items.findIndex(recordMatchesRoute);
+    if (state.selectedRecordIndex < 0 && automatic >= 0) state.selectedRecordIndex = automatic;
+    const previous = state.selectedRecordIndex;
+    select.replaceChildren();
+    const empty = create("option", "", items.length ? "请选择批次记录" : "没有批次记录，请先到列表页处理");
+    empty.value = "-1";
+    select.append(empty);
+    items.forEach((item, index) => {
+      const option = create("option", "", `${String(item.index).padStart(2, "0")} · ${item.originalTitle || "无标题"} · ${STATUS_LABELS[item.status] || item.status}`);
+      option.value = String(index);
+      select.append(option);
+    });
+    select.value = String(previous >= 0 && items[previous] ? previous : -1);
+    renderSelectedRecord();
+  }
+
+  function renderSelectedRecord() {
+    const wrap = q(".lsa-selected-record");
+    const button = q(".lsa-apply-record");
+    if (!wrap) return;
+    wrap.replaceChildren();
+    const item = selectedRecord();
+    if (!item) {
+      wrap.append(create("div", "lsa-empty-result", "未匹配到当前 URL 的 id；可在上方手动选择记录"));
+      if (button) button.disabled = true;
+      return;
+    }
+    wrap.append(create("h3", "", `${String(item.index).padStart(2, "0")} · ${item.originalTitle}`));
+    wrap.append(create("p", "lsa-record-title", item.title || "尚未生成标题"),
+      create("p", "lsa-record-summary", item.summary || "尚未生成简介"));
+    if (item.image) {
+      const image = create("img", "lsa-record-image");
+      image.src = item.image.previewUrl || item.image.imageUrl;
+      image.alt = item.imageQueryEn || item.originalTitle;
       image.referrerPolicy = "no-referrer";
-      const copy = create("div", "lsa-stock-copy");
-      copy.append(create("p", "lsa-stock-title", item.title));
-      const meta = create("p", "lsa-stock-meta");
-      meta.append(document.createTextNode(`${item.creator} · `));
-      meta.append(createLink(item.license || "查看许可", item.licenseUrl));
-      const actions = create("div", "lsa-stock-actions");
-      const use = create("button", "lsa-image-action is-use", "上传到后台");
-      use.type = "button";
-      use.addEventListener("click", async () => {
-        use.disabled = true;
-        use.textContent = "正在上传…";
-        setSearchStatus("正在下载素材并写入后台图片上传控件…");
-        const result = await globalThis.__lsaPageTools.uploadStockImage(item.imageUrl, item.fileName);
-        setSearchStatus(result.message, !result.ok);
-        if (result.needsBinding) globalThis.__lsaPageTools.startBindingMode();
-        use.disabled = false;
-        use.textContent = "上传到后台";
-      });
-      const source = create("button", "lsa-image-action", "查看来源");
-      source.type = "button";
-      source.addEventListener("click", () => window.open(item.pageUrl, "_blank", "noopener"));
-      const credit = create("button", "lsa-image-action is-attribution", "复制署名信息");
-      credit.type = "button";
-      credit.addEventListener("click", async () => {
-        const attribution = item.attribution || `${item.title} — ${item.creator} · ${item.license} · ${item.pageUrl}`;
-        await navigator.clipboard.writeText(attribution);
-        setSearchStatus("作者、许可和来源信息已复制");
-      });
-      actions.append(use, source, credit);
-      copy.append(meta, actions);
-      card.append(image, copy);
-      results.append(card);
+      wrap.append(image, create("small", item.image.safetyStatus === "passed" ? "" : "is-warning", imageMeta(item.image)));
     }
+    if (item.error) wrap.append(create("p", "lsa-item-error", item.error));
+    if (button) button.disabled = !item.title || !item.summary || !item.image?.imageUrl;
   }
 
-  function setSearchStatus(message, isError = false) {
-    const status = query(".lsa-search-status");
-    status.textContent = message;
-    status.classList.toggle("is-error", isError);
-  }
-
-  async function searchStock(page = 1) {
-    let searchQuery = query(".lsa-stock-query").value.trim();
-    const source = query(".lsa-source-select").value;
-    if (!searchQuery || /[\u3400-\u9fff]/.test(searchQuery)) {
-      searchQuery = await generateEnglishQuery();
+  async function applySelectedRecord() {
+    const item = selectedRecord();
+    if (!item) return setPanelStatus(".lsa-edit-status", "请先选择批次记录", true);
+    if (!item.title || !item.summary || !item.image?.imageUrl) {
+      return setPanelStatus(".lsa-edit-status", "该记录的文案或图片尚未准备好", true);
     }
-    if (!searchQuery) return setSearchStatus("请先生成英文图片关键词", true);
-    state.searchPage = page;
-    renderSearchMessage("正在搜索允许商业使用的竖向图片…", "lsa-loading");
-    setSearchStatus("");
+    const button = q(".lsa-apply-record");
+    if (button) button.disabled = true;
+    setPanelStatus(".lsa-edit-status", "正在读取原图并写入后台上传控件…");
     try {
-      const response = await chrome.runtime.sendMessage({
-        type: "SEARCH_STOCK_IMAGES",
-        source,
-        query: searchQuery,
-        page,
+      const imagePayload = await sendRuntime("FETCH_IMAGE_FILE", {
+        url: item.image.imageUrl, imageUrl: item.image.imageUrl,
+        item, image: item.image, preferredRatio: state.settings.preferredRatio,
       });
-      if (!response?.ok) throw new Error(response?.error || "素材搜索失败");
-      state.searchHasNext = response.hasNext;
-      renderStockResults(response.items || []);
-      query(".lsa-page-number").textContent = `第 ${response.page || page} 页`;
-      query(".lsa-prev-page").disabled = page <= 1;
-      query(".lsa-next-page").disabled = !response.hasNext;
-      const sourceMessages = {
-        pexels: "图片由 Pexels 提供；已双重筛选为竖图，建议保留作者与来源",
-        pixabay: "图片由 Pixabay 提供；已双重筛选为竖图，建议保留作者与来源",
-        openverse: "Openverse 结果已筛选商业许可和竖向比例；使用前请核对具体条款",
-      };
-      setSearchStatus(sourceMessages[source] || "只显示实际高度大于宽度的竖向图片");
+      const result = await pageTool("APPLY_BATCH_RECORD", item, imagePayload);
+      if (!result?.ok) throw new Error(result?.message || "页面字段或上传控件写入失败");
+      const details = [result.title?.message, result.summary?.message, result.upload?.message]
+        .filter(Boolean).join("；");
+      setPanelStatus(".lsa-edit-status",
+        `${result.message || "标题、简介和图片已写入后台"}${details ? `：${details}` : ""}。请核对预览后手动点击后台保存。`);
     } catch (error) {
-      renderSearchMessage(error.message || "素材搜索失败");
-      setSearchStatus(error.message || "素材搜索失败", true);
+      setPanelStatus(".lsa-edit-status", `填入失败：${error.message}`, true);
+    } finally {
+      if (button) button.disabled = false;
     }
+  }
+
+  function updateManualCounts() {
+    const draft = parseDraft(q(".lsa-draft-copy")?.value || "");
+    const title = q(".lsa-title-count");
+    const summary = q(".lsa-summary-count");
+    if (title) {
+      title.textContent = `标题 ${textLength(draft.title)} / ${state.settings.titleLimit}`;
+      title.classList.toggle("is-over", textLength(draft.title) > state.settings.titleLimit);
+    }
+    if (summary) {
+      summary.textContent = `简介 ${textLength(draft.summary)} / ${state.settings.summaryLimit}`;
+      summary.classList.toggle("is-over", textLength(draft.summary) > state.settings.summaryLimit);
+    }
+  }
+
+  async function readPage() {
+    try {
+      const context = await pageTool("GET_PAGE_CONTEXT");
+      state.pageContext = context || {};
+      const title = cleanText(context.boundTitle || context.heading || context.title || context.selectedText || "");
+      const summary = cleanText(context.boundSummary || context.description || "");
+      const original = q(".lsa-original-copy");
+      const draft = q(".lsa-draft-copy");
+      if (original) original.value = formatOriginal(title, summary);
+      if (draft && !draft.value) draft.value = `${title}\n${summary}`.trim();
+      const queryInput = q(".lsa-stock-query");
+      if (queryInput && !queryInput.value) queryInput.value = title;
+      updateManualCounts();
+      setPanelStatus(".lsa-manual-status", "已读取当前页面；手动填写不会点击后台保存。");
+    } catch (error) {
+      setPanelStatus(".lsa-manual-status", `读取失败：${error.message}`, true);
+    }
+  }
+
+  async function applyManualDraft() {
+    const draft = parseDraft(q(".lsa-draft-copy")?.value || "");
+    if (!draft.title || !draft.summary) return setPanelStatus(".lsa-manual-status", "第一行填标题，第二行起填简介", true);
+    if (textLength(draft.title) > state.settings.titleLimit || textLength(draft.summary) > state.settings.summaryLimit) {
+      return setPanelStatus(".lsa-manual-status", "标题或简介超过限制，未写入后台", true);
+    }
+    try {
+      const result = await pageTool("APPLY_DRAFT", draft.title, draft.summary);
+      setPanelStatus(".lsa-manual-status", result?.message || "已写入标题和简介，请人工保存", !result?.ok);
+    } catch (error) {
+      setPanelStatus(".lsa-manual-status", error.message, true);
+    }
+  }
+
+  async function makeManualEnglishQuery(source) {
+    try {
+      const response = await sendRuntime("GENERATE_IMAGE_QUERY", { title: source, summary: "" });
+      const value = cleanText(response.imageQueryEn || response.query || response.result?.imageQueryEn || "");
+      if (value) return value;
+    } catch { /* Continue with the independent batch API. */ }
+    const response = await sendRuntime("AI_PROCESS_ITEM", {
+      item: { originalTitle: source, originalSummary: "", articleText: source, sourceUrl: location.href },
+      mode: "image_query_only",
+    });
+    const value = normalizeAiResult(response).imageQueryEn;
+    if (!value) throw new Error("AI 未返回英文图片搜索词");
+    return value;
+  }
+
+  async function searchManualImages() {
+    const input = q(".lsa-stock-query");
+    let value = cleanText(input?.value || parseOriginal(q(".lsa-original-copy")?.value || "").title);
+    if (!value) return setPanelStatus(".lsa-image-status", "请先输入原标题或英文关键词", true);
+    const button = q(".lsa-search-images");
+    if (button) button.disabled = true;
+    setPanelStatus(".lsa-image-status", "正在生成英文提示词并搜索竖屏图片…");
+    try {
+      value = await makeManualEnglishQuery(value);
+      input.value = value;
+      const response = await sendRuntime("SEARCH_PEXELS_BATCH", {
+        query: value, imageQueryEn: value, preferredRatio: state.settings.preferredRatio, orientation: "portrait",
+      });
+      const raw = response.items || response.images || response.results || [];
+      state.manualResults = raw.map(normalizeImage)
+        .filter((image) => image.width > 0 && image.height > image.width && image.safetyStatus !== "rejected")
+        .sort((left, right) => {
+          const safety = Number(right.safetyStatus === "passed") - Number(left.safetyStatus === "passed");
+          return safety || ratioDistance(left) - ratioDistance(right);
+        });
+      renderManualImages();
+      const sources = [...new Set(state.manualResults.map((image) => image.source).filter(Boolean))].join(" / ");
+      setPanelStatus(".lsa-image-status", state.manualResults.length
+        ? `找到 ${state.manualResults.length} 张经尺寸验证的竖图；来源：${sources || "Pexels/Pixabay"}。安全标记仅为自动初筛。`
+        : "没有找到尺寸可验证的竖图，请更换关键词。", !state.manualResults.length);
+    } catch (error) {
+      state.manualResults = [];
+      renderManualImages();
+      setPanelStatus(".lsa-image-status", error.message, true);
+    } finally {
+      if (button) button.disabled = false;
+    }
+  }
+
+  function renderManualImages() {
+    const wrap = q(".lsa-stock-results");
+    if (!wrap) return;
+    wrap.replaceChildren();
+    if (!state.manualResults.length) {
+      wrap.append(create("div", "lsa-empty-result", "这里只展示已验证宽度小于高度的图片"));
+      return;
+    }
+    state.manualResults.forEach((image, index) => {
+      const card = create("article", "lsa-stock-card");
+      const preview = create("img", "lsa-stock-image");
+      preview.src = image.previewUrl || image.imageUrl;
+      preview.alt = image.source || "竖屏素材";
+      preview.loading = "lazy";
+      preview.referrerPolicy = "no-referrer";
+      const copy = create("div", "lsa-stock-copy");
+      copy.append(create("p", "lsa-stock-title", `${image.source || "素材"} · ${image.creator || "作者信息见来源页"}`));
+      copy.append(create("p", image.safetyStatus === "passed" ? "lsa-stock-meta" : "lsa-stock-meta is-warning", imageMeta(image)));
+      const download = create("button", "lsa-image-action", "下载此图");
+      download.type = "button";
+      download.addEventListener("click", async () => {
+        const original = parseOriginal(q(".lsa-original-copy")?.value || "");
+        const synthetic = {
+          index: index + 1, originalTitle: original.title, title: original.title || "锁屏配图",
+          summary: original.summary || "", image,
+        };
+        try {
+          await downloadFinalImage(synthetic, download);
+          setPanelStatus(".lsa-image-status", "图片已加入浏览器下载列表");
+        } catch (error) {
+          setPanelStatus(".lsa-image-status", error.message, true);
+        }
+      });
+      copy.append(download);
+      card.append(preview, copy);
+      wrap.append(card);
+    });
+  }
+
+  function diagnosticsText() {
+    const lines = [
+      `站点：${location.hostname}`,
+      `路由：${state.route.kind} (${location.hash || "无 hash"})`,
+      `批次：${state.batch?.batchId || "无"}`,
+      `记录：${getBatchItems().length}`,
+      `原始内容目录：${state.settings.originalFolder}`,
+      `成品图目录：${state.settings.imageFolder}`,
+    ];
+    if (state.batch?.diagnostics) {
+      const diagnostics = state.batch.diagnostics;
+      if (Array.isArray(diagnostics) && diagnostics.length) lines.push(`扫描诊断：${diagnostics.join("；")}`);
+      else if (!Array.isArray(diagnostics) && Object.keys(diagnostics).length) {
+        const warnings = Array.isArray(diagnostics.warnings) ? diagnostics.warnings.join("；") : "";
+        lines.push(`扫描诊断：${warnings || JSON.stringify(diagnostics)}`);
+      }
+    }
+    getBatchItems().filter((item) => item.error).slice(0, 5)
+      .forEach((item) => lines.push(`${String(item.index).padStart(2, "0")}：${item.error}`));
+    return lines.join("\n");
+  }
+
+  function updateDiagnostics() {
+    const node = q(".lsa-diagnostics-text");
+    if (node) node.textContent = diagnosticsText();
+  }
+
+  function buildAssistant(route) {
+    const root = create("aside", "lsa-assistant");
+    root.setAttribute("aria-label", "锁屏编辑助手悬浮窗");
+    const isList = route.kind === "list";
+    root.innerHTML = `
+      <header class="lsa-assistant-header">
+        <div class="lsa-assistant-logo">锁</div>
+        <div class="lsa-assistant-name"><strong>锁屏编辑助手</strong><small>${isList ? "列表批处理" : `编辑页 ${route.id ? `· ID ${route.id}` : ""}`}</small></div>
+        <div class="lsa-window-actions"><button class="lsa-window-button lsa-minimize" type="button" title="最小化">—</button><button class="lsa-window-button lsa-close" type="button" title="关闭">×</button></div>
+      </header>
+      <nav class="lsa-assistant-nav" data-tabs="${isList ? "2" : "3"}">
+        ${isList ? '<button class="lsa-tab-button is-active" data-tab="batch" type="button">批处理</button>' : '<button class="lsa-tab-button is-active" data-tab="record" type="button">批次填入</button><button class="lsa-tab-button" data-tab="manual" type="button">手动填写</button>'}
+        <button class="lsa-tab-button" data-tab="images" type="button">单条配图</button>
+      </nav>
+      <div class="lsa-assistant-body">
+        ${isList ? `
+        <section class="lsa-tab-panel" data-panel="batch">
+          <div class="lsa-section-card">
+            <div class="lsa-section-row"><h2 class="lsa-section-title">列表批处理（最多 30 条）</h2><button class="lsa-text-action lsa-scan-batch" type="button">扫描当前页</button></div>
+            <p class="lsa-section-hint">卡片按页面左上到右下编号；读取“查看链接”的正文后，独立 API 一次生成同语言标题、简介和英文配图词。</p>
+            <p class="lsa-batch-summary">尚未建立批次</p>
+            <div class="lsa-button-row"><button class="lsa-primary-button lsa-start-batch" type="button" disabled>开始处理</button><button class="lsa-secondary-button lsa-pause-batch" type="button" disabled>暂停</button><button class="lsa-secondary-button lsa-retry-failed" type="button" disabled>重试失败项</button></div>
+            <div class="lsa-button-row"><button class="lsa-secondary-button lsa-save-batch-json" type="button" disabled>保存批次 JSON</button><button class="lsa-secondary-button lsa-download-all" type="button" disabled>下载自动通过图</button></div>
+            <p class="lsa-status-text lsa-batch-status">扫描后可开始；并发固定不超过 2，状态实时保存。</p>
+          </div>
+          <div class="lsa-batch-items"></div>
+        </section>` : `
+        <section class="lsa-tab-panel" data-panel="record">
+          <div class="lsa-section-card">
+            <div class="lsa-section-row"><h2 class="lsa-section-title">从批次填入当前编辑页</h2><button class="lsa-text-action lsa-refresh-record" type="button">重新匹配 ID</button></div>
+            <p class="lsa-section-hint">优先按当前 URL 的 id 自动匹配；不一致时可手动选择。只填入标题、简介和上传图片，绝不点击后台最终保存。</p>
+            <select class="lsa-source-select lsa-record-select" aria-label="选择批次记录"></select>
+            <div class="lsa-selected-record"></div>
+            <button class="lsa-primary-button lsa-apply-record" type="button" disabled>填入文案并上传图片</button>
+            <p class="lsa-status-text lsa-edit-status">请先核对匹配记录；图片使用原图数据写入后台上传控件。</p>
+          </div>
+        </section>
+        <section class="lsa-tab-panel" data-panel="manual" hidden>
+          <div class="lsa-section-card">
+            <div class="lsa-section-row"><h2 class="lsa-section-title">单条手动填写</h2><button class="lsa-text-action lsa-read-page" type="button">读取页面</button></div>
+            <label class="lsa-field-label"><span>页面原稿</span><span>标题////简介</span></label><textarea class="lsa-assistant-textarea lsa-original-copy" placeholder="标题////简介"></textarea>
+            <label class="lsa-field-label"><span>待填写文案</span><span><span class="lsa-counter lsa-title-count">标题 0 / 12</span> <span class="lsa-counter lsa-summary-count">简介 0 / 50</span></span></label><textarea class="lsa-assistant-textarea lsa-draft-copy" placeholder="第一行标题&#10;第二行起简介"></textarea>
+            <div class="lsa-button-row"><button class="lsa-primary-button lsa-apply-draft" type="button">填写标题和简介</button><button class="lsa-secondary-button lsa-bind-fields" type="button">重新绑定字段</button></div><p class="lsa-status-text lsa-manual-status">不会自动点击后台保存。</p>
+          </div>
+        </section>`}
+        <section class="lsa-tab-panel" data-panel="images" hidden>
+          <div class="lsa-section-card">
+            <div class="lsa-section-row"><h2 class="lsa-section-title">单条竖屏配图</h2><button class="lsa-text-action lsa-read-for-images" type="button">读取原标题</button></div>
+            <p class="lsa-section-hint">自动把原标题总结为英文视觉词；优先 Pexels，必要时回退 Pixabay。只展示可验证为竖向的图片。</p>
+            <div class="lsa-search-row"><input class="lsa-assistant-input lsa-stock-query" type="search" placeholder="原标题或 English keywords"><button class="lsa-primary-button lsa-search-images" type="button">搜索</button></div>
+            <p class="lsa-status-text lsa-image-status">正脸与裸露检测存在局限，无法确定的图片会明确标为“需复核”。</p>
+          </div>
+          <div class="lsa-stock-results"><div class="lsa-empty-result">这里只展示已验证宽度小于高度的图片</div></div>
+        </section>
+        <details class="lsa-diagnostics"><summary>诊断信息</summary><pre class="lsa-diagnostics-text"></pre></details>
+      </div>
+      <footer class="lsa-assistant-footer"><span class="lsa-global-status">草稿与批次状态自动保存</span><button class="lsa-text-action lsa-open-settings" type="button">设置</button></footer>`;
+    return root;
   }
 
   async function saveAssistantState(patch) {
     const { assistantState = {} } = await chrome.storage.local.get("assistantState");
-    await chrome.storage.local.set({ assistantState: { ...assistantState, ...patch } });
+    return chrome.storage.local.set({ assistantState: { ...assistantState, ...patch } });
   }
 
   function clampPosition(left, top) {
-    const width = state.root?.offsetWidth || 398;
+    const width = state.root?.offsetWidth || 410;
     const height = state.root?.offsetHeight || 58;
     return {
-      left: Math.max(6, Math.min(window.innerWidth - width - 6, left)),
-      top: Math.max(6, Math.min(window.innerHeight - height - 6, top)),
+      left: Math.max(6, Math.min(window.innerWidth - width - 6, Number(left) || 6)),
+      top: Math.max(6, Math.min(window.innerHeight - height - 6, Number(top) || 6)),
     };
   }
 
   function applyPosition(position) {
     if (!state.root || !position) return;
-    const next = clampPosition(Number(position.left) || 6, Number(position.top) || 6);
+    const next = clampPosition(position.left, position.top);
     state.root.style.left = `${next.left}px`;
     state.root.style.top = `${next.top}px`;
     state.root.style.right = "auto";
   }
 
+  function applySize(size) {
+    if (!state.root || !size) return;
+    const width = Math.max(320, Math.min(window.innerWidth - 12, Number(size.width) || 410));
+    const height = Math.max(300, Math.min(window.innerHeight - 12, Number(size.height) || 760));
+    state.root.style.width = `${width}px`;
+    state.root.style.height = `${height}px`;
+  }
+
   function startDrag(event) {
     if (event.button !== 0 || event.target.closest("button")) return;
     const rect = state.root.getBoundingClientRect();
-    state.dragging = { offsetX: event.clientX - rect.left, offsetY: event.clientY - rect.top };
+    state.dragging = { x: event.clientX - rect.left, y: event.clientY - rect.top };
     document.addEventListener("pointermove", moveDrag, true);
     document.addEventListener("pointerup", stopDrag, true);
   }
 
   function moveDrag(event) {
     if (!state.dragging) return;
-    applyPosition({
-      left: event.clientX - state.dragging.offsetX,
-      top: event.clientY - state.dragging.offsetY,
-    });
+    applyPosition({ left: event.clientX - state.dragging.x, top: event.clientY - state.dragging.y });
   }
 
   function stopDrag() {
@@ -905,198 +996,164 @@
     document.removeEventListener("pointermove", moveDrag, true);
     document.removeEventListener("pointerup", stopDrag, true);
     const rect = state.root.getBoundingClientRect();
-    saveAssistantState({ position: { left: rect.left, top: rect.top } });
+    saveAssistantState({ position: { left: Math.round(rect.left), top: Math.round(rect.top) } });
   }
 
   function setMinimized(minimized) {
-    if (!state.root) return;
-    state.root.classList.toggle("is-minimized", minimized);
-    query(".lsa-restore").textContent = minimized ? "□" : "×";
-    query(".lsa-restore").title = minimized ? "恢复" : "关闭";
+    state.root?.classList.toggle("is-minimized", minimized);
+    const close = q(".lsa-close");
+    if (close) {
+      close.textContent = minimized ? "□" : "×";
+      close.title = minimized ? "恢复" : "关闭";
+    }
     saveAssistantState({ minimized });
   }
 
-  function closeAssistant() {
+  function unmount({ disable = false } = {}) {
+    clearTimeout(state.resizeTimer);
+    state.resizeObserver?.disconnect();
+    state.resizeObserver = null;
     state.root?.remove();
     state.root = null;
-    saveAssistantState({ enabled: false });
+    if (disable) saveAssistantState({ enabled: false });
   }
 
-  function buildAssistant() {
-    const root = create("aside", "lsa-assistant");
-    root.setAttribute("aria-label", "锁屏编辑助手悬浮窗");
-    root.innerHTML = `
-      <header class="lsa-assistant-header">
-        <div class="lsa-assistant-logo">锁</div>
-        <div class="lsa-assistant-name"><strong>锁屏编辑助手</strong><small class="lsa-assistant-host">当前网页</small></div>
-        <div class="lsa-window-actions">
-          <button class="lsa-window-button lsa-minimize" type="button" title="最小化">—</button>
-          <button class="lsa-window-button lsa-restore" type="button" title="关闭">×</button>
-        </div>
-      </header>
-      <nav class="lsa-assistant-nav">
-        <button class="lsa-tab-button is-active" data-tab="copy" type="button">标题与简介</button>
-        <button class="lsa-tab-button" data-tab="images" type="button">商用配图</button>
-      </nav>
-      <div class="lsa-assistant-body">
-        <section class="lsa-tab-panel" data-panel="copy">
-          <div class="lsa-section-card">
-            <div class="lsa-section-row"><h2 class="lsa-section-title">双语标题与合规简介</h2><button class="lsa-text-action lsa-read-page" type="button">重新读取页面</button></div>
-            <p class="lsa-section-hint">AI 整句翻译原标题并建立词级对照；点击中文词即可选择对应的外语原词。简介仍按原语言精简。</p>
-            <label class="lsa-field-label"><span>原标题 / 选择结果</span><span class="lsa-counter lsa-title-count">0 / 12</span></label>
-            <input class="lsa-assistant-input lsa-floating-title" type="text" dir="auto" placeholder="输入原标题或从页面读取" />
-            <div class="lsa-title-alignment" hidden>
-              <div class="lsa-alignment-heading"><span>原标题分词</span><small>绿色表示已选原词</small></div>
-              <div class="lsa-alignment-token-list lsa-source-token-list"></div>
-              <div class="lsa-alignment-heading"><span>中文整句</span><small class="lsa-title-translation"></small></div>
-              <div class="lsa-alignment-heading"><span>点击中文词选择</span><small>按整句语义对齐，不是逐词猜译</small></div>
-              <div class="lsa-alignment-token-list lsa-zh-token-list"></div>
-              <p class="lsa-alignment-selection">点击中文词，系统会按整句对齐关系选择外语原词</p>
-            </div>
-            <label class="lsa-field-label"><span>简介</span><span class="lsa-counter lsa-summary-count">0 / 50</span></label>
-            <textarea class="lsa-assistant-textarea lsa-floating-summary" dir="auto" placeholder="输入原简介，允许先超过 50 字"></textarea>
-            <div class="lsa-button-row">
-              <button class="lsa-primary-button lsa-rewrite-button" type="button">翻译标题并精简简介</button>
-              <button class="lsa-secondary-button lsa-apply-draft" type="button">填写后台</button>
-              <button class="lsa-secondary-button lsa-bind-fields" type="button">绑定字段</button>
-            </div>
-            <p class="lsa-status-text lsa-copy-status">标题限制 12 字，简介限制 50 字</p>
-          </div>
-        </section>
-        <section class="lsa-tab-panel" data-panel="images" hidden>
-          <div class="lsa-section-card">
-            <div class="lsa-section-row"><h2 class="lsa-section-title">搜索可商用素材</h2><button class="lsa-text-action lsa-generate-english" type="button">生成英文关键词</button></div>
-            <p class="lsa-section-hint">从改写前原稿总结英文视觉关键词，并只搜索适合锁屏的竖向图片。</p>
-            <div class="lsa-keyword-chips"></div>
-            <div class="lsa-search-row">
-              <select class="lsa-source-select" aria-label="素材来源"><option value="openverse">Openverse</option><option value="pexels">Pexels</option><option value="pixabay">Pixabay</option></select>
-              <input class="lsa-assistant-input lsa-stock-query" type="search" placeholder="English image keywords" />
-              <button class="lsa-primary-button lsa-search-button" type="button">搜索</button>
-            </div>
-            <p class="lsa-license-note"><a href="https://openverse.org/" target="_blank" rel="noopener noreferrer">Openverse</a> 无需密钥；<a href="https://www.pexels.com/api/" target="_blank" rel="noopener noreferrer">Pexels</a> 和 <a href="https://pixabay.com/api/docs/" target="_blank" rel="noopener noreferrer">Pixabay</a> 的免费 API Key 可在设置中填写。所有来源仅显示竖图。</p>
-            <p class="lsa-status-text lsa-search-status"></p>
-          </div>
-          <div class="lsa-stock-results"><div class="lsa-empty-result">生成英文关键词后搜索，图片会在这里显示</div></div>
-          <div class="lsa-pagination">
-            <button class="lsa-secondary-button lsa-prev-page" type="button" disabled>上一页</button>
-            <span class="lsa-page-number">第 1 页</span>
-            <button class="lsa-secondary-button lsa-next-page" type="button" disabled>下一页</button>
-          </div>
-        </section>
-      </div>
-      <footer class="lsa-assistant-footer"><span>悬浮于网页最上层 · 草稿自动保存</span><button class="lsa-text-action lsa-open-settings" type="button">设置</button></footer>
-    `;
-    return root;
+  function bindAssistantEvents() {
+    q(".lsa-assistant-header")?.addEventListener("pointerdown", startDrag);
+    q(".lsa-minimize")?.addEventListener("click", () => setMinimized(true));
+    q(".lsa-close")?.addEventListener("click", () => {
+      if (state.root?.classList.contains("is-minimized")) setMinimized(false);
+      else unmount({ disable: true });
+    });
+    qa(".lsa-tab-button").forEach((button) => button.addEventListener("click", () => switchTab(button.dataset.tab)));
+    q(".lsa-open-settings")?.addEventListener("click", () => chrome.runtime.sendMessage({ type: "OPEN_OPTIONS", action: "OPEN_OPTIONS" }));
+    q(".lsa-scan-batch")?.addEventListener("click", scanListItems);
+    q(".lsa-start-batch")?.addEventListener("click", runBatch);
+    q(".lsa-pause-batch")?.addEventListener("click", pauseBatch);
+    q(".lsa-retry-failed")?.addEventListener("click", () => retryFailed());
+    q(".lsa-save-batch-json")?.addEventListener("click", () => saveTextSnapshot("batch").catch(() => {}));
+    q(".lsa-download-all")?.addEventListener("click", downloadAllImages);
+    q(".lsa-record-select")?.addEventListener("change", (event) => {
+      state.selectedRecordIndex = Number(event.target.value);
+      renderSelectedRecord();
+    });
+    q(".lsa-refresh-record")?.addEventListener("click", () => {
+      state.selectedRecordIndex = -1;
+      renderEditRecordSelector();
+      setPanelStatus(".lsa-edit-status", selectedRecord() ? "已按当前 URL 的 id 重新匹配。" : "仍未匹配，可手动选择。", !selectedRecord());
+    });
+    q(".lsa-apply-record")?.addEventListener("click", applySelectedRecord);
+    q(".lsa-read-page")?.addEventListener("click", readPage);
+    q(".lsa-read-for-images")?.addEventListener("click", async () => {
+      await readPage();
+      const title = parseOriginal(q(".lsa-original-copy")?.value || "").title || state.pageContext.title || "";
+      if (q(".lsa-stock-query")) q(".lsa-stock-query").value = title;
+    });
+    q(".lsa-apply-draft")?.addEventListener("click", applyManualDraft);
+    q(".lsa-bind-fields")?.addEventListener("click", () => pageTool("START_BINDING")
+      .catch((error) => setPanelStatus(".lsa-manual-status", error.message, true)));
+    q(".lsa-draft-copy")?.addEventListener("input", updateManualCounts);
+    q(".lsa-search-images")?.addEventListener("click", searchManualImages);
+    q(".lsa-stock-query")?.addEventListener("keydown", (event) => { if (event.key === "Enter") searchManualImages(); });
+    q(".lsa-diagnostics")?.addEventListener("toggle", updateDiagnostics);
   }
 
-  async function mountAssistant({ restore = false } = {}) {
-    if (state.root) {
-      if (state.root.classList.contains("is-minimized")) setMinimized(false);
+  async function mount(route, { force = false } = {}) {
+    if (route.kind === "none" || location.hostname !== TARGET_HOST) return;
+    if (state.root && state.route.key === route.key) return;
+    unmount();
+    const [{ settings = {} }, local] = await Promise.all([
+      chrome.storage.sync.get("settings"), chrome.storage.local.get(["batchState", "assistantState"]),
+    ]);
+    if (!force && local.assistantState?.enabled === false) return;
+    state.settings = { ...DEFAULT_SETTINGS, ...settings };
+    state.batch = local.batchState || state.batch;
+    if (state.batch?.status === "running" || state.batch?.status === "pausing") {
+      state.batch.status = "paused";
+      getBatchItems().forEach((item) => {
+        if (["fetching", "rewriting", "searching"].includes(item.status)) item.status = "pending";
+      });
+      persistBatch({ render: false });
+    }
+    state.route = route;
+    state.selectedRecordIndex = -1;
+    state.root = buildAssistant(route);
+    document.documentElement.append(state.root);
+    applySize(local.assistantState?.size);
+    applyPosition(local.assistantState?.position);
+    if (local.assistantState?.minimized) {
+      state.root.classList.add("is-minimized");
+      const close = q(".lsa-close");
+      if (close) { close.textContent = "□"; close.title = "恢复"; }
+    }
+    bindAssistantEvents();
+    if (typeof ResizeObserver === "function") {
+      state.resizeObserver = new ResizeObserver(() => {
+        if (!state.root || state.root.classList.contains("is-minimized")) return;
+        clearTimeout(state.resizeTimer);
+        state.resizeTimer = setTimeout(() => {
+          const rect = state.root?.getBoundingClientRect();
+          if (!rect) return;
+          saveAssistantState({ size: { width: Math.round(rect.width), height: Math.round(rect.height) },
+            position: clampPosition(rect.left, rect.top) });
+        }, 200);
+      });
+      state.resizeObserver.observe(state.root);
+    }
+    renderBatch();
+    updateDiagnostics();
+    if (route.kind === "edit") readPage();
+    saveAssistantState({ enabled: true });
+  }
+
+  async function handleRouteChange({ force = false } = {}) {
+    const route = routeFromLocation();
+    if (route.kind === "none") {
+      state.route = route;
+      unmount();
       return;
     }
-    const [{ settings: savedSettings = {} }, { draft = {}, assistantState = {} }] = await Promise.all([
-      chrome.storage.sync.get("settings"),
-      chrome.storage.local.get(["draft", "assistantState"]),
-    ]);
-    state.settings = { ...DEFAULT_SETTINGS, ...savedSettings, siteRules: savedSettings.siteRules || {} };
-    state.root = buildAssistant();
-    document.documentElement.append(state.root);
-    if (assistantState.position) applyPosition(assistantState.position);
-    if (assistantState.minimized) {
-      state.root.classList.add("is-minimized");
-      query(".lsa-restore").textContent = "□";
-      query(".lsa-restore").title = "恢复";
-    }
-
-    const samePageDraft = draft.pageUrl === location.href;
-    query(".lsa-floating-title").value = samePageDraft ? draft.title || "" : "";
-    query(".lsa-floating-summary").value = samePageDraft ? draft.summary || "" : "";
-    query(".lsa-stock-query").value = samePageDraft ? draft.query || "" : "";
-    state.originalCopy = {
-      title: samePageDraft ? draft.originalTitle || draft.title || "" : "",
-      summary: samePageDraft ? draft.originalSummary || draft.summary || "" : "",
-    };
-    state.hasRewritten = samePageDraft && Boolean(draft.hasRewritten);
-    if (samePageDraft && draft.titleAlignment && state.originalCopy.title) {
-      try {
-        const restoredAlignment = normalizeTitleAlignment({
-          titleTranslationZh: draft.titleAlignment.translationZh,
-          sourceTokens: draft.titleAlignment.sourceTokens,
-          zhTokens: draft.titleAlignment.zhTokens,
-        }, state.originalCopy.title);
-        restoredAlignment.selectedZhIndices = new Set(
-          (draft.titleAlignment.selectedZhIndices || [])
-            .map(Number)
-            .filter((index) => Number.isInteger(index) && index >= 0 && index < restoredAlignment.zhTokens.length),
-        );
-        state.titleAlignment = restoredAlignment;
-        query(".lsa-floating-title").readOnly = true;
-        renderTitleAlignment();
-      } catch {
-        clearTitleAlignment();
-      }
-    }
-    updateCounts();
-
-    query(".lsa-assistant-header").addEventListener("pointerdown", startDrag);
-    query(".lsa-minimize").addEventListener("click", () => setMinimized(true));
-    query(".lsa-restore").addEventListener("click", () => {
-      if (state.root.classList.contains("is-minimized")) setMinimized(false);
-      else closeAssistant();
-    });
-    state.root.querySelectorAll(".lsa-tab-button").forEach((button) =>
-      button.addEventListener("click", () => switchTab(button.dataset.tab)));
-    query(".lsa-read-page").addEventListener("click", () => readPage(true));
-    query(".lsa-rewrite-button").addEventListener("click", rewriteCopy);
-    query(".lsa-apply-draft").addEventListener("click", applyDraft);
-    query(".lsa-bind-fields").addEventListener("click", () => globalThis.__lsaPageTools.startBindingMode());
-    query(".lsa-generate-english").addEventListener("click", generateEnglishQuery);
-    query(".lsa-search-button").addEventListener("click", () => searchStock(1));
-    query(".lsa-stock-query").addEventListener("keydown", (event) => {
-      if (event.key === "Enter") searchStock(1);
-    });
-    query(".lsa-prev-page").addEventListener("click", () => searchStock(Math.max(1, state.searchPage - 1)));
-    query(".lsa-next-page").addEventListener("click", () => searchStock(state.searchPage + 1));
-    query(".lsa-open-settings").addEventListener("click", () => chrome.runtime.sendMessage({ type: "OPEN_OPTIONS" }));
-    for (const input of [query(".lsa-floating-title"), query(".lsa-floating-summary")]) {
-      input.addEventListener("input", () => {
-        if (!state.hasRewritten) {
-          state.originalCopy = {
-            title: query(".lsa-floating-title").value,
-            summary: query(".lsa-floating-summary").value,
-          };
-        }
-        updateCounts();
-        scheduleDraftSave();
-      });
-      input.addEventListener("change", () => refreshKeywords(false));
-    }
-    query(".lsa-stock-query").addEventListener("input", scheduleDraftSave);
-    window.addEventListener("resize", () => {
-      const rect = state.root?.getBoundingClientRect();
-      if (rect) applyPosition({ left: rect.left, top: rect.top });
-    });
-
-    refreshKeywords(false);
-    if (samePageDraft && draft.query) applyEnglishQuery(draft.query);
-    await readPage(false);
-    if (!restore) await saveAssistantState({ enabled: true });
+    if (state.root && state.route.key === route.key) return;
+    await mount(route, { force });
   }
 
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
-    if (message.type !== "TOGGLE_FLOATING_ASSISTANT") return;
-    if (state.root) closeAssistant();
-    else mountAssistant().catch(() => {});
+    const type = message?.type || message?.action;
+    if (type !== "TOGGLE_FLOATING_ASSISTANT") return undefined;
+    if (state.root) unmount({ disable: true });
+    else handleRouteChange({ force: true }).catch(() => {});
     sendResponse({ ok: true });
+    return undefined;
   });
 
   chrome.storage.onChanged.addListener((changes, area) => {
-    if (area !== "sync" || !changes.settings?.newValue) return;
-    state.settings = { ...state.settings, ...changes.settings.newValue };
-    updateCounts();
+    if (area === "sync" && changes.settings?.newValue) {
+      state.settings = { ...state.settings, ...changes.settings.newValue };
+      updateManualCounts();
+      renderBatch();
+    }
+    if (area === "local" && changes.batchState?.newValue) {
+      const incoming = changes.batchState.newValue;
+      if (!state.batch || Number(incoming.updatedAt || 0) > Number(state.batch.updatedAt || 0)) {
+        state.batch = incoming;
+        renderBatch();
+      }
+    }
   });
 
-  chrome.storage.local.get("assistantState").then(({ assistantState = {} }) => {
-    if (assistantState.enabled !== false) mountAssistant({ restore: true }).catch(() => {});
+  window.addEventListener("hashchange", () => handleRouteChange().catch(() => {}));
+  window.addEventListener("popstate", () => handleRouteChange().catch(() => {}));
+  window.addEventListener("resize", () => {
+    if (!state.root || state.root.classList.contains("is-minimized")) return;
+    const rect = state.root.getBoundingClientRect();
+    applySize({ width: rect.width, height: rect.height });
+    applyPosition({ left: rect.left, top: rect.top });
   });
+  setInterval(() => {
+    if (state.lastLocation === location.href) return;
+    state.lastLocation = location.href;
+    handleRouteChange().catch(() => {});
+  }, 800);
+
+  handleRouteChange().catch(() => {});
 })();

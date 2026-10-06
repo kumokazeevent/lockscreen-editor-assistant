@@ -1,20 +1,59 @@
 const DEFAULT_SETTINGS = {
   titleLimit: 12,
   summaryLimit: 50,
-  defaultEngine: "baidu",
+  batchLimit: 30,
+  batchConcurrency: 2,
+  aiTimeoutMs: 30000,
+  aiEndpoint: "https://opencode.ai/zen/go/v1/chat/completions",
+  aiModel: "glm-5.2",
+  preferredRatio: "auto",
+  originalFolder: "锁屏批次/原始内容",
+  imageFolder: "锁屏批次/成品图片",
+  stockProvider: "auto",
   siteRules: {},
 };
 
-const titleLimit = document.querySelector("#titleLimit");
-const summaryLimit = document.querySelector("#summaryLimit");
-const defaultEngine = document.querySelector("#defaultEngine");
-const aiEndpoint = document.querySelector("#aiEndpoint");
-const aiModel = document.querySelector("#aiModel");
+const fields = {
+  titleLimit: document.querySelector("#titleLimit"),
+  summaryLimit: document.querySelector("#summaryLimit"),
+  batchLimit: document.querySelector("#batchLimit"),
+  batchConcurrency: document.querySelector("#batchConcurrency"),
+  aiTimeoutSeconds: document.querySelector("#aiTimeoutSeconds"),
+  aiEndpoint: document.querySelector("#aiEndpoint"),
+  aiModel: document.querySelector("#aiModel"),
+  preferredRatio: document.querySelector("#preferredRatio"),
+  originalFolder: document.querySelector("#originalFolder"),
+  imageFolder: document.querySelector("#imageFolder"),
+};
+
 const aiApiKey = document.querySelector("#aiApiKey");
 const pexelsApiKey = document.querySelector("#pexelsApiKey");
 const pixabayApiKey = document.querySelector("#pixabayApiKey");
 const ruleList = document.querySelector("#ruleList");
 const saveMessage = document.querySelector("#saveMessage");
+
+function clamp(value, min, max, fallback) {
+  const number = Number(value);
+  return Number.isFinite(number) ? Math.max(min, Math.min(max, Math.round(number))) : fallback;
+}
+
+function cleanDownloadFolder(value, fallback) {
+  const raw = String(value || "").trim().replace(/\\/g, "/");
+  if (raw.startsWith("/") || /^[a-z]:/i.test(raw) || raw.split("/").some((part) => part === "..")) {
+    throw new Error("输出目录必须是浏览器下载文件夹内的相对子目录，不能填写盘符、绝对路径或 ..");
+  }
+  const cleaned = raw
+    .replace(/^\/+|\/+$/g, "")
+    .replace(/[<>:"|?*\u0000-\u001f]/g, "-")
+    .split("/")
+    .filter((part) => part && part !== "." && part !== "..")
+    .join("/");
+  return cleaned || fallback;
+}
+
+function setSecretPlaceholder(input, present, label) {
+  input.placeholder = present ? "已保存；留空则保持不变" : `输入 ${label}`;
+}
 
 async function loadSettings() {
   const [{ settings: saved = {} }, { localSecrets = {} }] = await Promise.all([
@@ -22,25 +61,31 @@ async function loadSettings() {
     chrome.storage.local.get("localSecrets"),
   ]);
   const settings = { ...DEFAULT_SETTINGS, ...saved, siteRules: saved.siteRules || {} };
-  titleLimit.value = settings.titleLimit;
-  summaryLimit.value = settings.summaryLimit;
-  defaultEngine.value = settings.defaultEngine;
-  aiEndpoint.value = settings.aiEndpoint || "";
-  aiModel.value = settings.aiModel || "";
-  aiApiKey.placeholder = localSecrets.aiApiKey ? "已保存；留空则保持不变" : "输入 API Key";
-  pexelsApiKey.placeholder = localSecrets.pexelsApiKey ? "已保存；留空则保持不变" : "输入 Pexels API Key";
-  pixabayApiKey.placeholder = localSecrets.pixabayApiKey ? "已保存；留空则保持不变" : "输入 Pixabay API Key";
+  fields.titleLimit.value = settings.titleLimit;
+  fields.summaryLimit.value = settings.summaryLimit;
+  fields.batchLimit.value = settings.batchLimit;
+  fields.batchConcurrency.value = settings.batchConcurrency;
+  fields.aiTimeoutSeconds.value = Math.round(settings.aiTimeoutMs / 1000);
+  fields.aiEndpoint.value = settings.aiEndpoint || "";
+  fields.aiModel.value = settings.aiModel || "";
+  fields.preferredRatio.value = ["auto", "9:16", "9:20"].includes(settings.preferredRatio)
+    ? settings.preferredRatio
+    : "auto";
+  fields.originalFolder.value = settings.originalFolder;
+  fields.imageFolder.value = settings.imageFolder;
+  setSecretPlaceholder(aiApiKey, Boolean(localSecrets.aiApiKey), "API Key");
+  setSecretPlaceholder(pexelsApiKey, Boolean(localSecrets.pexelsApiKey), "Pexels API Key");
+  setSecretPlaceholder(pixabayApiKey, Boolean(localSecrets.pixabayApiKey), "Pixabay API Key");
   renderRules(settings.siteRules);
-  return settings;
 }
 
 function renderRules(rules) {
   ruleList.replaceChildren();
-  const entries = Object.entries(rules);
+  const entries = Object.entries(rules || {});
   if (!entries.length) {
     const empty = document.createElement("p");
     empty.className = "empty";
-    empty.textContent = "还没有绑定网站";
+    empty.textContent = "当前使用自动识别；还没有保存手动绑定";
     ruleList.append(empty);
     return;
   }
@@ -55,10 +100,9 @@ function renderRules(rules) {
     const detail = document.createElement("div");
     detail.className = "rule-detail";
     detail.textContent = [
-      `标题：${rule.titleSelector || "未绑定"}`,
-      `简介：${rule.summarySelector || "未绑定"}`,
-      `图片上传：${rule.imageUploadSelector || "未绑定"}`,
-      ...(rule.imageSelector ? [`旧版图片 URL：${rule.imageSelector}`] : []),
+      `标题：${rule.titleSelector || "自动识别"}`,
+      `简介：${rule.summarySelector || "自动识别"}`,
+      `上传：${rule.imageUploadSelector || "自动识别"}`,
     ].join("\n");
     copy.append(hostElement, detail);
 
@@ -81,54 +125,65 @@ async function deleteRule(host) {
 }
 
 async function saveAllSettings() {
-  const { settings: saved = {} } = await chrome.storage.sync.get("settings");
-  const settings = {
-    ...DEFAULT_SETTINGS,
-    ...saved,
-    titleLimit: Math.max(1, Math.min(100, Number(titleLimit.value) || 12)),
-    summaryLimit: Math.max(1, Math.min(500, Number(summaryLimit.value) || 50)),
-    defaultEngine: defaultEngine.value,
-    aiEndpoint: aiEndpoint.value.trim(),
-    aiModel: aiModel.value.trim(),
-    siteRules: saved.siteRules || {},
-  };
-  const { localSecrets: savedSecrets = {} } = await chrome.storage.local.get("localSecrets");
-  const localSecrets = {
-    ...savedSecrets,
-    ...(aiApiKey.value.trim() ? { aiApiKey: aiApiKey.value.trim() } : {}),
-    ...(pexelsApiKey.value.trim() ? { pexelsApiKey: pexelsApiKey.value.trim() } : {}),
-    ...(pixabayApiKey.value.trim() ? { pixabayApiKey: pixabayApiKey.value.trim() } : {}),
-  };
-  await Promise.all([
-    chrome.storage.sync.set({ settings }),
-    chrome.storage.local.set({ localSecrets }),
-  ]);
-  titleLimit.value = settings.titleLimit;
-  summaryLimit.value = settings.summaryLimit;
-  aiApiKey.value = "";
-  pexelsApiKey.value = "";
-  pixabayApiKey.value = "";
-  aiApiKey.placeholder = localSecrets.aiApiKey ? "已保存；留空则保持不变" : "输入 API Key";
-  pexelsApiKey.placeholder = localSecrets.pexelsApiKey ? "已保存；留空则保持不变" : "输入 Pexels API Key";
-  pixabayApiKey.placeholder = localSecrets.pixabayApiKey ? "已保存；留空则保持不变" : "输入 Pixabay API Key";
-  saveMessage.textContent = "已保存";
-  setTimeout(() => (saveMessage.textContent = ""), 1800);
+  saveMessage.classList.remove("error");
+  try {
+    const endpoint = fields.aiEndpoint.value.trim();
+    if (endpoint && !/^https?:\/\//i.test(endpoint)) {
+      throw new Error("接口地址必须以 http:// 或 https:// 开头");
+    }
+    const { settings: saved = {} } = await chrome.storage.sync.get("settings");
+    const settings = {
+      ...DEFAULT_SETTINGS,
+      ...saved,
+      titleLimit: clamp(fields.titleLimit.value, 1, 100, 12),
+      summaryLimit: clamp(fields.summaryLimit.value, 1, 500, 50),
+      batchLimit: clamp(fields.batchLimit.value, 1, 30, 30),
+      batchConcurrency: clamp(fields.batchConcurrency.value, 1, 2, 2),
+      aiTimeoutMs: clamp(fields.aiTimeoutSeconds.value, 10, 120, 30) * 1000,
+      aiEndpoint: endpoint,
+      aiModel: fields.aiModel.value.trim(),
+      preferredRatio: fields.preferredRatio.value,
+      originalFolder: cleanDownloadFolder(fields.originalFolder.value, DEFAULT_SETTINGS.originalFolder),
+      imageFolder: cleanDownloadFolder(fields.imageFolder.value, DEFAULT_SETTINGS.imageFolder),
+      siteRules: saved.siteRules || {},
+    };
+    const { localSecrets: savedSecrets = {} } = await chrome.storage.local.get("localSecrets");
+    const localSecrets = {
+      ...savedSecrets,
+      ...(aiApiKey.value.trim() ? { aiApiKey: aiApiKey.value.trim() } : {}),
+      ...(pexelsApiKey.value.trim() ? { pexelsApiKey: pexelsApiKey.value.trim() } : {}),
+      ...(pixabayApiKey.value.trim() ? { pixabayApiKey: pixabayApiKey.value.trim() } : {}),
+    };
+    await Promise.all([
+      chrome.storage.sync.set({ settings }),
+      chrome.storage.local.set({ localSecrets }),
+    ]);
+    aiApiKey.value = "";
+    pexelsApiKey.value = "";
+    pixabayApiKey.value = "";
+    setSecretPlaceholder(aiApiKey, Boolean(localSecrets.aiApiKey), "API Key");
+    setSecretPlaceholder(pexelsApiKey, Boolean(localSecrets.pexelsApiKey), "Pexels API Key");
+    setSecretPlaceholder(pixabayApiKey, Boolean(localSecrets.pixabayApiKey), "Pixabay API Key");
+    fields.originalFolder.value = settings.originalFolder;
+    fields.imageFolder.value = settings.imageFolder;
+    saveMessage.textContent = "已保存；重新加载扩展即可使用新配置";
+  } catch (error) {
+    saveMessage.classList.add("error");
+    saveMessage.textContent = error?.message || "保存失败";
+  }
 }
 
 document.querySelector("#saveSettings").addEventListener("click", saveAllSettings);
-document.querySelector("#saveConnections").addEventListener("click", saveAllSettings);
-
 document.querySelector("#clearSecrets").addEventListener("click", async () => {
   await chrome.storage.local.set({ localSecrets: {} });
   aiApiKey.value = "";
   pexelsApiKey.value = "";
   pixabayApiKey.value = "";
-  aiApiKey.placeholder = "输入 API Key";
-  pexelsApiKey.placeholder = "输入 Pexels API Key";
-  pixabayApiKey.placeholder = "输入 Pixabay API Key";
+  setSecretPlaceholder(aiApiKey, false, "API Key");
+  setSecretPlaceholder(pexelsApiKey, false, "Pexels API Key");
+  setSecretPlaceholder(pixabayApiKey, false, "Pixabay API Key");
+  saveMessage.classList.remove("error");
   saveMessage.textContent = "本机密钥已清除";
-  setTimeout(() => (saveMessage.textContent = ""), 1800);
 });
-
 document.querySelector("#refreshRules").addEventListener("click", loadSettings);
 loadSettings();

@@ -7,22 +7,47 @@ const SEARCH_ENGINES = {
     `https://www.google.com/search?tbm=isch&q=${encodeURIComponent(query)}`,
 };
 
+const DEFAULT_BATCH_SETTINGS = {
+  titleLimit: 12,
+  summaryLimit: 50,
+  batchLimit: 30,
+  batchConcurrency: 2,
+  aiTimeoutMs: 30000,
+  preferredRatio: "auto",
+  originalFolder: "锁屏批次/原始内容",
+  imageFolder: "锁屏批次/成品图片",
+};
+
+const TARGET_RATIOS = {
+  "9:16": 9 / 16,
+  "9:20": 9 / 20,
+};
+
+const MAX_ARTICLE_HTML_CHARS = 500000;
+const MAX_ARTICLE_TEXT_CHARS = 160000;
+const MAX_AI_ARTICLE_CHARS = 14000;
+const MAX_IMAGE_BYTES = 24 * 1024 * 1024;
+const MAX_TEXT_DOWNLOAD_BYTES = 8 * 1024 * 1024;
+
 chrome.runtime.onInstalled.addListener(() => {
   chrome.contextMenus.removeAll(() => {
     chrome.contextMenus.create({
       id: "lockscreen-search-selection",
       title: "用锁屏助手搜索图片：“%s”",
       contexts: ["selection"],
+      documentUrlPatterns: ["https://lockscreen-admin.mofeeds.com/*"],
     });
     chrome.contextMenus.create({
       id: "lockscreen-search-image",
       title: "搜索这张图片的相似图片",
       contexts: ["image"],
+      documentUrlPatterns: ["https://lockscreen-admin.mofeeds.com/*"],
     });
     chrome.contextMenus.create({
       id: "lockscreen-replace-image",
       title: "在锁屏助手中替换这张图片",
       contexts: ["image"],
+      documentUrlPatterns: ["https://lockscreen-admin.mofeeds.com/*"],
     });
   });
 });
@@ -34,7 +59,7 @@ chrome.action.onClicked.addListener((tab) => {
 
 function openImageSearch(engine, query) {
   const buildUrl = SEARCH_ENGINES[engine] || SEARCH_ENGINES.baidu;
-  chrome.tabs.create({ url: buildUrl(query.trim()) });
+  chrome.tabs.create({ url: buildUrl(String(query || "").trim()) });
 }
 
 function openVisualSearch(imageUrl) {
@@ -62,24 +87,97 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
   }
 });
 
-async function fetchJson(url, options = {}, timeout = 30000) {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeout);
+function cleanErrorMessage(error, fallback = "请求失败") {
+  const message = String(error?.message || error || "").trim();
+  if (!message || /signal is aborted without reason/i.test(message)) return fallback;
+  return message;
+}
+
+class RequestError extends Error {
+  constructor(message, details = {}) {
+    super(message);
+    this.name = "RequestError";
+    Object.assign(this, details);
+  }
+}
+
+function clampNumber(value, fallback, min, max) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return fallback;
+  return Math.max(min, Math.min(max, numeric));
+}
+
+function validateHttpUrl(value, label = "地址") {
+  let url;
   try {
-    const response = await fetch(url, { ...options, signal: controller.signal });
-    const payload = await response.json().catch(() => ({}));
-    if (!response.ok) {
-      throw new Error(payload.detail || payload.error?.message || `请求失败（${response.status}）`);
-    }
-    return payload;
+    url = new URL(String(value || "").trim());
+  } catch {
+    throw new Error(`${label}无效`);
+  }
+  if (!/^https?:$/.test(url.protocol)) throw new Error(`${label}仅支持 http 或 https`);
+  if (url.username || url.password) throw new Error(`${label}不能包含账号或密码`);
+  return url;
+}
+
+async function fetchResponse(url, options = {}, timeout = 30000, timeoutLabel = "接口") {
+  const requestUrl = validateHttpUrl(url, timeoutLabel === "文章" ? "文章地址" : "请求地址");
+  const controller = new AbortController();
+  const timeoutMs = clampNumber(timeout, 30000, 3000, 120000);
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(requestUrl.href, {
+      redirect: "follow",
+      credentials: "omit",
+      ...options,
+      signal: controller.signal,
+    });
   } catch (error) {
-    if (controller.signal.aborted || error?.name === "AbortError") {
-      throw new Error(`接口请求超过 ${Math.ceil(timeout / 1000)} 秒，请稍后重试；这通常是上游服务繁忙或网络较慢`);
+    if (controller.signal.aborted || error?.name === "AbortError" || /aborted/i.test(error?.message || "")) {
+      throw new RequestError(
+        `${timeoutLabel}请求超过 ${Math.ceil(timeoutMs / 1000)} 秒，已停止；请检查网络或稍后重试`,
+        { code: "TIMEOUT", retryable: true },
+      );
     }
-    throw error;
+    throw new RequestError(`${timeoutLabel}网络请求失败：${cleanErrorMessage(error, "无法连接上游服务")}`, {
+      code: "NETWORK_ERROR",
+      retryable: true,
+    });
   } finally {
     clearTimeout(timer);
   }
+}
+
+async function fetchJson(url, options = {}, timeout = 30000, timeoutLabel = "接口") {
+  const response = await fetchResponse(url, options, timeout, timeoutLabel);
+  const bodyText = await response.text().catch(() => "");
+  let payload = {};
+  if (bodyText) {
+    try {
+      payload = JSON.parse(bodyText);
+    } catch {
+      if (response.ok) {
+        throw new RequestError(`${timeoutLabel}返回的不是有效 JSON`, {
+          code: "INVALID_JSON",
+          status: response.status,
+          retryable: true,
+        });
+      }
+    }
+  }
+  if (!response.ok) {
+    const providerMessage =
+      payload?.detail ||
+      payload?.error?.message ||
+      payload?.message ||
+      bodyText.slice(0, 240) ||
+      `HTTP ${response.status}`;
+    throw new RequestError(`${timeoutLabel}请求失败（${response.status}）：${providerMessage}`, {
+      code: "HTTP_ERROR",
+      status: response.status,
+      retryable: response.status === 408 || response.status === 409 || response.status === 429 || response.status >= 500,
+    });
+  }
+  return payload;
 }
 
 function normalizeOpenverseImage(item) {
@@ -88,6 +186,9 @@ function normalizeOpenverseImage(item) {
     source: "openverse",
     previewUrl: item.thumbnail || item.url,
     imageUrl: item.url,
+    originalUrl: item.url,
+    uploadUrl: item.url,
+    downloadUrl: item.url,
     pageUrl: item.foreign_landing_url || item.detail_url,
     title: item.title || "开放许可图片",
     creator: item.creator || "未知作者",
@@ -95,18 +196,22 @@ function normalizeOpenverseImage(item) {
     license: [item.license?.toUpperCase(), item.license_version].filter(Boolean).join(" "),
     licenseUrl: item.license_url || "https://creativecommons.org/share-your-work/cclicenses/",
     attribution: item.attribution || "",
-    width: item.width || 0,
-    height: item.height || 0,
+    width: Number(item.width) || 0,
+    height: Number(item.height) || 0,
     fileName: `openverse-${item.id}.${item.filetype || "jpg"}`,
   };
 }
 
 function normalizePexelsImage(item) {
+  const originalUrl = item.src?.original || item.src?.large2x || item.src?.large;
   return {
     id: `pexels-${item.id}`,
     source: "pexels",
     previewUrl: item.src?.medium || item.src?.small,
-    imageUrl: item.src?.large2x || item.src?.large || item.src?.original,
+    imageUrl: originalUrl,
+    originalUrl,
+    uploadUrl: originalUrl,
+    downloadUrl: originalUrl,
     pageUrl: item.url,
     title: item.alt || "Pexels 图片",
     creator: item.photographer || "Pexels 摄影师",
@@ -114,18 +219,22 @@ function normalizePexelsImage(item) {
     license: "Pexels License",
     licenseUrl: "https://www.pexels.com/license/",
     attribution: `Photo by ${item.photographer || "photographer"} on Pexels`,
-    width: item.width || 0,
-    height: item.height || 0,
+    width: Number(item.width) || 0,
+    height: Number(item.height) || 0,
     fileName: `pexels-${item.id}.jpg`,
   };
 }
 
 function normalizePixabayImage(item) {
+  const originalUrl = item.fullHDURL || item.imageURL || item.largeImageURL || item.webformatURL;
   return {
     id: `pixabay-${item.id}`,
     source: "pixabay",
     previewUrl: item.webformatURL || item.previewURL,
-    imageUrl: item.largeImageURL || item.webformatURL,
+    imageUrl: originalUrl,
+    originalUrl,
+    uploadUrl: originalUrl,
+    downloadUrl: originalUrl,
     pageUrl: item.pageURL,
     title: item.tags || "Pixabay 图片",
     creator: item.user || "Pixabay 创作者",
@@ -135,14 +244,137 @@ function normalizePixabayImage(item) {
     license: "Pixabay Content License",
     licenseUrl: "https://pixabay.com/service/license-summary/",
     attribution: `Image by ${item.user || "creator"} via Pixabay`,
-    width: item.imageWidth || 0,
-    height: item.imageHeight || 0,
+    width: Number(item.imageWidth) || 0,
+    height: Number(item.imageHeight) || 0,
     fileName: `pixabay-${item.id}.jpg`,
   };
 }
 
 function isPortraitImage(item) {
-  return Number(item.height) > Number(item.width);
+  return Number(item.height) > Number(item.width) && Number(item.width) > 0;
+}
+
+function pexelsCropUrl(url, width, height) {
+  if (!url) return "";
+  try {
+    const cropped = new URL(url);
+    ["w", "h", "dpr", "crop"].forEach((key) => cropped.searchParams.delete(key));
+    cropped.searchParams.set("auto", "compress");
+    cropped.searchParams.set("cs", "tinysrgb");
+    cropped.searchParams.set("fit", "crop");
+    cropped.searchParams.set("w", String(width));
+    cropped.searchParams.set("h", String(height));
+    return cropped.href;
+  } catch {
+    return url;
+  }
+}
+
+function normalizePreferredRatio(value) {
+  return Object.prototype.hasOwnProperty.call(TARGET_RATIOS, value) ? value : "auto";
+}
+
+function getNearestAspect(width, height, preferredRatio = "auto") {
+  const ratio = Number(width) / Number(height);
+  const preferred = normalizePreferredRatio(preferredRatio);
+  const labels = preferred === "auto" ? Object.keys(TARGET_RATIOS) : [preferred];
+  let bestLabel = labels[0];
+  let bestDistance = Infinity;
+  for (const label of labels) {
+    const target = TARGET_RATIOS[label];
+    const distance = Math.abs(ratio - target) / target;
+    if (distance < bestDistance) {
+      bestDistance = distance;
+      bestLabel = label;
+    }
+  }
+  return { ratio, aspectLabel: bestLabel, ratioDistance: bestDistance };
+}
+
+const EXPOSED_SKIN_TERMS = [
+  "nude", "nudity", "naked", "topless", "shirtless", "lingerie", "underwear", "bikini",
+  "swimsuit", "swimwear", "cleavage", "erotic", "boudoir", "seductive", "sexy",
+];
+const FRONTAL_FACE_TERMS = [
+  "headshot", "selfie", "looking at camera", "facing camera", "front portrait", "close-up face",
+  "close up face", "facial portrait",
+];
+const SAFE_PERSON_POSE_TERMS = [
+  "side profile", "profile view", "back view", "from behind", "silhouette", "shadow", "rear view",
+];
+const PERSON_TERMS = [
+  "person", "people", "woman", "women", "man", "men", "girl", "boy", "child", "adult", "model",
+  "lady", "gentleman", "couple", "family", "worker", "traveler", "traveller",
+];
+
+function inspectImageMetadataSafety(item) {
+  const text = `${item.title || ""} ${item.attribution || ""}`.toLowerCase();
+  const exposure = EXPOSED_SKIN_TERMS.find((term) => text.includes(term));
+  if (exposure) {
+    return { safetyStatus: "rejected", safetyReason: `元数据含高裸露风险词：${exposure}` };
+  }
+  const frontal = FRONTAL_FACE_TERMS.find((term) => text.includes(term));
+  if (frontal) {
+    return { safetyStatus: "rejected", safetyReason: `元数据显示可能为正脸特写：${frontal}` };
+  }
+  const safePose = SAFE_PERSON_POSE_TERMS.find((term) => text.includes(term));
+  if (safePose) {
+    return { safetyStatus: "passed", safetyReason: `元数据显示为可用人物姿态：${safePose}` };
+  }
+  if (PERSON_TERMS.some((term) => new RegExp(`\\b${term}\\b`, "i").test(text))) {
+    return {
+      safetyStatus: "review",
+      safetyReason: "图片包含人物，元数据无法确认是否正脸或裸露，请在上传前看缩略图复核",
+    };
+  }
+  return { safetyStatus: "passed", safetyReason: "元数据未发现正脸或高裸露风险词" };
+}
+
+function enrichAndRankImages(items, preferredRatio = "auto", limit = 12) {
+  return items
+    .filter(isPortraitImage)
+    .map((item) => {
+      const aspect = getNearestAspect(item.width, item.height, preferredRatio);
+      const safety = inspectImageMetadataSafety(item);
+      const cropUrls = item.source === "pexels"
+        ? {
+            "9:16": pexelsCropUrl(item.originalUrl || item.imageUrl, 1080, 1920),
+            "9:20": pexelsCropUrl(item.originalUrl || item.imageUrl, 1080, 2400),
+          }
+        : {};
+      const safetyPenalty = safety.safetyStatus === "passed" ? 0 : safety.safetyStatus === "review" ? 0.18 : 10;
+      return {
+        ...item,
+        ...aspect,
+        ...safety,
+        cropUrls,
+        suggestedCropUrl: cropUrls[aspect.aspectLabel] || "",
+        uploadUrl: item.originalUrl || item.imageUrl,
+        downloadUrl: item.originalUrl || item.imageUrl,
+        rankScore: Number((aspect.ratioDistance + safetyPenalty).toFixed(6)),
+      };
+    })
+    .filter((item) => item.safetyStatus !== "rejected")
+    .sort((left, right) => left.rankScore - right.rankScore || right.height - left.height)
+    .slice(0, limit);
+}
+
+function buildSafeStockQuery(query) {
+  const base = String(query || "")
+    .replace(/[\r\n\t]+/g, " ")
+    .replace(/\s{2,}/g, " ")
+    .trim();
+  if (!base) throw new Error("请输入图片搜索词");
+  const lower = base.toLowerCase();
+  const humanQueryTerms = [
+    ...PERSON_TERMS,
+    "president", "politician", "leader", "doctor", "teacher", "farmer", "athlete", "singer",
+    "actor", "actress", "tourist", "mother", "father", "crowd", "pedestrian", "human",
+  ];
+  if (!humanQueryTerms.some((term) => new RegExp(`\\b${term}\\b`, "i").test(lower))) return base;
+  const additions = ["side profile", "back view", "silhouette", "fully clothed", "wide shot"]
+    .filter((term) => !lower.includes(term));
+  return `${base} ${additions.join(" ")}`.trim();
 }
 
 const PIXABAY_CACHE_TTL = 24 * 60 * 60 * 1000;
@@ -166,71 +398,85 @@ async function cachePixabaySearch(cacheKey, result) {
   await chrome.storage.local.set({ pixabaySearchCache: nextCache });
 }
 
+async function searchPexels(query, page = 1, options = {}) {
+  const { localSecrets = {} } = await chrome.storage.local.get("localSecrets");
+  if (!localSecrets.pexelsApiKey) {
+    throw new RequestError("请先在扩展设置中填写免费的 Pexels API Key", {
+      code: "PEXELS_KEY_MISSING",
+      retryable: false,
+    });
+  }
+  const url = new URL("https://api.pexels.com/v1/search");
+  url.searchParams.set("query", options.safeQuery ? buildSafeStockQuery(query) : String(query).trim());
+  url.searchParams.set("orientation", "portrait");
+  url.searchParams.set("locale", options.safeQuery ? "en-US" : /[\u3400-\u9fff]/.test(query) ? "zh-CN" : "en-US");
+  url.searchParams.set("per_page", String(options.perPage || 12));
+  url.searchParams.set("page", String(page));
+  const data = await fetchJson(url.href, {
+    headers: { Authorization: localSecrets.pexelsApiKey },
+  }, options.timeout || 30000, "Pexels");
+  return {
+    source: "pexels",
+    page: data.page || page,
+    total: data.total_results || 0,
+    hasNext: Boolean(data.next_page),
+    searchQuery: url.searchParams.get("query"),
+    items: (data.photos || []).map(normalizePexelsImage).filter(isPortraitImage),
+  };
+}
+
+async function searchPixabay(query, page = 1, options = {}) {
+  const { localSecrets = {} } = await chrome.storage.local.get("localSecrets");
+  if (!localSecrets.pixabayApiKey) {
+    throw new RequestError("请先在扩展设置中填写免费的 Pixabay API Key", {
+      code: "PIXABAY_KEY_MISSING",
+      retryable: false,
+    });
+  }
+  const safeQuery = options.safeQuery ? buildSafeStockQuery(query) : String(query).trim();
+  const normalizedQuery = Array.from(safeQuery).slice(0, 100).join("");
+  const perPage = options.perPage || 20;
+  const cacheKey = `v2|${normalizedQuery.toLowerCase()}|${page}|${perPage}`;
+  const cachedResult = await getCachedPixabaySearch(cacheKey);
+  if (cachedResult) return cachedResult;
+  const url = new URL("https://pixabay.com/api/");
+  url.searchParams.set("key", localSecrets.pixabayApiKey);
+  url.searchParams.set("q", normalizedQuery);
+  url.searchParams.set("lang", "en");
+  url.searchParams.set("image_type", "photo");
+  url.searchParams.set("orientation", "vertical");
+  url.searchParams.set("safesearch", "true");
+  url.searchParams.set("order", "popular");
+  url.searchParams.set("per_page", String(perPage));
+  url.searchParams.set("page", String(page));
+  const data = await fetchJson(url.href, {}, options.timeout || 30000, "Pixabay");
+  const result = {
+    source: "pixabay",
+    page,
+    total: data.totalHits || data.total || 0,
+    hasNext: page * perPage < (data.totalHits || 0),
+    searchQuery: normalizedQuery,
+    items: (data.hits || []).map(normalizePixabayImage).filter(isPortraitImage),
+  };
+  await cachePixabaySearch(cacheKey, result);
+  return result;
+}
+
 async function searchStockImages(source, query, page = 1) {
-  if (!query?.trim()) throw new Error("请输入图片搜索词");
+  if (!String(query || "").trim()) throw new Error("请输入图片搜索词");
 
   if (source === "pexels") {
-    const { localSecrets = {} } = await chrome.storage.local.get("localSecrets");
-    if (!localSecrets.pexelsApiKey) {
-      throw new Error("请先在扩展设置中填写免费的 Pexels API Key");
-    }
-    const url = new URL("https://api.pexels.com/v1/search");
-    url.searchParams.set("query", query.trim());
-    url.searchParams.set("orientation", "portrait");
-    url.searchParams.set("locale", /[\u3400-\u9fff]/.test(query) ? "zh-CN" : "en-US");
-    url.searchParams.set("per_page", "12");
-    url.searchParams.set("page", String(page));
-    const data = await fetchJson(url.href, {
-      headers: { Authorization: localSecrets.pexelsApiKey },
-    });
-    return {
-      source,
-      page: data.page || page,
-      total: data.total_results || 0,
-      hasNext: Boolean(data.next_page),
-      items: (data.photos || [])
-        .map(normalizePexelsImage)
-        .filter(isPortraitImage),
-    };
+    const result = await searchPexels(query, page, { perPage: 12 });
+    return { ...result, items: enrichAndRankImages(result.items, "auto", 12) };
   }
 
   if (source === "pixabay") {
-    const { localSecrets = {} } = await chrome.storage.local.get("localSecrets");
-    if (!localSecrets.pixabayApiKey) {
-      throw new Error("请先在扩展设置中填写免费的 Pixabay API Key");
-    }
-    const normalizedQuery = Array.from(query.trim()).slice(0, 100).join("");
-    const cacheKey = `v1|${normalizedQuery.toLowerCase()}|${page}`;
-    const cachedResult = await getCachedPixabaySearch(cacheKey);
-    if (cachedResult) return cachedResult;
-    const perPage = 20;
-    const url = new URL("https://pixabay.com/api/");
-    url.searchParams.set("key", localSecrets.pixabayApiKey);
-    url.searchParams.set("q", normalizedQuery);
-    url.searchParams.set("lang", "en");
-    url.searchParams.set("image_type", "photo");
-    url.searchParams.set("orientation", "vertical");
-    url.searchParams.set("safesearch", "true");
-    url.searchParams.set("order", "popular");
-    url.searchParams.set("per_page", String(perPage));
-    url.searchParams.set("page", String(page));
-    const data = await fetchJson(url.href);
-    const result = {
-      source,
-      page,
-      total: data.totalHits || data.total || 0,
-      hasNext: page * perPage < (data.totalHits || 0),
-      items: (data.hits || [])
-        .map(normalizePixabayImage)
-        .filter(isPortraitImage)
-        .slice(0, 12),
-    };
-    await cachePixabaySearch(cacheKey, result);
-    return result;
+    const result = await searchPixabay(query, page, { perPage: 20 });
+    return { ...result, items: enrichAndRankImages(result.items, "auto", 12) };
   }
 
   const url = new URL("https://api.openverse.org/v1/images/");
-  url.searchParams.set("q", query.trim());
+  url.searchParams.set("q", String(query).trim());
   url.searchParams.set("license_type", "commercial");
   url.searchParams.set("aspect_ratio", "tall");
   url.searchParams.set("mature", "false");
@@ -238,83 +484,326 @@ async function searchStockImages(source, query, page = 1) {
   url.searchParams.set("page", String(page));
   const data = await fetchJson(url.href, {
     headers: { "Api-Version": "v1" },
-  });
+  }, 30000, "Openverse");
+  const items = (data.results || []).map(normalizeOpenverseImage).filter(isPortraitImage);
   return {
     source: "openverse",
     page: data.page || page,
     total: data.result_count || 0,
     hasNext: (data.page || page) < (data.page_count || 1),
-    items: (data.results || [])
-      .map(normalizeOpenverseImage)
-      .filter(isPortraitImage),
+    items: enrichAndRankImages(items, "auto", 12),
   };
 }
 
+async function searchBatchImages(query, preferredRatio = "auto", page = 1) {
+  if (!String(query || "").trim()) throw new Error("AI 未生成可用的英文图片关键词");
+  const ratio = normalizePreferredRatio(preferredRatio);
+  let pexelsError = null;
+  try {
+    const pexels = await searchPexels(query, page, { safeQuery: true, perPage: 60, timeout: 30000 });
+    const items = enrichAndRankImages(pexels.items, ratio, 12);
+    if (items.length) return { ...pexels, preferredRatio: ratio, items, fallbackUsed: false };
+    pexelsError = new Error("Pexels 没有返回符合竖屏和安全规则的图片");
+  } catch (error) {
+    pexelsError = error;
+  }
+
+  try {
+    const pixabay = await searchPixabay(query, page, { safeQuery: true, perPage: 60, timeout: 30000 });
+    const items = enrichAndRankImages(pixabay.items, ratio, 12);
+    if (!items.length) throw new Error("Pixabay 也没有返回符合竖屏和安全规则的图片");
+    return {
+      ...pixabay,
+      preferredRatio: ratio,
+      items,
+      fallbackUsed: true,
+      fallbackReason: cleanErrorMessage(pexelsError, "Pexels 无可用结果"),
+    };
+  } catch (pixabayError) {
+    const pexelsMessage = cleanErrorMessage(pexelsError, "Pexels 不可用");
+    const pixabayMessage = cleanErrorMessage(pixabayError, "Pixabay 不可用");
+    throw new Error(`没有可用的竖屏图片。Pexels：${pexelsMessage}；Pixabay：${pixabayMessage}`);
+  }
+}
+
 function extractJson(text) {
-  const cleaned = String(text || "").replace(/^```(?:json)?\s*|\s*```$/g, "").trim();
+  const cleaned = String(text || "")
+    .replace(/^```(?:json)?\s*/i, "")
+    .replace(/\s*```$/i, "")
+    .trim();
   try {
     return JSON.parse(cleaned);
   } catch {
-    const match = cleaned.match(/\{[\s\S]*\}/);
-    if (!match) throw new Error("AI 未返回可识别的改写结果");
-    return JSON.parse(match[0]);
-  }
-}
-
-function arrayBufferToBase64(buffer) {
-  const bytes = new Uint8Array(buffer);
-  let binary = "";
-  const chunkSize = 0x8000;
-  for (let offset = 0; offset < bytes.length; offset += chunkSize) {
-    binary += String.fromCharCode(...bytes.subarray(offset, offset + chunkSize));
-  }
-  return btoa(binary);
-}
-
-function safeFileName(value, contentType) {
-  const fallbackExtension = contentType.includes("png") ? "png" :
-    contentType.includes("webp") ? "webp" :
-    contentType.includes("gif") ? "gif" : "jpg";
-  const cleaned = String(value || "")
-    .split(/[?#]/)[0]
-    .split("/")
-    .pop()
-    .replace(/[^a-zA-Z0-9._-]/g, "-")
-    .replace(/-+/g, "-")
-    .slice(0, 100);
-  if (!cleaned || !/\.[a-zA-Z0-9]{2,5}$/.test(cleaned)) return `lockscreen-image.${fallbackExtension}`;
-  return cleaned;
-}
-
-async function fetchImageFile(imageUrl, suggestedName) {
-  if (!/^https?:\/\//i.test(imageUrl || "")) throw new Error("图片地址无效");
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 45000);
-  try {
-    const response = await fetch(imageUrl, { signal: controller.signal, redirect: "follow" });
-    if (!response.ok) throw new Error(`图片下载失败（${response.status}）`);
-    const contentType = (response.headers.get("content-type") || "image/jpeg").split(";")[0];
-    if (!contentType.startsWith("image/")) throw new Error("素材地址返回的不是图片文件");
-    const buffer = await response.arrayBuffer();
-    if (!buffer.byteLength) throw new Error("下载到的图片文件为空");
-    if (buffer.byteLength > 18 * 1024 * 1024) throw new Error("图片超过 18MB，请选择较小素材");
-    return {
-      dataUrl: `data:${contentType};base64,${arrayBufferToBase64(buffer)}`,
-      contentType,
-      fileName: safeFileName(suggestedName || imageUrl, contentType),
-      size: buffer.byteLength,
-    };
-  } catch (error) {
-    if (controller.signal.aborted || error?.name === "AbortError") {
-      throw new Error("图片下载超过 45 秒，请检查网络或选择另一张素材");
+    const start = cleaned.indexOf("{");
+    const end = cleaned.lastIndexOf("}");
+    if (start < 0 || end <= start) {
+      throw new RequestError("AI 未返回可识别的 JSON 结果", { code: "AI_INVALID", retryable: true });
     }
-    throw error;
-  } finally {
-    clearTimeout(timer);
+    try {
+      return JSON.parse(cleaned.slice(start, end + 1));
+    } catch {
+      throw new RequestError("AI 返回的 JSON 格式不完整", { code: "AI_INVALID", retryable: true });
+    }
   }
 }
 
-async function rewriteWithAi(payload) {
+function codePointLength(value) {
+  return Array.from(String(value || "")).length;
+}
+
+function normalizeLanguageCode(value) {
+  const text = String(value || "").trim().toLowerCase();
+  if (!text) return "";
+  const containsRules = [
+    ["vi", /vietnamese|越南语|越南|\bvie?\b/i],
+    ["es", /spanish|español|西班牙语|西班牙|\bes\b|\bspa\b/i],
+    ["en", /english|英语|英文|\ben\b|\beng\b/i],
+    ["ru", /russian|русский|俄语|俄文|\bru\b|\brus\b/i],
+    ["be", /belarusian|беларуская|白俄罗斯语|\bbe\b|\bbel\b/i],
+    ["ar", /arabic|العربية|阿拉伯语|阿拉伯文|\bar\b|\bara\b/i],
+    ["it", /italian|italiano|意大利语|\bit\b|\bita\b/i],
+    ["zh", /chinese|中文|汉语|華語|\bzh\b|\bzho\b/i],
+  ];
+  for (const [code, pattern] of containsRules) {
+    if (pattern.test(text)) return code;
+  }
+  return text.slice(0, 12);
+}
+
+function detectSourceLanguage(text) {
+  const value = String(text || "").trim();
+  if (!value) return { code: "", confidence: 0 };
+  if (/\p{Script=Arabic}/u.test(value)) return { code: "ar", confidence: 1 };
+  if (/[ўЎіІ]/u.test(value)) return { code: "be", confidence: 0.95 };
+  if (/\p{Script=Cyrillic}/u.test(value)) return { code: "ru", confidence: 0.9 };
+  if (/\p{Script=Han}/u.test(value)) return { code: "zh", confidence: 1 };
+  if (/[ăâđêôơưĂÂĐÊÔƠƯ]|[ạảấầẩẫậắằẳẵặẹẻẽếềểễệịỉĩọỏốồổỗộớờởỡợụủũứừửữựỳỵỷỹ]/iu.test(value)) {
+    return { code: "vi", confidence: 0.98 };
+  }
+  const words = value.toLowerCase().match(/[a-zà-ÿ]+/g) || [];
+  const scores = {
+    en: words.filter((word) => ["the", "a", "an", "and", "or", "to", "of", "in", "for", "with", "how", "why", "ways"].includes(word)).length,
+    es: words.filter((word) => ["el", "la", "los", "las", "un", "una", "de", "del", "en", "para", "con", "cómo", "por", "que"].includes(word)).length,
+    vi: words.filter((word) => ["và", "của", "cho", "trong", "với", "những", "cách", "làm", "tại", "sao"].includes(word)).length,
+    it: words.filter((word) => ["il", "lo", "la", "gli", "le", "di", "del", "in", "per", "con", "come", "che"].includes(word)).length,
+  };
+  const ranked = Object.entries(scores).sort((a, b) => b[1] - a[1]);
+  if (ranked[0][1] > 0 && ranked[0][1] > ranked[1][1]) {
+    return { code: ranked[0][0], confidence: Math.min(0.9, 0.55 + ranked[0][1] * 0.1) };
+  }
+  if (/^[\p{Script=Latin}\p{Number}\p{Punctuation}\p{Separator}]+$/u.test(value)) {
+    return { code: "", confidence: 0.2 };
+  }
+  return { code: "", confidence: 0 };
+}
+
+function dominantScript(value) {
+  const text = String(value || "");
+  const scripts = [
+    ["arabic", (text.match(/\p{Script=Arabic}/gu) || []).length],
+    ["cyrillic", (text.match(/\p{Script=Cyrillic}/gu) || []).length],
+    ["han", (text.match(/\p{Script=Han}/gu) || []).length],
+    ["latin", (text.match(/\p{Script=Latin}/gu) || []).length],
+  ].sort((a, b) => b[1] - a[1]);
+  return scripts[0][1] ? scripts[0][0] : "other";
+}
+
+function normalizeAiContent(content) {
+  if (typeof content === "string") return content;
+  if (Array.isArray(content)) {
+    return content.map((part) => typeof part === "string" ? part : part?.text || part?.content || "").join("");
+  }
+  return content?.text || "";
+}
+
+function getAiResponseText(data) {
+  const chatContent = data?.choices?.[0]?.message?.content;
+  if (chatContent != null) return normalizeAiContent(chatContent);
+  if (typeof data?.output_text === "string") return data.output_text;
+  if (Array.isArray(data?.output)) {
+    return data.output
+      .flatMap((item) => item?.content || [])
+      .map((part) => part?.text || part?.content || "")
+      .join("");
+  }
+  return "";
+}
+
+function validateAiResult(raw, context) {
+  const title = String(raw?.title || "").replace(/^['\"`]+|['\"`]+$/g, "").trim();
+  const summary = String(raw?.summary || "").replace(/^['\"`]+|['\"`]+$/g, "").trim();
+  const imageQueryEn = String(raw?.image_query_en || raw?.imageQueryEn || "")
+    .replace(/[\r\n\t]+/g, " ")
+    .replace(/\s{2,}/g, " ")
+    .trim();
+  const language = normalizeLanguageCode(raw?.language);
+
+  if (!title || !summary || !imageQueryEn || !language) {
+    throw new RequestError("AI 结果缺少 title、summary、image_query_en 或 language", {
+      code: "AI_INVALID",
+      retryable: true,
+    });
+  }
+  if (codePointLength(title) > context.titleLimit) {
+    throw new RequestError(`AI 标题为 ${codePointLength(title)} 字符，超过 ${context.titleLimit} 字符限制`, {
+      code: "AI_INVALID",
+      retryable: true,
+    });
+  }
+  if (codePointLength(summary) > context.summaryLimit) {
+    throw new RequestError(`AI 简介为 ${codePointLength(summary)} 字符，超过 ${context.summaryLimit} 字符限制`, {
+      code: "AI_INVALID",
+      retryable: true,
+    });
+  }
+  if (/\p{Script=Han}|\p{Script=Cyrillic}|\p{Script=Arabic}/u.test(imageQueryEn)) {
+    throw new RequestError("AI 图片关键词不是英文", { code: "AI_INVALID", retryable: true });
+  }
+
+  const sourceScript = dominantScript(context.originalTitle);
+  const titleScript = dominantScript(title);
+  const summaryScript = dominantScript(summary);
+  if (["arabic", "cyrillic", "han"].includes(sourceScript) && (sourceScript !== titleScript || sourceScript !== summaryScript)) {
+    throw new RequestError("AI 文案与原标题的文字语言不一致", { code: "AI_INVALID", retryable: true });
+  }
+  if (sourceScript === "latin" && [titleScript, summaryScript].some((script) => ["arabic", "cyrillic", "han"].includes(script))) {
+    throw new RequestError("AI 文案与原标题的文字语言不一致", { code: "AI_INVALID", retryable: true });
+  }
+
+  const expectedLanguage = context.expectedLanguage;
+  if (expectedLanguage && language !== expectedLanguage) {
+    throw new RequestError(`AI 返回语言 ${language.toUpperCase()}，与原稿 ${expectedLanguage.toUpperCase()} 不一致`, {
+      code: "AI_INVALID",
+      retryable: true,
+    });
+  }
+  const detectedOutput = detectSourceLanguage(`${title} ${summary}`);
+  if (detectedOutput.confidence >= 0.65 && detectedOutput.code && detectedOutput.code !== language) {
+    throw new RequestError(`AI 标注语言 ${language.toUpperCase()}，但文案疑似 ${detectedOutput.code.toUpperCase()}`, {
+      code: "AI_INVALID",
+      retryable: true,
+    });
+  }
+  return { title, summary, image_query_en: imageQueryEn, language };
+}
+
+function buildAiMessages(context) {
+  const languageInstruction = context.expectedLanguage
+    ? `原标题语言已识别为 ${context.expectedLanguage.toUpperCase()}；title 和 summary 必须严格使用该语言。`
+    : "先识别原标题语言；title 和 summary 必须严格沿用原标题语言，禁止默认改成中文或其他语言。";
+  const system = [
+    "你是专业的标题优化与锁屏杂志内容编辑，要在尽可能快的情况下准确完成一次改写和配图关键词生成。",
+    `标题不得超过 ${context.titleLimit} 个 Unicode 字符（空格和标点也计数）。`,
+    "标题须准确传达原标题核心含义，不改变原意；趣味性和吸引力优先，要有记忆点并能激发好奇心，可使用悬念、对比、疑问或感叹，但不能捏造事实。",
+    "必须保留关键地名、人名、专业术语等重要专有名词；专有名词本身过长时，先使用该语言通用公认缩写或昵称；没有合适缩写时去掉修饰词，只保留名词核心。",
+    "若原标题已经在字符限制内且表达完整，优先原样保留。不得把“几种方法/步骤/技巧”擅自减少成更小数量。",
+    `简介不得超过 ${context.summaryLimit} 个 Unicode 字符，需忠实概括文章内容，不得只做机械截断。`,
+    languageInstruction,
+    "image_query_en 必须直接从原始标题、原始简介和文章正文总结，绝对不能从改写后的短标题猜测。",
+    "image_query_en 必须是 5 至 12 个具体英文视觉关键词，表达可见主体、地点、动作、场景与氛围。",
+    "配图关键词优先侧脸、背影、人物剪影、全身着装或远景，避免正脸特写、自拍、泳装、裸露皮肤和性感姿势；若主题不需要人物则优先物体或场景。",
+    "language 返回 ISO 639-1 两字母代码（例如 en、vi、es、ru、be、ar）。",
+    "只返回单个严格 JSON 对象，不要 Markdown、代码块或解释。结构必须为：{\"title\":\"...\",\"summary\":\"...\",\"image_query_en\":\"...\",\"language\":\"...\"}",
+  ].join("\n");
+  const user = [
+    `原始标题：${context.originalTitle}`,
+    `原始简介：${context.originalSummary || "（无）"}`,
+    `原始文章正文：${context.articleText || "（未抓取到正文，请仅依据原始标题和原始简介）"}`,
+  ].join("\n\n");
+  return [
+    { role: "system", content: system },
+    { role: "user", content: user },
+  ];
+}
+
+function shouldRetry(error) {
+  if (error?.retryable === false) return false;
+  if ([400, 401, 403, 404, 422].includes(Number(error?.status))) return false;
+  return true;
+}
+
+async function generateBatchItemWithAi(payload = {}) {
+  const item = payload.item || payload;
+  const [{ settings: savedSettings = {} }, { localSecrets = {} }] = await Promise.all([
+    chrome.storage.sync.get("settings"),
+    chrome.storage.local.get("localSecrets"),
+  ]);
+  const settings = { ...DEFAULT_BATCH_SETTINGS, ...savedSettings };
+  const endpoint = String(settings.aiEndpoint || "").trim();
+  const model = String(settings.aiModel || "").trim();
+  const apiKey = String(localSecrets.aiApiKey || "").trim();
+  if (!endpoint || !model || !apiKey) {
+    throw new RequestError("独立 AI 接口未配置完整，请在设置中填写接口地址、模型和 API Key", {
+      code: "AI_NOT_CONFIGURED",
+      retryable: false,
+    });
+  }
+  validateHttpUrl(endpoint, "AI 接口地址");
+
+  const originalTitle = String(item.originalTitle || item.title || "").trim();
+  if (!originalTitle) throw new Error("没有读取到原标题，无法改写");
+  const originalSummary = String(item.originalSummary || item.summary || "").trim().slice(0, 2000);
+  const detected = detectSourceLanguage(`${originalTitle} ${originalSummary}`);
+  const hintedLanguage = normalizeLanguageCode(item.languageHint || item.language || payload.languageHint);
+  const expectedLanguage = hintedLanguage || (detected.confidence >= 0.55 ? detected.code : "");
+  const context = {
+    originalTitle,
+    originalSummary,
+    articleText: String(item.articleText || "").replace(/\s+/g, " ").trim().slice(0, MAX_AI_ARTICLE_CHARS),
+    expectedLanguage,
+    titleLimit: clampNumber(payload.titleLimit ?? settings.titleLimit, 12, 1, 100),
+    summaryLimit: clampNumber(payload.summaryLimit ?? settings.summaryLimit, 50, 1, 500),
+  };
+  const timeout = clampNumber(payload.timeoutMs ?? settings.aiTimeoutMs, 30000, 5000, 120000);
+  const maxRetries = clampNumber(payload.maxRetries, 2, 0, 2);
+  let lastError;
+  let attemptsMade = 0;
+
+  for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
+    attemptsMade = attempt + 1;
+    const requestBody = {
+      model,
+      temperature: 0.15,
+      max_tokens: 360,
+      messages: buildAiMessages(context),
+    };
+    if (/^glm[-_.\s]?5(?:\D|$)/i.test(model)) {
+      requestBody.thinking = { type: "disabled" };
+    }
+    try {
+      const data = await fetchJson(endpoint, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${apiKey}`,
+        },
+        body: JSON.stringify(requestBody),
+      }, timeout, "AI 改写");
+      const content = getAiResponseText(data);
+      if (!content) {
+        throw new RequestError("AI 返回内容为空", { code: "AI_INVALID", retryable: true });
+      }
+      const result = validateAiResult(extractJson(content), context);
+      return {
+        configured: true,
+        result,
+        title: result.title,
+        summary: result.summary,
+        image_query_en: result.image_query_en,
+        imageQueryEn: result.image_query_en,
+        language: result.language,
+        attempts: attemptsMade,
+      };
+    } catch (error) {
+      lastError = error;
+      if (attempt >= maxRetries || !shouldRetry(error)) break;
+      await new Promise((resolve) => setTimeout(resolve, 250 * (attempt + 1)));
+    }
+  }
+  throw new Error(`AI 改写失败（已尝试 ${attemptsMade} 次）：${cleanErrorMessage(lastError, "上游接口不可用")}`);
+}
+
+async function generateImageQueryWithAi(payload) {
   const [{ settings = {} }, { localSecrets = {} }] = await Promise.all([
     chrome.storage.sync.get("settings"),
     chrome.storage.local.get("localSecrets"),
@@ -322,36 +811,26 @@ async function rewriteWithAi(payload) {
   const endpoint = settings.aiEndpoint?.trim();
   const model = settings.aiModel?.trim();
   const apiKey = localSecrets.aiApiKey?.trim();
-  if (!endpoint || !model || !apiKey) {
-    return { configured: false };
-  }
+  if (!endpoint || !model || !apiKey) return { configured: false };
 
-  const summaryLimit = Number(payload.summaryLimit) || 50;
-  const sourceLanguage = payload.sourceLanguage || "und";
-  const sourceLanguageLabel = payload.sourceLanguageLabel || "the dominant language of the source";
-  const systemPrompt = [
-    "You are a fast, accurate sentence translator, word aligner, and multilingual lock-screen summary editor.",
-    `The original language is ${sourceLanguageLabel} (${sourceLanguage}). Rewrite ONLY the summary in that same language and script, within ${summaryLimit} Unicode characters. Preserve the central subject, action, outcome, names, places and numbers; remove secondary detail; never invent facts or truncate mid-word.`,
-    "DO NOT rewrite, shorten, paraphrase, or translate the title as a replacement title.",
-    "First understand and translate the COMPLETE original title into natural Simplified Chinese. Do not translate isolated words independently.",
-    "Split the original title into source_tokens in exact original order. Each token must be copied verbatim from the original title and should normally be one word (or one meaningful unit for languages without spaces). Exclude standalone punctuation and whitespace, but cover every meaningful original word.",
-    "Split the natural Chinese translation into meaningful Chinese word/short-phrase buttons. For each Chinese token, provide source_indices: the zero-based indices of all original source_tokens it aligns to in the context of the complete sentence. One Chinese token may align to multiple original tokens. Every source token must be referenced by at least one Chinese token.",
-    "Create image_query_en from the ORIGINAL source as 5 to 8 concrete English visual keywords (people, place, object, scene, atmosphere).",
-    "Return strict JSON only: {\"summary\":\"...\",\"title_translation_zh\":\"natural full Chinese translation\",\"source_tokens\":[\"exact\",\"original\",\"tokens\"],\"zh_tokens\":[{\"text\":\"中文词\",\"source_indices\":[0]}],\"image_query_en\":\"...\",\"language\":\"...\"}",
-  ].join("\n");
-  const userPrompt = `ORIGINAL_TITLE: ${payload.title || "(empty)"}\nORIGINAL_SUMMARY: ${payload.summary || "(empty)"}`;
   const requestBody = {
     model,
     temperature: 0.1,
-    max_tokens: 512,
+    max_tokens: 100,
     messages: [
-      { role: "system", content: systemPrompt },
-      { role: "user", content: userPrompt },
+      {
+        role: "system",
+        content: [
+          "Convert the ORIGINAL article title and summary into a precise stock-photo search query.",
+          "Return 5 to 10 concrete English visual keywords describing visible subject, named place, object, action, scene and atmosphere.",
+          "Prefer side profile, back view, silhouette, fully clothed subjects or wide shots. Avoid frontal faces, selfies, swimwear, nudity and excessive exposed skin.",
+          "Preserve visually relevant proper nouns. Do not use abstract words such as news, article, report or photography.",
+          "Return strict JSON only: {\"image_query_en\":\"...\"}",
+        ].join("\n"),
+      },
+      { role: "user", content: `${String(payload.title || "")}\n${String(payload.summary || "")}`.trim() },
     ],
   };
-
-  // GLM 5.x enables thinking by default. Short editorial rewrites are faster and
-  // more consistent when thinking is explicitly disabled.
   if (/^glm[-_.\s]?5(?:\D|$)/i.test(model)) {
     requestBody.thinking = { type: "disabled" };
   }
@@ -362,53 +841,314 @@ async function rewriteWithAi(payload) {
       Authorization: `Bearer ${apiKey}`,
     },
     body: JSON.stringify(requestBody),
-  }, 45000);
-  const content = data.choices?.[0]?.message?.content || data.output_text || "";
-  const rewritten = extractJson(content);
+  }, clampNumber(settings.aiTimeoutMs, 30000, 5000, 120000), "英文图片关键词生成");
+  const generated = extractJson(getAiResponseText(data));
   return {
     configured: true,
-    summary: String(rewritten.summary || "").trim(),
-    titleTranslationZh: String(rewritten.title_translation_zh || "").trim(),
-    sourceTokens: Array.isArray(rewritten.source_tokens) ? rewritten.source_tokens : [],
-    zhTokens: Array.isArray(rewritten.zh_tokens) ? rewritten.zh_tokens : [],
-    imageQueryEn: String(rewritten.image_query_en || "").trim(),
+    imageQueryEn: String(generated.image_query_en || "").trim(),
   };
 }
 
-chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
-  if (message.type === "OPEN_IMAGE_SEARCH") {
+function decodeHtmlEntities(value) {
+  const named = {
+    amp: "&", lt: "<", gt: ">", quot: '"', apos: "'", nbsp: " ",
+    ndash: "–", mdash: "—", hellip: "…", laquo: "«", raquo: "»",
+  };
+  return String(value || "")
+    .replace(/&#(\d+);/g, (_match, code) => String.fromCodePoint(Number(code)))
+    .replace(/&#x([0-9a-f]+);/gi, (_match, code) => String.fromCodePoint(parseInt(code, 16)))
+    .replace(/&([a-z]+);/gi, (match, name) => named[name.toLowerCase()] ?? match);
+}
+
+function htmlToReadableText(html) {
+  return decodeHtmlEntities(String(html || "")
+    .replace(/<!--[\s\S]*?-->/g, " ")
+    .replace(/<(script|style|noscript|template|svg|canvas)[^>]*>[\s\S]*?<\/\1>/gi, " ")
+    .replace(/<(br|\/p|\/div|\/li|\/article|\/section|\/h[1-6]|\/tr)>/gi, "\n")
+    .replace(/<[^>]+>/g, " "))
+    .replace(/[ \t\f\v]+/g, " ")
+    .replace(/ *\n */g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+async function fetchArticle(payload = {}) {
+  const url = payload.url || payload.sourceUrl;
+  const articleUrl = validateHttpUrl(url, "文章地址");
+  const credentials = articleUrl.hostname.toLowerCase() === "lockscreen-admin.mofeeds.com" ? "include" : "omit";
+  const timeout = clampNumber(payload.timeoutMs, 25000, 5000, 60000);
+  const response = await fetchResponse(articleUrl.href, {
+    credentials,
+    headers: {
+      Accept: "text/html,application/xhtml+xml,text/plain,application/json;q=0.8,*/*;q=0.2",
+      "Accept-Language": "en,zh-CN;q=0.9,*;q=0.8",
+    },
+  }, timeout, "文章");
+  if (!response.ok) {
+    throw new RequestError(`文章读取失败（${response.status}）`, {
+      status: response.status,
+      retryable: response.status === 408 || response.status === 429 || response.status >= 500,
+    });
+  }
+  const contentType = response.headers.get("content-type") || "";
+  const declaredLength = Number(response.headers.get("content-length")) || 0;
+  if (declaredLength > 5 * 1024 * 1024) throw new Error("文章页面超过 5MB，已停止读取");
+  if (/^(image|audio|video)\//i.test(contentType) || /application\/pdf/i.test(contentType)) {
+    throw new Error(`文章链接返回了不支持的内容类型：${contentType.split(";")[0]}`);
+  }
+  const raw = await response.text();
+  const html = raw.slice(0, MAX_ARTICLE_HTML_CHARS);
+  const text = (/html|xhtml/i.test(contentType) || /<\s*(?:html|body|article|main)\b/i.test(raw))
+    ? htmlToReadableText(raw).slice(0, MAX_ARTICLE_TEXT_CHARS)
+    : raw.replace(/\s+/g, " ").trim().slice(0, MAX_ARTICLE_TEXT_CHARS);
+  if (!text) throw new Error("文章页面已打开，但没有提取到可用正文");
+  return {
+    url: articleUrl.href,
+    finalUrl: response.url || String(url),
+    status: response.status,
+    contentType,
+    html,
+    text,
+    truncated: raw.length > MAX_ARTICLE_HTML_CHARS || text.length >= MAX_ARTICLE_TEXT_CHARS,
+  };
+}
+
+function arrayBufferToBase64(arrayBuffer) {
+  const bytes = new Uint8Array(arrayBuffer);
+  let binary = "";
+  const chunkSize = 0x8000;
+  for (let offset = 0; offset < bytes.length; offset += chunkSize) {
+    binary += String.fromCharCode(...bytes.subarray(offset, offset + chunkSize));
+  }
+  return btoa(binary);
+}
+
+function inferImageMime(url, contentType) {
+  const normalized = String(contentType || "").split(";")[0].trim().toLowerCase();
+  if (/^image\//.test(normalized)) return normalized;
+  const pathname = (() => {
+    try { return new URL(url).pathname.toLowerCase(); } catch { return ""; }
+  })();
+  if (/\.png$/.test(pathname)) return "image/png";
+  if (/\.webp$/.test(pathname)) return "image/webp";
+  if (/\.gif$/.test(pathname)) return "image/gif";
+  if (/\.avif$/.test(pathname)) return "image/avif";
+  return "image/jpeg";
+}
+
+function extensionForMime(mime) {
+  return ({
+    "image/jpeg": "jpg", "image/jpg": "jpg", "image/png": "png", "image/webp": "webp",
+    "image/gif": "gif", "image/avif": "avif",
+  })[String(mime || "").toLowerCase()] || "jpg";
+}
+
+async function fetchImageFile(payload = {}) {
+  const url = payload.url || payload.imageUrl || payload.image?.uploadUrl || payload.image?.originalUrl || payload.image?.imageUrl;
+  const response = await fetchResponse(url, {
+    headers: { Accept: "image/avif,image/webp,image/png,image/jpeg,image/*;q=0.8" },
+  }, clampNumber(payload.timeoutMs, 45000, 5000, 120000), "图片");
+  if (!response.ok) throw new Error(`图片读取失败（${response.status}）`);
+  const declaredLength = Number(response.headers.get("content-length")) || 0;
+  if (declaredLength > MAX_IMAGE_BYTES) throw new Error("图片超过 24MB，无法写入上传控件");
+  const buffer = await response.arrayBuffer();
+  if (!buffer.byteLength) throw new Error("下载到的图片为空");
+  if (buffer.byteLength > MAX_IMAGE_BYTES) throw new Error("图片超过 24MB，无法写入上传控件");
+  const mime = inferImageMime(url, response.headers.get("content-type"));
+  if (!/^image\//.test(mime)) throw new Error("下载地址返回的不是图片");
+  const fallbackName = `lockscreen-image.${extensionForMime(mime)}`;
+  const generatedImageMeta = { ...(payload.item?.image || {}), ...(payload.image || {}), mime };
+  const generatedName = payload.item
+    ? buildFinalImageName(payload.item, generatedImageMeta)
+    : fallbackName;
+  const fileName = sanitizeFileName(payload.fileName || generatedName, fallbackName);
+  return {
+    dataUrl: `data:${mime};base64,${arrayBufferToBase64(buffer)}`,
+    mime,
+    mimeType: mime,
+    size: buffer.byteLength,
+    fileName,
+    sourceUrl: String(url),
+    lastModified: Date.now(),
+  };
+}
+
+function sanitizePathSegment(value, fallback = "未命名") {
+  const cleaned = String(value || "")
+    .replace(/[<>:\"/\\|?*\u0000-\u001f]/g, "-")
+    .replace(/[. ]+$/g, "")
+    .replace(/^\.+/g, "")
+    .replace(/-{2,}/g, "-")
+    .trim();
+  return cleaned || fallback;
+}
+
+function sanitizeFileName(value, fallback = "file.txt") {
+  const raw = String(value || fallback).replace(/\\/g, "/").split("/").pop();
+  return sanitizePathSegment(raw, fallback).slice(0, 190);
+}
+
+function sanitizeRelativeFolder(value, fallback) {
+  const raw = String(value || fallback || "").trim().replace(/\\/g, "/");
+  if (!raw) return "";
+  if (raw.startsWith("/") || /^[a-z]:/i.test(raw) || raw.split("/").some((part) => part === "..")) {
+    throw new Error("下载目录必须是浏览器“下载”文件夹内的相对子目录，不能使用盘符、绝对路径或 ..");
+  }
+  return raw
+    .split("/")
+    .filter((part) => part && part !== ".")
+    .map((part) => sanitizePathSegment(part, "未命名目录"))
+    .join("/");
+}
+
+function joinDownloadPath(folder, fileName) {
+  return [folder, fileName].filter(Boolean).join("/");
+}
+
+function utf8ToBase64(text) {
+  return arrayBufferToBase64(new TextEncoder().encode(text).buffer);
+}
+
+async function getBatchSettings() {
+  const { settings = {} } = await chrome.storage.sync.get("settings");
+  return { ...DEFAULT_BATCH_SETTINGS, ...settings };
+}
+
+async function saveTextFile(payload = {}) {
+  const settings = await getBatchSettings();
+  const folder = sanitizeRelativeFolder(payload.folder, settings.originalFolder);
+  const rawValue = payload.text ?? payload.contents ?? payload.data ?? payload.json ?? "";
+  const text = typeof rawValue === "string" ? rawValue : JSON.stringify(rawValue, null, 2);
+  const size = new TextEncoder().encode(text).byteLength;
+  if (size > MAX_TEXT_DOWNLOAD_BYTES) throw new Error("保存内容超过 8MB，请缩小批次后重试");
+  const mimeType = String(payload.mimeType || "application/json;charset=utf-8");
+  const defaultExtension = /json/i.test(mimeType) ? "json" : "txt";
+  const defaultName = `锁屏批次-${new Date().toISOString().replace(/[:.]/g, "-")}.${defaultExtension}`;
+  const fileName = sanitizeFileName(payload.fileName || defaultName, defaultName);
+  const path = joinDownloadPath(folder, fileName);
+  const downloadId = await chrome.downloads.download({
+    url: `data:${mimeType};base64,${utf8ToBase64(text)}`,
+    filename: path,
+    conflictAction: "uniquify",
+    saveAs: false,
+  });
+  return { downloadId, path, fileName, size };
+}
+
+function chooseDownloadUrl(image = {}, item = {}) {
+  const aspectLabel = image.aspectLabel || item.aspectLabel || "9:16";
+  return image.selectedUrl || image.uploadUrl || image.downloadUrl || image.originalUrl || image.imageUrl ||
+    image.cropUrls?.[aspectLabel] || item.imageUrl || "";
+}
+
+function buildFinalImageName(item = {}, image = {}) {
+  const numericIndex = clampNumber(item.index ?? item.order ?? item.number, 1, 1, 999);
+  const index = String(Math.trunc(numericIndex)).padStart(2, "0");
+  const title = sanitizePathSegment(item.title || item.generatedTitle || item.originalTitle || "未命名", "未命名").slice(0, 45);
+  const summary = sanitizePathSegment(item.summary || item.generatedSummary || "无简介", "无简介").slice(0, 75);
+  const aspectLabel = String(image.aspectLabel || item.aspectLabel || "9:16").replace(":", "x");
+  const mime = image.mime || image.mimeType || "image/jpeg";
+  const extension = extensionForMime(mime);
+  return sanitizeFileName(`${index}-${title}【${summary}】_${aspectLabel}.${extension}`, `${index}-lockscreen_${aspectLabel}.${extension}`);
+}
+
+async function downloadFinalImage(payload = {}) {
+  const settings = await getBatchSettings();
+  const item = payload.item || {};
+  const image = payload.image || {};
+  const url = chooseDownloadUrl(image, item);
+  if (!/^(https?:\/\/|data:image\/)/i.test(url)) throw new Error("成品图片下载地址无效");
+  const folder = sanitizeRelativeFolder(payload.folder, settings.imageFolder);
+  const fileName = sanitizeFileName(payload.fileName || buildFinalImageName(item, image), "lockscreen-image.jpg");
+  const path = joinDownloadPath(folder, fileName);
+  const downloadId = await chrome.downloads.download({
+    url,
+    filename: path,
+    conflictAction: "uniquify",
+    saveAs: false,
+  });
+  return { downloadId, path, fileName, url };
+}
+
+async function downloadImage(url, fileName) {
+  if (!/^https?:\/\//i.test(url || "")) throw new Error("图片下载地址无效");
+  const safeName = sanitizeFileName(fileName || "stock-image.jpg", "stock-image.jpg");
+  const downloadId = await chrome.downloads.download({
+    url,
+    filename: `锁屏素材/${safeName}`,
+    conflictAction: "uniquify",
+    saveAs: false,
+  });
+  return { downloadId };
+}
+
+function respondAsync(sendResponse, promise, fallbackMessage) {
+  Promise.resolve(promise)
+    .then((result) => sendResponse({ ok: true, ...result }))
+    .catch((error) => sendResponse({ ok: false, error: cleanErrorMessage(error, fallbackMessage), code: error?.code || "" }));
+  return true;
+}
+
+chrome.runtime.onMessage.addListener((message = {}, _sender, sendResponse) => {
+  const action = message.action || message.type;
+
+  if (action === "OPEN_IMAGE_SEARCH") {
     openImageSearch(message.engine, message.query);
     sendResponse({ ok: true });
+    return false;
   }
 
-  if (message.type === "OPEN_VISUAL_SEARCH") {
+  if (action === "OPEN_VISUAL_SEARCH") {
     openVisualSearch(message.imageUrl);
     sendResponse({ ok: true });
+    return false;
   }
 
-  if (message.type === "OPEN_OPTIONS") {
+  if (action === "OPEN_OPTIONS") {
     chrome.runtime.openOptionsPage();
     sendResponse({ ok: true });
+    return false;
   }
 
-  if (message.type === "SEARCH_STOCK_IMAGES") {
-    searchStockImages(message.source, message.query, message.page)
-      .then((result) => sendResponse({ ok: true, ...result }))
-      .catch((error) => sendResponse({ ok: false, error: error.message || "素材搜索失败" }));
-    return true;
+  if (action === "SEARCH_STOCK_IMAGES") {
+    return respondAsync(sendResponse, searchStockImages(message.source, message.query, message.page), "素材搜索失败");
   }
 
-  if (message.type === "REWRITE_COPY") {
-    rewriteWithAi(message)
-      .then((result) => sendResponse({ ok: true, ...result }))
-      .catch((error) => sendResponse({ ok: false, error: error.message || "AI 改写失败" }));
-    return true;
+  if (action === "SEARCH_PEXELS_BATCH" || action === "SEARCH_BATCH_IMAGES") {
+    return respondAsync(
+      sendResponse,
+      searchBatchImages(message.query, message.preferredRatio, message.page || 1),
+      "批量竖屏图片搜索失败",
+    );
   }
 
-  if (message.type === "FETCH_IMAGE_FILE") {
-    fetchImageFile(message.imageUrl, message.fileName)
-      .then((result) => sendResponse({ ok: true, ...result }))
-      .catch((error) => sendResponse({ ok: false, error: error.message || "图片下载失败" }));
-    return true;
+  if (action === "DOWNLOAD_IMAGE") {
+    return respondAsync(sendResponse, downloadImage(message.url, message.fileName), "图片下载失败");
   }
+
+  if (action === "GENERATE_IMAGE_QUERY") {
+    return respondAsync(sendResponse, generateImageQueryWithAi(message), "英文图片关键词生成失败");
+  }
+
+  if (action === "AI_PROCESS_ITEM") {
+    return respondAsync(sendResponse, generateBatchItemWithAi(message), "AI 改写失败");
+  }
+
+  if (action === "FETCH_ARTICLE") {
+    return respondAsync(sendResponse, fetchArticle(message), "文章读取失败");
+  }
+
+  if (action === "FETCH_IMAGE_FILE") {
+    return respondAsync(sendResponse, fetchImageFile(message), "图片读取失败");
+  }
+
+  if (action === "SAVE_TEXT_FILE") {
+    return respondAsync(sendResponse, saveTextFile(message), "内容文件保存失败");
+  }
+
+  if (action === "DOWNLOAD_FINAL_IMAGE") {
+    return respondAsync(sendResponse, downloadFinalImage(message), "成品图片下载失败");
+  }
+
+  return false;
 });

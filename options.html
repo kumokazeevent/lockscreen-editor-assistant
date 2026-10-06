@@ -12,53 +12,65 @@
         <div class="brand">锁</div>
         <div>
           <h1>锁屏编辑助手设置</h1>
-          <p>字数规则、语义改写、商用素材与后台站点绑定</p>
+          <p>0.7.0 · 批量改写、竖屏配图与后台上传</p>
         </div>
       </header>
 
       <section>
-        <h2>文案规则</h2>
-        <div class="form-grid">
-          <label>标题最多字符<input id="titleLimit" type="number" min="1" max="100" /></label>
-          <label>简介最多字符<input id="summaryLimit" type="number" min="1" max="500" /></label>
-          <label>默认图片搜索
-            <select id="defaultEngine">
-              <option value="baidu">百度图片</option>
-              <option value="bing">必应图片</option>
-              <option value="google">Google 图片</option>
-            </select>
-          </label>
+        <h2>独立 AI 接口</h2>
+        <p class="section-description">一次请求生成同语种标题、简介和英文图片搜索词。密钥只存于本机；更新扩展时不要卸载，点击“重新加载”即可保留配置。</p>
+        <div class="form-grid ai-grid">
+          <label>Chat Completions 完整地址<input id="aiEndpoint" type="url" placeholder="https://example.com/v1/chat/completions" /></label>
+          <label>模型名称<input id="aiModel" type="text" placeholder="glm-5.2" /></label>
+          <label>API Key<input id="aiApiKey" type="password" placeholder="留空则不修改现有密钥" autocomplete="new-password" /></label>
         </div>
-        <button id="saveSettings" class="primary" type="button">保存设置</button>
-        <span id="saveMessage" class="save-message"></span>
+        <div class="form-grid">
+          <label>请求超时（秒）<input id="aiTimeoutSeconds" type="number" min="10" max="120" /></label>
+          <label>并发任务数<input id="batchConcurrency" type="number" min="1" max="2" /></label>
+          <label>单批最多条数<input id="batchLimit" type="number" min="1" max="30" /></label>
+        </div>
       </section>
 
       <section>
-        <h2>AI 标题翻译对齐与简介精简</h2>
-        <p class="section-description">AI 负责整句翻译原标题、生成中外词级对齐，并按原语言精简简介。未配置时只能使用本地简介精简，无法生成标题双语按钮；密钥仅保存在本机。</p>
-        <div class="form-grid ai-grid">
-          <label>Chat Completions 完整地址<input id="aiEndpoint" type="url" placeholder="https://example.com/v1/chat/completions" /></label>
-          <label>模型名称<input id="aiModel" type="text" placeholder="模型 ID" /></label>
-          <label>API Key<input id="aiApiKey" type="password" placeholder="留空则不修改现有密钥" autocomplete="new-password" /></label>
+        <h2>文案与图片规则</h2>
+        <div class="form-grid">
+          <label>标题最多字符<input id="titleLimit" type="number" min="1" max="100" /></label>
+          <label>简介最多字符<input id="summaryLimit" type="number" min="1" max="500" /></label>
+          <label>优先图片比例
+            <select id="preferredRatio">
+              <option value="auto">自动（9:16 / 9:20）</option>
+              <option value="9:16">9:16</option>
+              <option value="9:20">9:20</option>
+            </select>
+          </label>
+        </div>
+        <p class="section-description">图片只接受实际高度大于宽度的结果，并优先接近 9:16 或 9:20。系统会尽量避开清晰正脸和大面积裸露，但不确定图片仍会标记为“需人工复核”。</p>
+      </section>
+
+      <section>
+        <h2>输出目录</h2>
+        <p class="section-description">目录相对于浏览器的“下载”文件夹。原稿/批次记录与重命名后的成品图片分开保存。</p>
+        <div class="form-grid folder-grid">
+          <label>原内容目录<input id="originalFolder" type="text" placeholder="锁屏批次/原始内容" /></label>
+          <label>成品图片目录<input id="imageFolder" type="text" placeholder="锁屏批次/成品图片" /></label>
         </div>
       </section>
 
       <section>
         <h2>免费商用素材接口</h2>
-        <p class="section-description">Openverse 无需密钥。Pexels 和 Pixabay 需要各自的免费 API Key；三个来源都会在接口筛选后再次检查实际宽高，只显示竖图。<a href="https://www.pexels.com/api/" target="_blank" rel="noopener noreferrer">申请 Pexels Key</a> · <a href="https://pixabay.com/api/docs/" target="_blank" rel="noopener noreferrer">申请 Pixabay Key</a></p>
+        <p class="section-description">优先使用 Pexels，失败或无结果时可回退 Pixabay。两个来源都会请求竖图并再次验证实际宽高。使用前仍需核对素材页许可、肖像和商标限制。<a href="https://www.pexels.com/api/" target="_blank" rel="noopener noreferrer">申请 Pexels Key</a> · <a href="https://pixabay.com/api/docs/" target="_blank" rel="noopener noreferrer">申请 Pixabay Key</a></p>
         <div class="secret-row">
           <label>Pexels API Key<input id="pexelsApiKey" type="password" placeholder="留空则不修改现有密钥" autocomplete="new-password" /></label>
           <label>Pixabay API Key<input id="pixabayApiKey" type="password" placeholder="留空则不修改现有密钥" autocomplete="new-password" /></label>
           <button id="clearSecrets" class="secondary" type="button">清除本机密钥</button>
         </div>
-        <button id="saveConnections" class="primary connection-save" type="button">保存接口与密钥</button>
       </section>
 
       <section>
         <div class="section-title">
           <div>
-            <h2>已绑定网站</h2>
-            <p>在网页悬浮窗点击“绑定字段”，依次绑定标题、简介和图片上传控件。</p>
+            <h2>后台字段绑定</h2>
+            <p>自动识别失败时，可在编辑页依次绑定标题、简介和图片上传控件。</p>
           </div>
           <button id="refreshRules" class="secondary" type="button">刷新</button>
         </div>
@@ -67,8 +79,13 @@
 
       <section class="privacy-note">
         <h2>数据与隐私</h2>
-        <p>标题、简介草稿和 API Key 只保存在本机浏览器中；站点绑定、接口地址和偏好保存在浏览器同步存储中。只有点击“翻译标题并精简简介”时稿件才会发送到你配置的 AI 接口；素材搜索词会发送给所选的 Openverse、Pexels 或 Pixabay。</p>
+        <p>扩展界面只注入 lockscreen-admin.mofeeds.com。AI 请求会把原标题和抓取到的文章正文发送到你配置的独立接口；图片搜索词会发送到 Pexels 或 Pixabay。为读取“查看链接”文章和调用自定义接口，后台网络权限仍需覆盖这些外部地址。</p>
       </section>
+
+      <div class="save-bar">
+        <button id="saveSettings" class="primary" type="button">保存全部设置</button>
+        <span id="saveMessage" class="save-message" role="status"></span>
+      </div>
     </main>
     <script src="options.js"></script>
   </body>

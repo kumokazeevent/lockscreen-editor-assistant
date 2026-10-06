@@ -1,4 +1,6 @@
 (() => {
+  const SUPPORTED_HOST = "lockscreen-admin.mofeeds.com";
+  if (location.hostname !== SUPPORTED_HOST) return;
   if (window.__lockscreenAssistantLoaded) return;
   window.__lockscreenAssistantLoaded = true;
 
@@ -11,7 +13,23 @@
     binding: null,
     fieldHover: null,
     fieldCandidate: null,
+    routeSignature: "",
+    siteStateSignature: "",
+    siteStateTimer: null,
   };
+
+  const ACTION_LABELS = ["查看链接", "编辑", "下载图片", "复用锁屏"];
+
+  function cleanText(value) {
+    return String(value || "").replace(/\u00a0/g, " ").replace(/\s+/g, " ").trim();
+  }
+
+  function characterCount(value) {
+    if (globalThis.Intl?.Segmenter) {
+      return [...new Intl.Segmenter(undefined, { granularity: "grapheme" }).segment(String(value || ""))].length;
+    }
+    return Array.from(String(value || "").normalize("NFC")).length;
+  }
 
   function createElement(tag, className, text) {
     const element = document.createElement(tag);
@@ -267,7 +285,7 @@
     chrome.runtime.sendMessage({
       type: "OPEN_IMAGE_SEARCH",
       engine: settings.defaultEngine || "baidu",
-      query: query || "高清横图",
+      query: query || "高清竖屏图片",
     });
   }
 
@@ -340,42 +358,46 @@
   }
 
   const BIND_STEPS = [
-    { key: "titleSelector", label: "第 1 步：点击后台的标题输入框" },
-    { key: "summarySelector", label: "第 2 步：点击后台的简介输入框" },
-    { key: "imageUploadSelector", label: "第 3 步：点击后台的图片上传按钮或选择文件区域（没有可跳过）" },
+    { key: "titleSelector", kind: "text", label: "第 1 步：点击后台的标题输入框" },
+    { key: "summarySelector", kind: "text", label: "第 2 步：点击后台的简介输入框" },
+    { key: "imageUploadSelector", kind: "file", label: "第 3 步：点击后台的图片上传区域" },
   ];
 
   function isEditableField(element) {
-    return element instanceof HTMLInputElement ||
+    return Boolean(element) && ((element instanceof HTMLInputElement && element.type !== "file") ||
       element instanceof HTMLTextAreaElement ||
-      element.isContentEditable;
+      element.isContentEditable);
   }
 
-  function findUploadInput(target) {
-    const direct = target?.closest?.('input[type="file"]');
-    if (direct) return { field: direct, highlight: direct };
-
-    const trigger = target?.closest?.(
-      'label, button, [role="button"], [class*="upload" i], [class*="uploader" i], [class*="file" i]',
-    );
-    if (!trigger || trigger.closest(".lsa-assistant, .lsa-bar, .lsa-panel")) return null;
-    if (trigger instanceof HTMLLabelElement && trigger.control?.matches?.('input[type="file"]')) {
-      return { field: trigger.control, highlight: trigger };
+  function fileInputFromTarget(target) {
+    if (!(target instanceof Element)) return null;
+    if (target.matches("input[type='file']")) return target;
+    const nested = target.closest("label, [class*='upload'], [class*='Upload'], [class*='uploader']")
+      ?.querySelector("input[type='file']");
+    if (nested) return nested;
+    const label = target.closest("label[for]");
+    if (label) {
+      const linked = document.getElementById(label.htmlFor);
+      if (linked?.matches?.("input[type='file']")) return linked;
     }
-
-    let container = trigger;
-    for (let depth = 0; container && depth < 5; depth += 1, container = container.parentElement) {
-      const localInput = container.querySelector?.('input[type="file"]');
-      if (localInput) return { field: localInput, highlight: trigger };
-    }
-    const allInputs = [...document.querySelectorAll('input[type="file"]')];
-    if (allInputs.length === 1) return { field: allInputs[0], highlight: trigger };
-    return null;
+    const nearby = target.closest("button, [role='button'], div, section, form")
+      ?.querySelector("input[type='file']");
+    if (nearby) return nearby;
+    const pageInputs = [...document.querySelectorAll("input[type='file']")]
+      .filter((item) => !item.closest(".lsa-assistant, .lsa-bar, .lsa-panel"));
+    return pageInputs.length === 1 ? pageInputs[0] : null;
   }
 
   function getBindingCandidate(target) {
     if (!state.binding) return null;
-    if (state.binding.step === 2) return findUploadInput(target);
+    const step = BIND_STEPS[state.binding.step];
+    if (step?.kind === "file") {
+      const input = fileInputFromTarget(target);
+      if (!input) return null;
+      const highlight = target.closest?.("label, button, [role='button'], [class*='upload'], [class*='Upload']") || input;
+      if (highlight.closest?.(".lsa-assistant, .lsa-bar, .lsa-panel")) return null;
+      return { field: input, highlight };
+    }
     const field = target?.closest?.("input, textarea, [contenteditable='true']");
     if (!isEditableField(field) || field.closest(".lsa-assistant, .lsa-bar, .lsa-panel")) return null;
     return { field, highlight: field };
@@ -395,12 +417,7 @@
   function renderBindingBar() {
     if (!state.binding) return;
     const step = BIND_STEPS[state.binding.step];
-    const actions = [];
-    if (state.binding.step === 2) {
-      actions.push({ label: "跳过图片上传", onClick: finishBinding });
-    }
-    actions.push({ label: "取消（Esc）", onClick: stopBindingMode });
-    showBar(step.label, actions);
+    showBar(step.label, [{ label: "取消（Esc）", onClick: stopBindingMode }]);
   }
 
   function onFieldMouseOver(event) {
@@ -446,12 +463,15 @@
       ...settings,
       siteRules: {
         ...(settings.siteRules || {}),
-        [location.hostname]: rule,
+        [location.hostname]: {
+          ...(settings.siteRules?.[location.hostname] || {}),
+          ...rule,
+        },
       },
     };
     await chrome.storage.sync.set({ settings: nextSettings });
     stopBindingMode();
-    const doneBar = showBar(`已绑定 ${location.hostname}，现在可以一键填写文案并上传图片`, [
+    const doneBar = showBar(`已绑定 ${location.hostname}，现在可以一键填写标题、简介并上传图片`, [
       { label: "知道了", onClick: removeBar },
     ]);
     setTimeout(() => doneBar.isConnected && removeBar(), 3500);
@@ -470,15 +490,147 @@
     removeBar();
   }
 
+  function getSiteRoute() {
+    let hash = location.hash || "";
+    try {
+      hash = decodeURIComponent(hash);
+    } catch {
+      // Keep the raw hash when it contains a malformed escape sequence.
+    }
+    const questionAt = hash.indexOf("?");
+    const path = (questionAt >= 0 ? hash.slice(0, questionAt) : hash).replace(/\/$/, "");
+    const params = new URLSearchParams(questionAt >= 0 ? hash.slice(questionAt + 1) : "");
+    const isIndexFive = params.get("index") === "5";
+    const isList = path === "#/nav/overseasContent" && isIndexFive;
+    const isEdit = path === "#/nav/overseasDeliver" && isIndexFive && params.get("type") === "editEMPTY";
+    return {
+      supported: isList || isEdit,
+      hostname: location.hostname,
+      kind: isList ? "list" : isEdit ? "edit" : "other",
+      isList,
+      isEdit,
+      id: params.get("id") || "",
+      index: params.get("index") || "",
+      hash,
+      url: location.href,
+    };
+  }
+
+  function fieldLabelText(field) {
+    const texts = [];
+    if (field.labels) texts.push(...[...field.labels].map((label) => label.textContent));
+    for (const attribute of ["aria-label", "placeholder", "name", "data-field", "data-testid"]) {
+      texts.push(field.getAttribute?.(attribute));
+    }
+    const formItem = field.closest?.(
+      ".el-form-item, .ant-form-item, [class*='form-item'], [class*='formItem'], [class*='field']",
+    );
+    if (formItem) {
+      texts.push(formItem.querySelector("label, .el-form-item__label, [class*='label']")?.textContent);
+    }
+    return cleanText(texts.filter(Boolean).join(" ")).toLowerCase();
+  }
+
+  function isFieldAvailable(field) {
+    if (!field || field.disabled || field.readOnly) return false;
+    if (field.closest?.(".lsa-assistant, .lsa-bar, .lsa-panel")) return false;
+    return true;
+  }
+
+  function textFieldScore(field, kind) {
+    if (!isFieldAvailable(field) || !isEditableField(field)) return -Infinity;
+    const label = fieldLabelText(field);
+    const maxLength = Number(field.getAttribute?.("maxlength")) || 0;
+    let score = 0;
+    if (kind === "title") {
+      if (/(标题|title|headline|subject)/i.test(label)) score += 16;
+      if (/(简介|摘要|描述|summary|description|content|正文)/i.test(label)) score -= 12;
+      if (field instanceof HTMLInputElement) score += 3;
+      if (maxLength === 12) score += 12;
+      else if (maxLength > 0 && maxLength <= 30) score += 4;
+    } else {
+      if (/(简介|摘要|描述|summary|description|subtitle|abstract)/i.test(label)) score += 16;
+      if (/(标题|title|headline)/i.test(label)) score -= 10;
+      if (field instanceof HTMLTextAreaElement || field.isContentEditable) score += 4;
+      if (maxLength === 50) score += 12;
+      else if (maxLength >= 30 && maxLength <= 200) score += 4;
+    }
+    if (field.offsetParent !== null) score += 1;
+    return score;
+  }
+
+  function autoDetectTextField(kind, excluded = new Set()) {
+    const candidates = [...document.querySelectorAll(
+      "input:not([type]), input[type='text'], textarea, [contenteditable='true']",
+    )]
+      .filter((field) => !excluded.has(field))
+      .map((field, domIndex) => ({ field, domIndex, score: textFieldScore(field, kind) }))
+      .filter((item) => Number.isFinite(item.score))
+      .sort((a, b) => b.score - a.score || a.domIndex - b.domIndex);
+    if (!candidates.length) return null;
+    if (candidates[0].score > 0) return candidates[0].field;
+    if (kind === "summary") {
+      return candidates.find((item) => item.field instanceof HTMLTextAreaElement)?.field || null;
+    }
+    return candidates.length === 1 ? candidates[0].field : null;
+  }
+
+  function autoDetectUploadField() {
+    const candidates = [...document.querySelectorAll("input[type='file']")]
+      .filter(isFieldAvailable)
+      .map((field, domIndex) => {
+        const accept = String(field.accept || "").toLowerCase();
+        const context = cleanText([
+          fieldLabelText(field),
+          field.closest("label, [class*='upload'], [class*='Upload'], .el-form-item")?.textContent,
+        ].filter(Boolean).join(" ")).toLowerCase();
+        let score = 0;
+        if (!accept || accept.includes("image") || accept.includes(".jpg") || accept.includes(".png")) score += 4;
+        if (/(图片|封面|配图|上传|替换|image|cover|upload)/i.test(context)) score += 10;
+        return { field, domIndex, score };
+      })
+      .sort((a, b) => b.score - a.score || a.domIndex - b.domIndex);
+    if (!candidates.length) return null;
+    return candidates[0].score > 0 || candidates.length === 1 ? candidates[0].field : null;
+  }
+
   async function getSiteRule() {
     const { settings = {} } = await chrome.storage.sync.get("settings");
     return settings.siteRules?.[location.hostname] || null;
   }
 
-  async function getPageContext() {
+  async function resolveSiteFields() {
     const rule = await getSiteRule();
-    const titleField = safeQuery(rule?.titleSelector);
-    const summaryField = safeQuery(rule?.summarySelector);
+    const storedTitle = safeQuery(rule?.titleSelector);
+    const storedSummary = safeQuery(rule?.summarySelector);
+    const storedUploadTarget = safeQuery(rule?.imageUploadSelector);
+    const titleField = isFieldAvailable(storedTitle) ? storedTitle : autoDetectTextField("title");
+    const summaryField = isFieldAvailable(storedSummary)
+      ? storedSummary
+      : autoDetectTextField("summary", new Set(titleField ? [titleField] : []));
+    const imageUploadField = storedUploadTarget?.matches?.("input[type='file']")
+      ? storedUploadTarget
+      : fileInputFromTarget(storedUploadTarget) || autoDetectUploadField();
+    const statusFor = (field, selector, storedField) => ({
+      found: Boolean(field),
+      selector: selector || (field ? selectorFor(field) : ""),
+      source: field && field === storedField ? "saved" : field ? "auto" : "missing",
+    });
+    return {
+      rule,
+      titleField,
+      summaryField,
+      imageUploadField,
+      bindingStatus: {
+        title: statusFor(titleField, rule?.titleSelector, storedTitle),
+        summary: statusFor(summaryField, rule?.summarySelector, storedSummary),
+        upload: statusFor(imageUploadField, rule?.imageUploadSelector, storedUploadTarget),
+      },
+    };
+  }
+
+  async function getPageContext() {
+    const { titleField, summaryField, bindingStatus } = await resolveSiteFields();
     return {
       title: document.title || "",
       heading: document.querySelector("h1")?.innerText?.trim() || "",
@@ -491,18 +643,15 @@
       boundSummary: readFieldValue(summaryField),
       hostname: location.hostname,
       url: location.href,
+      route: getSiteRoute(),
+      bindingStatus,
     };
   }
 
   async function applyDraft(title, summary) {
-    const rule = await getSiteRule();
-    if (!rule?.titleSelector || !rule?.summarySelector) {
-      return { ok: false, message: "请先点击“绑定后台字段”完成一次设置" };
-    }
-    const titleField = safeQuery(rule.titleSelector);
-    const summaryField = safeQuery(rule.summarySelector);
+    const { titleField, summaryField, bindingStatus } = await resolveSiteFields();
     if (!titleField || !summaryField) {
-      return { ok: false, message: "未找到已绑定字段，请重新绑定当前网站" };
+      return { ok: false, message: "未找到标题或简介字段，请点击“绑定后台字段”完成设置", bindingStatus };
     }
     setFieldValue(titleField, title);
     setFieldValue(summaryField, summary);
@@ -510,55 +659,365 @@
       field.classList.add("lsa-field-flash");
       setTimeout(() => field.classList.remove("lsa-field-flash"), 1300);
     }
-    return { ok: true, message: "标题和简介已填写到后台" };
+    return { ok: true, message: "标题和简介已填写到后台", bindingStatus };
   }
 
-  function dataUrlToFile(dataUrl, fileName) {
-    const [header, encoded] = dataUrl.split(",", 2);
-    const contentType = header.match(/^data:([^;]+);base64$/)?.[1] || "image/jpeg";
-    const binary = atob(encoded || "");
-    const bytes = new Uint8Array(binary.length);
-    for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
-    return new File([bytes], fileName, { type: contentType, lastModified: Date.now() });
+  function actionLabelFor(element) {
+    const text = cleanText(element?.textContent);
+    if (!text || text.length > 24) return "";
+    return ACTION_LABELS.find((label) => text === label || text.startsWith(`${label} `)) || "";
   }
 
-  async function uploadStockImage(imageUrl, fileName = "lockscreen-image.jpg") {
-    const rule = await getSiteRule();
-    let uploadSelector = rule?.imageUploadSelector;
-    if (!uploadSelector && rule?.imageSelector) {
-      const legacyField = safeQuery(rule.imageSelector);
-      if (legacyField instanceof HTMLInputElement && legacyField.type === "file") {
-        uploadSelector = rule.imageSelector;
+  function findActionElements(root = document) {
+    const selector = "a, button, [role='button'], .el-button, span, div";
+    return [...root.querySelectorAll(selector)].filter((element) => {
+      if (element.closest(".lsa-assistant, .lsa-bar, .lsa-panel")) return false;
+      const label = actionLabelFor(element);
+      if (!label) return false;
+      return ![...element.children].some((child) => actionLabelFor(child) === label);
+    });
+  }
+
+  function actionLabelsInside(container) {
+    return new Set(findActionElements(container).map(actionLabelFor).filter(Boolean));
+  }
+
+  function textWithoutActions(container) {
+    let text = cleanText(container?.textContent);
+    for (const label of ACTION_LABELS) text = text.replace(new RegExp(label, "g"), " ");
+    text = text.replace(/^(相关)?操作$|^更多$/g, " ");
+    return cleanText(text);
+  }
+
+  function plausibleContainer(element) {
+    const rect = element.getBoundingClientRect();
+    if (rect.width < 80 || rect.height < 30) return false;
+    const text = cleanText(element.textContent);
+    return text.length >= 3 && text.length <= 6000;
+  }
+
+  function findCardContainer(actionElement) {
+    let current = actionElement;
+    let fallback = null;
+    for (let depth = 0; current && current !== document.body && depth < 12; depth += 1) {
+      if (!plausibleContainer(current)) {
+        current = current.parentElement;
+        continue;
+      }
+      const labels = actionLabelsInside(current);
+      const remaining = textWithoutActions(current);
+      const tag = current.tagName.toLowerCase();
+      const className = String(current.className || "");
+      const semanticContainer = tag === "tr" || tag === "li" || tag === "article" ||
+        current.getAttribute("role") === "row" || /(card|content-item|list-item|grid-item)/i.test(className);
+      if (labels.size && remaining.length >= 2) {
+        fallback ||= current;
+        if (semanticContainer || labels.size >= 2) return current;
+      }
+      current = current.parentElement;
+    }
+    return fallback;
+  }
+
+  function normalizeHref(value) {
+    const raw = cleanText(value);
+    if (!raw || /^(javascript:|void\b)/i.test(raw) || raw === "#") return "";
+    try {
+      return new URL(raw, location.href).href;
+    } catch {
+      return "";
+    }
+  }
+
+  function urlFromAction(element, container) {
+    if (!element) return "";
+    const candidates = [];
+    const anchor = element.matches("a") ? element : element.closest("a") || element.querySelector("a");
+    if (anchor) candidates.push(anchor);
+    candidates.push(element);
+    let parent = element.parentElement;
+    for (let depth = 0; parent && parent !== container?.parentElement && depth < 3; depth += 1) {
+      candidates.push(parent);
+      parent = parent.parentElement;
+    }
+    for (const candidate of candidates) {
+      for (const attribute of ["href", "data-href", "data-url", "data-link", "data-source", "to"]) {
+        const url = normalizeHref(candidate.getAttribute?.(attribute));
+        if (url) return url;
+      }
+      for (const [key, value] of Object.entries(candidate.dataset || {})) {
+        if (!/(url|href|link|source|target)/i.test(key) && !/^(https?:\/\/|#\/)/i.test(value)) continue;
+        const url = normalizeHref(value);
+        if (url) return url;
+      }
+      const inlineHandler = candidate.getAttribute?.("onclick") || "";
+      const inlineUrl = inlineHandler.match(/(?:https?:\/\/[^'"\s)]+|#\/[^'"\s)]+)/i)?.[0];
+      if (inlineUrl) {
+        const url = normalizeHref(inlineUrl);
+        if (url) return url;
       }
     }
-    if (!uploadSelector) {
-      return { ok: false, needsBinding: true, message: "请先点击“绑定字段”，绑定后台图片上传按钮" };
-    }
-    const uploadInput = safeQuery(uploadSelector);
-    if (!(uploadInput instanceof HTMLInputElement) || uploadInput.type !== "file") {
-      return { ok: false, needsBinding: true, message: "未找到已绑定的图片上传控件，请重新绑定字段" };
-    }
+    return "";
+  }
 
-    const response = await chrome.runtime.sendMessage({
-      type: "FETCH_IMAGE_FILE",
-      imageUrl,
-      fileName,
+  function actionByLabel(container, label) {
+    return findActionElements(container).find((element) => actionLabelFor(element) === label) || null;
+  }
+
+  function findFallbackUrl(container, kind) {
+    const anchors = [...container.querySelectorAll("a[href]")]
+      .map((anchor) => normalizeHref(anchor.getAttribute("href")))
+      .filter(Boolean);
+    if (kind === "edit") {
+      return anchors.find((url) => /#\/nav\/overseasDeliver\b/i.test(url) || /type=editEMPTY/i.test(url)) || "";
+    }
+    return anchors.find((url) => {
+      try {
+        const parsed = new URL(url);
+        return parsed.hostname !== location.hostname && /^https?:$/i.test(parsed.protocol);
+      } catch {
+        return false;
+      }
+    }) || "";
+  }
+
+  function extractItemId(container, editUrl) {
+    const idMatch = String(editUrl || "").match(/[?&]id=([^&#]+)/i);
+    if (idMatch) return decodeURIComponent(idMatch[1]);
+    const idNodes = [container, ...container.querySelectorAll("[data-id], [data-row-key], [row-key], [key]")];
+    for (const node of idNodes) {
+      for (const attribute of ["data-id", "data-row-key", "row-key", "key"]) {
+        const value = cleanText(node.getAttribute?.(attribute));
+        if (value && /^[\w.-]{2,}$/.test(value)) return value;
+      }
+    }
+    return "";
+  }
+
+  function titleCandidateScore(element, text, cardRect, domIndex) {
+    const tag = element.tagName.toLowerCase();
+    const identity = `${element.className || ""} ${element.getAttribute("data-field") || ""}`;
+    const rect = element.getBoundingClientRect();
+    let score = 0;
+    if (/^h[1-6]$/.test(tag)) score += 18;
+    if (/(^|[-_\s])(title|headline|subject)([-_\s]|$)/i.test(identity)) score += 24;
+    if (text.length >= 4 && text.length <= 80) score += 8;
+    else if (text.length <= 140) score += 2;
+    if (/^(原标题|标题|title)\s*[:：]/i.test(text)) score += 8;
+    if (/(简介|摘要|创建时间|更新时间|发布时间|状态|国家|语言|作者|来源|下载|复用)/i.test(text)) score -= 16;
+    if (/^\d{1,8}$/.test(text) || /^https?:\/\//i.test(text)) score -= 18;
+    if (rect.top >= cardRect.top - 2 && rect.top < cardRect.top + cardRect.height * 0.65) score += 4;
+    score -= domIndex / 10000;
+    return score;
+  }
+
+  function extractOriginalTitle(container) {
+    const cardRect = container.getBoundingClientRect();
+    const preferred = [...container.querySelectorAll(
+      "h1, h2, h3, h4, h5, h6, [class*='title'], [class*='Title'], [data-field*='title'], [data-field*='Title']",
+    )];
+    const fallback = [...container.querySelectorAll("p, span, strong, b, div")]
+      .filter((element) => element.children.length === 0 || element.childElementCount <= 1);
+    const seen = new Set();
+    const candidates = [...preferred, ...fallback]
+      .map((element, domIndex) => {
+        let text = cleanText(element.textContent);
+        text = text.replace(/^(原标题|标题|title)\s*[:：]\s*/i, "");
+        if (!text || seen.has(text) || text.length > 200 || ACTION_LABELS.some((label) => text === label)) return null;
+        seen.add(text);
+        return { element, text, score: titleCandidateScore(element, text, cardRect, domIndex) };
+      })
+      .filter(Boolean)
+      .sort((a, b) => b.score - a.score);
+    return candidates[0]?.score > -5 ? candidates[0].text : "";
+  }
+
+  function deduplicateContainers(containers) {
+    const unique = [...new Set(containers.filter(Boolean))];
+    return unique.filter((candidate) => !unique.some((other) => {
+      if (candidate === other || !candidate.contains(other)) return false;
+      const candidateArea = candidate.getBoundingClientRect().width * candidate.getBoundingClientRect().height;
+      const otherArea = other.getBoundingClientRect().width * other.getBoundingClientRect().height;
+      return otherArea > 0 && candidateArea > otherArea * 2.5;
+    }));
+  }
+
+  function scanListItems(limit = 30) {
+    const route = getSiteRoute();
+    const numericLimit = Math.max(1, Math.min(30, Number(limit) || 30));
+    if (!route.isList) {
+      return {
+        ok: false,
+        items: [],
+        message: "当前不是海外内容列表页",
+        diagnostics: { route, actionCount: 0, containerCount: 0, warnings: ["route_mismatch"] },
+      };
+    }
+    const actions = findActionElements();
+    const containers = deduplicateContainers(actions.map(findCardContainer));
+    const positioned = containers
+      .map((container, domIndex) => ({ container, domIndex, rect: container.getBoundingClientRect() }))
+      .filter((item) => item.rect.width > 0 && item.rect.height > 0)
+      .sort((a, b) => {
+        const rowTolerance = Math.max(20, Math.min(60, Math.min(a.rect.height, b.rect.height) * 0.2));
+        if (Math.abs(a.rect.top - b.rect.top) > rowTolerance) return a.rect.top - b.rect.top;
+        return a.rect.left - b.rect.left || a.domIndex - b.domIndex;
+      });
+    const warnings = [];
+    const items = positioned.slice(0, numericLimit).map(({ container, rect }, position) => {
+      const viewAction = actionByLabel(container, "查看链接");
+      const editAction = actionByLabel(container, "编辑");
+      const sourceUrl = urlFromAction(viewAction, container) || findFallbackUrl(container, "source");
+      const editUrl = urlFromAction(editAction, container) || findFallbackUrl(container, "edit");
+      const originalTitle = extractOriginalTitle(container);
+      const id = extractItemId(container, editUrl);
+      const missing = [];
+      if (!originalTitle) missing.push("originalTitle");
+      if (!sourceUrl) missing.push("sourceUrl");
+      if (!editUrl) missing.push("editUrl");
+      if (!id) missing.push("id");
+      if (missing.length) warnings.push(`item_${position + 1}:${missing.join(",")}`);
+      return {
+        index: position + 1,
+        id,
+        originalTitle,
+        title: originalTitle,
+        summary: "",
+        sourceUrl,
+        editUrl,
+        diagnostics: {
+          missing,
+          actions: [...actionLabelsInside(container)],
+          position: { top: Math.round(rect.top), left: Math.round(rect.left) },
+        },
+      };
     });
-    if (!response?.ok) return { ok: false, message: response?.error || "图片下载失败" };
-    const file = dataUrlToFile(response.dataUrl, response.fileName || fileName);
-    const transfer = new DataTransfer();
-    transfer.items.add(file);
-    const filesSetter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "files")?.set;
-    if (filesSetter) filesSetter.call(uploadInput, transfer.files);
-    else uploadInput.files = transfer.files;
-    uploadInput.dispatchEvent(new Event("input", { bubbles: true }));
-    uploadInput.dispatchEvent(new Event("change", { bubbles: true }));
-    uploadInput.classList.add("lsa-field-flash");
-    setTimeout(() => uploadInput.classList.remove("lsa-field-flash"), 1600);
-    const sizeMb = (file.size / 1024 / 1024).toFixed(1);
     return {
-      ok: true,
-      message: `已把 ${file.name}（${sizeMb}MB）写入后台上传控件，请确认上传预览`,
+      ok: items.length > 0,
+      items,
+      message: items.length ? `已按从上到下、从左到右识别 ${items.length} 条内容` : "未识别到内容卡片",
+      diagnostics: {
+        route,
+        actionCount: actions.length,
+        containerCount: containers.length,
+        visibleContainerCount: positioned.length,
+        returnedCount: items.length,
+        warnings,
+      },
+    };
+  }
+
+  function dataUrlToBlob(dataUrl, fallbackMime = "image/jpeg") {
+    const match = String(dataUrl || "").match(/^data:([^;,]+)?(;base64)?,([\s\S]*)$/);
+    if (!match) throw new Error("图片数据不是有效的 data URL");
+    const mime = match[1] || fallbackMime;
+    const binary = match[2] ? atob(match[3]) : decodeURIComponent(match[3]);
+    const bytes = new Uint8Array(binary.length);
+    for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
+    return new Blob([bytes], { type: mime });
+  }
+
+  function normalizeUploadPayload(record, imagePayload = {}) {
+    const nestedImage = record?.image || {};
+    const payload = imagePayload || {};
+    const mime = payload.mime || payload.mimeType || record?.imageMime || nestedImage.mime || nestedImage.mimeType || "image/jpeg";
+    const base64 = payload.base64 || record?.imageBase64 || nestedImage.base64 || "";
+    return {
+      imageDataUrl: payload.imageDataUrl || payload.dataUrl || record?.imageDataUrl || nestedImage.imageDataUrl || nestedImage.dataUrl ||
+        (base64 ? `data:${mime};base64,${base64}` : ""),
+      mime,
+      fileName: payload.fileName || record?.imageFileName || nestedImage.fileName || "lockscreen-image.jpg",
+    };
+  }
+
+  async function injectUploadFile(input, uploadPayload) {
+    if (!uploadPayload.imageDataUrl) {
+      return { requested: false, ok: true, message: "本条记录未附带图片数据" };
+    }
+    if (!input) {
+      return { requested: true, ok: false, message: "未找到后台图片上传控件，请重新绑定" };
+    }
+    try {
+      const blob = dataUrlToBlob(uploadPayload.imageDataUrl, uploadPayload.mime);
+      const fileName = cleanText(uploadPayload.fileName) || "lockscreen-image.jpg";
+      const file = new File([blob], fileName, { type: blob.type || uploadPayload.mime, lastModified: Date.now() });
+      const transfer = new DataTransfer();
+      transfer.items.add(file);
+      input.files = transfer.files;
+      const assigned = input.files?.length === 1 && input.files[0]?.size === file.size;
+      input.dispatchEvent(new Event("input", { bubbles: true, composed: true }));
+      input.dispatchEvent(new Event("change", { bubbles: true, composed: true }));
+      input.classList.add("lsa-field-flash");
+      setTimeout(() => input.classList.remove("lsa-field-flash"), 1300);
+      return {
+        requested: true,
+        ok: assigned,
+        message: assigned ? "图片已写入后台上传控件，请确认上传预览" : "浏览器未接受图片文件",
+        fileName: file.name,
+        size: file.size,
+        mime: file.type,
+      };
+    } catch (error) {
+      return { requested: true, ok: false, message: error?.message || "图片写入上传控件失败" };
+    }
+  }
+
+  async function fieldApplyStatus(field, value, label, characterLimit) {
+    if (!field) return { ok: false, expected: value, actual: "", message: `未找到${label}字段` };
+    const count = characterCount(value);
+    if (!cleanText(value)) {
+      return { ok: false, expected: value, actual: readFieldValue(field), message: `${label}为空，未覆盖原内容` };
+    }
+    if (characterLimit && count > characterLimit) {
+      return {
+        ok: false,
+        expected: value,
+        actual: readFieldValue(field),
+        characterCount: count,
+        message: `${label}为 ${count} 字符，超过 ${characterLimit} 字符限制，未写入`,
+      };
+    }
+    setFieldValue(field, value);
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    const actual = readFieldValue(field);
+    const ok = actual === value;
+    field.classList.add("lsa-field-flash");
+    setTimeout(() => field.classList.remove("lsa-field-flash"), 1300);
+    return { ok, expected: value, actual, characterCount: count, message: ok ? `${label}已填写` : `${label}写入后读回不一致` };
+  }
+
+  async function applyBatchRecord(record = {}, imagePayload = {}) {
+    const route = getSiteRoute();
+    if (!route.isEdit) {
+      return {
+        ok: false,
+        message: "当前不是海外内容编辑页，未执行填写或上传",
+        diagnostics: { route },
+      };
+    }
+    const [{ titleField, summaryField, imageUploadField, bindingStatus }, { settings = {} }] = await Promise.all([
+      resolveSiteFields(),
+      chrome.storage.sync.get("settings"),
+    ]);
+    const title = String(record.title ?? record.rewrittenTitle ?? record.generatedTitle ?? record.newTitle ?? "");
+    const summary = String(
+      record.summary ?? record.rewrittenSummary ?? record.generatedSummary ?? record.newSummary ?? record.description ?? "",
+    );
+    const [titleStatus, summaryStatus] = await Promise.all([
+      fieldApplyStatus(titleField, title, "标题", Number(settings.titleLimit) || 12),
+      fieldApplyStatus(summaryField, summary, "简介", Number(settings.summaryLimit) || 50),
+    ]);
+    const upload = await injectUploadFile(imageUploadField, normalizeUploadPayload(record, imagePayload));
+    const ok = titleStatus.ok && summaryStatus.ok && upload.ok;
+    return {
+      ok,
+      message: ok
+        ? upload.requested ? "标题、简介和图片已写入后台，请人工核对后保存" : "标题和简介已写入后台，请人工核对后保存"
+        : "部分内容未能写入，请查看分项结果或重新绑定字段",
+      title: titleStatus,
+      summary: summaryStatus,
+      upload,
+      diagnostics: { route, bindingStatus, finalSaveClicked: false },
     };
   }
 
@@ -573,34 +1032,89 @@
     startReplaceMode();
   }
 
+  function scheduleSiteStateCheck(source = "dom") {
+    clearTimeout(state.siteStateTimer);
+    state.siteStateTimer = setTimeout(() => {
+      const route = getSiteRoute();
+      const signature = [
+        route.kind,
+        route.id,
+        document.querySelectorAll("input, textarea, [contenteditable='true']").length,
+        document.querySelectorAll("input[type='file']").length,
+        route.isList ? findActionElements().length : 0,
+      ].join(":");
+      if (signature === state.siteStateSignature) return;
+      state.siteStateSignature = signature;
+      document.dispatchEvent(new CustomEvent("lsa:site-state-change", {
+        detail: { source, route, signature },
+      }));
+    }, source === "hashchange" ? 30 : 250);
+  }
+
+  window.addEventListener("hashchange", () => scheduleSiteStateCheck("hashchange"));
+  window.addEventListener("popstate", () => scheduleSiteStateCheck("popstate"));
+  const siteObserver = new MutationObserver(() => scheduleSiteStateCheck("dom"));
+  siteObserver.observe(document.documentElement, { childList: true, subtree: true });
+  scheduleSiteStateCheck("initial");
+
   globalThis.__lsaPageTools = {
+    getSiteRoute,
+    scanListItems,
     getPageContext,
     applyDraft,
+    applyBatchRecord,
     startReplaceMode,
     startBindingMode,
     chooseReplacement,
-    uploadStockImage,
   };
 
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
-    if (message.type === "GET_PAGE_CONTEXT") {
-      getPageContext().then(sendResponse);
+    const action = message?.action || message?.type;
+    if (action === "GET_SITE_ROUTE") {
+      sendResponse(getSiteRoute());
+      return;
+    }
+    if (action === "SCAN_LIST_ITEMS") {
+      sendResponse(scanListItems(message.limit));
+      return;
+    }
+    if (action === "GET_PAGE_CONTEXT") {
+      getPageContext().then(sendResponse).catch((error) => sendResponse({
+        ok: false,
+        message: error?.message || "读取页面内容失败",
+        route: getSiteRoute(),
+      }));
       return true;
     }
-    if (message.type === "APPLY_DRAFT") {
-      applyDraft(message.title || "", message.summary || "").then(sendResponse);
+    if (action === "APPLY_DRAFT") {
+      applyDraft(message.title || "", message.summary || "").then(sendResponse).catch((error) => sendResponse({
+        ok: false,
+        message: error?.message || "填写标题和简介失败",
+      }));
       return true;
     }
-    if (message.type === "TOGGLE_REPLACE_MODE") {
+    if (action === "APPLY_BATCH_RECORD") {
+      const imagePayload = message.imagePayload || message.image || {
+        imageDataUrl: message.imageDataUrl,
+        dataUrl: message.dataUrl,
+        base64: message.base64,
+        mime: message.mime || message.mimeType,
+        fileName: message.fileName,
+      };
+      applyBatchRecord(message.record || message, imagePayload).then(sendResponse)
+        .catch((error) => sendResponse({ ok: false, message: error?.message || "批次内容写入失败" }));
+      return true;
+    }
+    if (action === "TOGGLE_REPLACE_MODE") {
       if (state.replaceMode) stopReplaceMode();
       else startReplaceMode();
       sendResponse({ ok: true });
     }
-    if (message.type === "START_BIND_MODE") {
+    if (action === "START_BIND_MODE") {
       startBindingMode();
       sendResponse({ ok: true });
     }
-    if (message.type === "SET_REPLACE_TARGET") {
+    if (action === "SET_REPLACE_TARGET") {
       const image = findImageByUrl(message.srcUrl);
       if (image) selectImage(image);
       sendResponse({ ok: Boolean(image) });
