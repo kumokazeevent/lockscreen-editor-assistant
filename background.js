@@ -72,6 +72,11 @@ async function fetchJson(url, options = {}, timeout = 30000) {
       throw new Error(payload.detail || payload.error?.message || `请求失败（${response.status}）`);
     }
     return payload;
+  } catch (error) {
+    if (controller.signal.aborted || error?.name === "AbortError") {
+      throw new Error(`接口请求超过 ${Math.ceil(timeout / 1000)} 秒，请稍后重试；这通常是上游服务繁忙或网络较慢`);
+    }
+    throw error;
   } finally {
     clearTimeout(timer);
   }
@@ -218,6 +223,11 @@ async function fetchImageFile(imageUrl, suggestedName) {
       fileName: safeFileName(suggestedName || imageUrl, contentType),
       size: buffer.byteLength,
     };
+  } catch (error) {
+    if (controller.signal.aborted || error?.name === "AbortError") {
+      throw new Error("图片下载超过 45 秒，请检查网络或选择另一张素材");
+    }
+    throw error;
   } finally {
     clearTimeout(timer);
   }
@@ -270,7 +280,7 @@ async function rewriteWithAi(payload) {
       Authorization: `Bearer ${apiKey}`,
     },
     body: JSON.stringify(requestBody),
-  }, 30000);
+  }, 45000);
   const content = data.choices?.[0]?.message?.content || data.output_text || "";
   const rewritten = extractJson(content);
   return {
