@@ -35,6 +35,8 @@ header {
 h1, h2, p { margin: 0; }
 h1 { font-size: 22px; }
 header p, .section-title p { margin-top: 4px; color: #748078; font-size: 12px; }
+.section-description { margin: -7px 0 16px; color: #66736b; font-size: 12px; line-height: 1.7; }
+.section-description a { color: #317352; }
 
 section {
   margin-bottom: 16px;
@@ -79,6 +81,11 @@ button {
 .primary { border: 1px solid #173d2d; color: white; background: #173d2d; }
 .secondary { border: 1px solid #d4ddd6; color: #375745; background: white; }
 .save-message { margin-left: 10px; color: #3d7459; font-size: 12px; }
+.ai-grid { grid-template-columns: 1.5fr .75fr 1fr; }
+.secret-row { display: flex; align-items: end; gap: 12px; }
+.secret-row label { min-width: 0; flex: 1; }
+.secret-row button { flex: 0 0 auto; }
+.connection-save { margin-top: 16px; }
 
 .rule-list { margin-top: 18px; }
 .rule-card {
@@ -97,5 +104,6 @@ button {
 .privacy-note p { color: #647169; font-size: 12px; line-height: 1.75; }
 
 @media (max-width: 620px) {
-  .form-grid { grid-template-columns: 1fr; }
+  .form-grid, .ai-grid { grid-template-columns: 1fr; }
+  .secret-row { align-items: stretch; flex-direction: column; }
 }

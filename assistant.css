@@ -1,0 +1,488 @@
+.lsa-assistant {
+  all: initial;
+  position: fixed;
+  top: 24px;
+  right: 18px;
+  z-index: 2147483646;
+  display: flex;
+  width: min(398px, calc(100vw - 24px));
+  height: min(720px, calc(100vh - 36px));
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid rgba(206, 218, 209, .96);
+  border-radius: 18px;
+  color: #18231d;
+  background: #f5f7f3;
+  box-shadow: 0 20px 64px rgba(9, 27, 18, .26), 0 2px 10px rgba(9, 27, 18, .1);
+  font-family: "Microsoft YaHei UI", "PingFang SC", system-ui, sans-serif;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.lsa-assistant *,
+.lsa-assistant *::before,
+.lsa-assistant *::after {
+  box-sizing: border-box;
+  font-family: inherit;
+}
+
+.lsa-assistant button,
+.lsa-assistant input,
+.lsa-assistant textarea,
+.lsa-assistant select {
+  font: inherit;
+}
+
+.lsa-assistant button,
+.lsa-assistant a {
+  -webkit-tap-highlight-color: transparent;
+}
+
+.lsa-assistant-header {
+  display: flex;
+  flex: 0 0 auto;
+  min-height: 58px;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 11px 10px 13px;
+  color: white;
+  background: linear-gradient(135deg, #173d2d, #285b42);
+  cursor: move;
+  user-select: none;
+}
+
+.lsa-assistant-logo {
+  display: grid;
+  width: 34px;
+  height: 34px;
+  flex: 0 0 auto;
+  place-items: center;
+  border-radius: 10px;
+  color: #173d2d;
+  background: #c9f0d5;
+  font-size: 15px;
+  font-weight: 900;
+}
+
+.lsa-assistant-name {
+  min-width: 0;
+  flex: 1;
+}
+
+.lsa-assistant-name strong,
+.lsa-assistant-name small {
+  display: block;
+}
+
+.lsa-assistant-name strong {
+  font-size: 13px;
+  letter-spacing: .02em;
+}
+
+.lsa-assistant-name small {
+  margin-top: 2px;
+  overflow: hidden;
+  opacity: .72;
+  font-size: 9px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.lsa-window-actions {
+  display: flex;
+  gap: 5px;
+}
+
+.lsa-window-button {
+  display: grid;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  place-items: center;
+  border: 1px solid rgba(255, 255, 255, .22);
+  border-radius: 8px;
+  color: white;
+  background: rgba(255, 255, 255, .08);
+  cursor: pointer;
+}
+
+.lsa-window-button:hover {
+  background: rgba(255, 255, 255, .18);
+}
+
+.lsa-assistant-nav {
+  display: grid;
+  flex: 0 0 auto;
+  grid-template-columns: 1fr 1fr;
+  gap: 5px;
+  padding: 8px;
+  border-bottom: 1px solid #dde4de;
+  background: rgba(255, 255, 255, .86);
+}
+
+.lsa-tab-button {
+  height: 34px;
+  border: 0;
+  border-radius: 9px;
+  color: #69766e;
+  background: transparent;
+  font-size: 11px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.lsa-tab-button.is-active {
+  color: #204c38;
+  background: #e5f1e8;
+  box-shadow: inset 0 0 0 1px #cce0d1;
+}
+
+.lsa-assistant-body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 12px;
+  scrollbar-color: #c7d3ca transparent;
+  scrollbar-width: thin;
+}
+
+.lsa-tab-panel[hidden] {
+  display: none !important;
+}
+
+.lsa-section-card {
+  margin-bottom: 10px;
+  padding: 12px;
+  border: 1px solid #dbe3dd;
+  border-radius: 13px;
+  background: rgba(255, 255, 255, .94);
+  box-shadow: 0 6px 16px rgba(26, 49, 37, .04);
+}
+
+.lsa-section-row,
+.lsa-field-label,
+.lsa-button-row,
+.lsa-search-row,
+.lsa-pagination {
+  display: flex;
+  align-items: center;
+}
+
+.lsa-section-row,
+.lsa-field-label,
+.lsa-pagination {
+  justify-content: space-between;
+}
+
+.lsa-section-row {
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.lsa-section-title {
+  margin: 0;
+  color: #213128;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.lsa-section-hint,
+.lsa-license-note,
+.lsa-status-text {
+  margin: 0;
+  color: #748078;
+  font-size: 9px;
+  line-height: 1.55;
+}
+
+.lsa-field-label {
+  margin: 9px 2px 5px;
+  color: #5b6961;
+  font-size: 10px;
+  font-weight: 800;
+}
+
+.lsa-counter {
+  padding: 2px 6px;
+  border-radius: 999px;
+  color: #42604f;
+  background: #edf4ee;
+  font-variant-numeric: tabular-nums;
+}
+
+.lsa-counter.is-over {
+  color: #a13f24;
+  background: #fff0e9;
+}
+
+.lsa-assistant-input,
+.lsa-assistant-textarea,
+.lsa-source-select {
+  width: 100%;
+  border: 1px solid #d5ded7;
+  border-radius: 9px;
+  outline: 0;
+  color: #1c2922;
+  background: #fbfcfa;
+}
+
+.lsa-assistant-input,
+.lsa-source-select {
+  height: 37px;
+  padding: 0 10px;
+}
+
+.lsa-assistant-textarea {
+  min-height: 80px;
+  padding: 8px 10px;
+  resize: vertical;
+  line-height: 1.55;
+}
+
+.lsa-assistant-input:focus,
+.lsa-assistant-textarea:focus,
+.lsa-source-select:focus {
+  border-color: #4d9470;
+  box-shadow: 0 0 0 3px rgba(77, 148, 112, .13);
+}
+
+.lsa-button-row {
+  flex-wrap: wrap;
+  gap: 7px;
+  margin-top: 11px;
+}
+
+.lsa-primary-button,
+.lsa-secondary-button,
+.lsa-text-action,
+.lsa-image-action {
+  min-height: 34px;
+  padding: 0 11px;
+  border-radius: 9px;
+  font-size: 10px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.lsa-primary-button {
+  flex: 1;
+  border: 1px solid #173d2d;
+  color: white;
+  background: #173d2d;
+}
+
+.lsa-primary-button:hover {
+  background: #24543d;
+}
+
+.lsa-secondary-button {
+  border: 1px solid #d4ddd6;
+  color: #345442;
+  background: white;
+}
+
+.lsa-secondary-button:hover {
+  border-color: #aac2b2;
+}
+
+.lsa-text-action {
+  min-height: auto;
+  padding: 0;
+  border: 0;
+  color: #36785a;
+  background: transparent;
+}
+
+.lsa-status-text {
+  min-height: 16px;
+  margin-top: 8px;
+}
+
+.lsa-status-text.is-error {
+  color: #a3472b;
+}
+
+.lsa-keyword-chips {
+  display: flex;
+  margin: 8px 0 10px;
+  gap: 6px;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.lsa-keyword-chip {
+  flex: 0 0 auto;
+  padding: 5px 8px;
+  border: 1px solid #d5e0d7;
+  border-radius: 999px;
+  color: #496254;
+  background: #f7faf7;
+  font-size: 9px;
+  cursor: pointer;
+}
+
+.lsa-keyword-chip.is-active {
+  border-color: #b6d4c0;
+  color: #1f5139;
+  background: #e4f2e7;
+  font-weight: 800;
+}
+
+.lsa-search-row {
+  gap: 6px;
+}
+
+.lsa-source-select {
+  width: 116px;
+  flex: 0 0 auto;
+  padding: 0 6px;
+  font-size: 10px;
+}
+
+.lsa-search-row .lsa-assistant-input {
+  min-width: 0;
+  flex: 1;
+}
+
+.lsa-search-row .lsa-primary-button {
+  flex: 0 0 auto;
+}
+
+.lsa-license-note {
+  margin: 8px 1px 0;
+}
+
+.lsa-license-note a,
+.lsa-stock-meta a {
+  color: #317352;
+  text-decoration: none;
+}
+
+.lsa-stock-results {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.lsa-stock-card {
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid #d8e1da;
+  border-radius: 11px;
+  background: white;
+}
+
+.lsa-stock-image {
+  display: block;
+  width: 100%;
+  height: 104px;
+  object-fit: cover;
+  background: #edf1ed;
+}
+
+.lsa-stock-copy {
+  padding: 7px;
+}
+
+.lsa-stock-title {
+  margin: 0 0 4px;
+  overflow: hidden;
+  color: #24352b;
+  font-size: 9px;
+  font-weight: 800;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.lsa-stock-meta {
+  height: 29px;
+  margin: 0 0 6px;
+  overflow: hidden;
+  color: #758078;
+  font-size: 8px;
+  line-height: 1.45;
+}
+
+.lsa-stock-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 5px;
+}
+
+.lsa-image-action {
+  min-height: 28px;
+  padding: 0 5px;
+  border: 1px solid #d4ddd6;
+  color: #385948;
+  background: #f9fbf9;
+  font-size: 8px;
+}
+
+.lsa-image-action.is-use {
+  border-color: #2c6b4d;
+  color: white;
+  background: #2c6b4d;
+}
+
+.lsa-image-action.is-attribution {
+  grid-column: 1 / -1;
+}
+
+.lsa-loading,
+.lsa-empty-result {
+  grid-column: 1 / -1;
+  padding: 34px 12px;
+  color: #76827a;
+  text-align: center;
+  font-size: 10px;
+}
+
+.lsa-pagination {
+  margin-top: 10px;
+}
+
+.lsa-assistant-footer {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 34px;
+  padding: 6px 12px;
+  border-top: 1px solid #dce3dd;
+  color: #7b867f;
+  background: rgba(255, 255, 255, .88);
+  font-size: 8px;
+}
+
+.lsa-assistant.is-minimized {
+  width: 168px;
+  height: 52px;
+  border-radius: 15px;
+}
+
+.lsa-assistant.is-minimized .lsa-assistant-header {
+  min-height: 52px;
+  padding: 8px 9px;
+}
+
+.lsa-assistant.is-minimized .lsa-assistant-name small,
+.lsa-assistant.is-minimized .lsa-minimize,
+.lsa-assistant.is-minimized .lsa-assistant-nav,
+.lsa-assistant.is-minimized .lsa-assistant-body,
+.lsa-assistant.is-minimized .lsa-assistant-footer {
+  display: none;
+}
+
+.lsa-assistant.is-minimized .lsa-assistant-name strong {
+  font-size: 11px;
+}
+
+@media (max-width: 480px) {
+  .lsa-assistant {
+    top: 6px;
+    right: 6px;
+    width: calc(100vw - 12px);
+    height: calc(100vh - 12px);
+  }
+}

@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "锁屏编辑助手",
-  "version": "0.1.0",
-  "description": "审核锁屏标题与简介、推荐图片搜索词，并在网页内快速预览替换图片。",
+  "version": "0.2.0",
+  "description": "常驻网页的锁屏编辑悬浮助手：智能改写文案、搜索可商用素材并快速换图。",
   "permissions": [
     "activeTab",
     "clipboardWrite",
@@ -18,8 +18,7 @@
     "service_worker": "background.js"
   },
   "action": {
-    "default_title": "锁屏编辑助手",
-    "default_popup": "popup.html"
+    "default_title": "显示或隐藏锁屏编辑助手"
   },
   "content_scripts": [
     {
@@ -28,10 +27,12 @@
         "https://*/*"
       ],
       "js": [
-        "content.js"
+        "content.js",
+        "assistant.js"
       ],
       "css": [
-        "content.css"
+        "content.css",
+        "assistant.css"
       ],
       "run_at": "document_idle"
     }

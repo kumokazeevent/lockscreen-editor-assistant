@@ -7,6 +7,7 @@
     hoveredImage: null,
     targetImage: null,
     originalImage: null,
+    pendingImage: null,
     binding: null,
     fieldHover: null,
   };
@@ -40,7 +41,10 @@
   }
 
   function isUsableImage(element) {
-    return element instanceof HTMLImageElement && element.width >= 80 && element.height >= 50;
+    return element instanceof HTMLImageElement &&
+      element.width >= 80 &&
+      element.height >= 50 &&
+      !element.closest(".lsa-assistant, .lsa-panel");
   }
 
   function onReplaceMouseOver(event) {
@@ -139,6 +143,13 @@
       }
     }
     renderReplacePanel();
+    if (state.pendingImage?.url) {
+      const urlInput = document.querySelector(".lsa-url-input");
+      if (urlInput) urlInput.value = state.pendingImage.url;
+      applyImageSource(state.pendingImage.url, state.pendingImage.url);
+      setPanelResult(`已应用来自 ${state.pendingImage.source || "素材库"} 的图片；请核对许可与最终效果`);
+      state.pendingImage = null;
+    }
   }
 
   function renderReplacePanel() {
@@ -474,6 +485,19 @@
       [image.currentSrc, image.src, image.getAttribute("src")].filter(Boolean).some((src) => src === url),
     );
   }
+
+  function chooseReplacement(url, source = "素材库") {
+    state.pendingImage = { url, source };
+    startReplaceMode();
+  }
+
+  globalThis.__lsaPageTools = {
+    getPageContext,
+    applyDraft,
+    startReplaceMode,
+    startBindingMode,
+    chooseReplacement,
+  };
 
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (message.type === "GET_PAGE_CONTEXT") {
