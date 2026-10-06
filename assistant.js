@@ -15,6 +15,32 @@
     "the", "and", "for", "with", "from", "this", "that", "into", "your", "about",
   ]);
 
+  const ENGLISH_STOP_WORDS = new Set([
+    "the", "and", "for", "with", "from", "this", "that", "these", "those", "into", "about",
+    "according", "report", "reports", "reported", "news", "latest", "today", "says", "said",
+    "will", "would", "has", "have", "had", "are", "was", "were", "been", "being", "their",
+    "more", "than", "after", "before", "over", "under", "during", "through", "while", "which",
+  ]);
+
+  const VISUAL_TRANSLATIONS = [
+    ["人工智能", "artificial intelligence"], ["机器人", "robot"], ["科技", "technology"],
+    ["手机", "smartphone"], ["电脑", "computer"], ["芯片", "microchip"], ["互联网", "internet"],
+    ["汽车", "car"], ["新能源", "electric vehicle"], ["交通", "transportation"], ["高铁", "high speed train"],
+    ["飞机", "airplane"], ["航天", "space exploration"], ["火箭", "rocket"], ["卫星", "satellite"],
+    ["城市", "city"], ["建筑", "architecture"], ["乡村", "countryside"], ["旅游", "travel"],
+    ["自然", "nature"], ["风景", "landscape"], ["森林", "forest"], ["山", "mountain"],
+    ["海", "ocean"], ["河流", "river"], ["湖", "lake"], ["沙漠", "desert"],
+    ["天气", "weather"], ["暴雨", "rainstorm"], ["雨", "rain"], ["雪", "snow"],
+    ["春天", "spring"], ["夏天", "summer"], ["秋天", "autumn"], ["冬天", "winter"],
+    ["健康", "healthcare"], ["医生", "doctor"], ["医院", "hospital"], ["运动", "sports"],
+    ["足球", "football"], ["篮球", "basketball"], ["教育", "education"], ["学校", "school"],
+    ["学生", "students"], ["文化", "culture"], ["艺术", "art"], ["博物馆", "museum"],
+    ["音乐", "music"], ["电影", "cinema"], ["美食", "food"], ["农业", "agriculture"],
+    ["家庭", "family"], ["儿童", "children"], ["老人", "elderly people"], ["女性", "woman"],
+    ["男性", "man"], ["工作", "workplace"], ["商业", "business"], ["经济", "economy"],
+    ["环保", "environment"], ["能源", "energy"], ["动物", "wildlife"], ["宠物", "pets"],
+  ];
+
   const state = {
     root: null,
     settings: { ...DEFAULT_SETTINGS },
@@ -25,6 +51,8 @@
     searchHasNext: false,
     saveTimer: null,
     dragging: null,
+    originalCopy: { title: "", summary: "" },
+    hasRewritten: false,
   };
 
   function graphemes(value = "") {
@@ -142,6 +170,90 @@
     return { title: nextTitle, summary: nextSummary };
   }
 
+  function extractEnglishKeywords(value) {
+    const words = cleanText(value).match(/[A-Za-z][A-Za-z'-]{1,30}|\d{2,4}/g) || [];
+    const selected = [];
+    for (const word of words) {
+      const normalized = word.toLowerCase();
+      if (ENGLISH_STOP_WORDS.has(normalized) || selected.includes(normalized)) continue;
+      selected.push(normalized);
+      if (selected.length >= 10) break;
+    }
+    return selected.join(" ");
+  }
+
+  function dictionaryEnglishQuery(title, summary) {
+    const source = `${title} ${summary}`;
+    const terms = [];
+    const latinTerms = source.match(/[A-Za-z][A-Za-z0-9.+#_-]{1,24}/g) || [];
+    for (const term of latinTerms) {
+      const normalized = term.toLowerCase();
+      if (!terms.includes(normalized)) terms.push(normalized);
+    }
+    for (const [chinese, english] of VISUAL_TRANSLATIONS) {
+      if (source.includes(chinese) && !terms.includes(english)) terms.push(english);
+      if (terms.length >= 8) break;
+    }
+    if (!terms.length) terms.push("editorial", "documentary", "news", "photography");
+    return terms.slice(0, 10).join(" ");
+  }
+
+  function applyEnglishQuery(value) {
+    const englishQuery = extractEnglishKeywords(value) || value.trim();
+    const input = query(".lsa-stock-query");
+    if (input) input.value = englishQuery;
+    state.keywords = englishQuery.split(/\s+/).filter(Boolean).slice(0, 10);
+    state.selectedKeywords = new Set(state.keywords);
+    renderKeywords();
+    scheduleDraftSave();
+    return englishQuery;
+  }
+
+  async function generateEnglishQuery() {
+    const title = state.originalCopy.title || query(".lsa-floating-title")?.value || "";
+    const summary = state.originalCopy.summary || query(".lsa-floating-summary")?.value || "";
+    const source = cleanText(`${title}。${summary}`);
+    if (!source.replace(/[。\s]/g, "")) {
+      setSearchStatus("请先读取原标题和原简介", true);
+      return "";
+    }
+
+    setSearchStatus("正在从原标题和原简介生成英文视觉关键词…");
+    if ("Translator" in globalThis) {
+      try {
+        const availability = await globalThis.Translator.availability({
+          sourceLanguage: "zh",
+          targetLanguage: "en",
+        });
+        if (availability !== "unavailable") {
+          const translator = await globalThis.Translator.create({
+            sourceLanguage: "zh",
+            targetLanguage: "en",
+            monitor(monitor) {
+              monitor.addEventListener("downloadprogress", (event) => {
+                setSearchStatus(`首次使用正在下载本地翻译模型：${Math.round(event.loaded * 100)}%`);
+              });
+            },
+          });
+          const translated = await translator.translate(source);
+          translator.destroy?.();
+          const queryText = applyEnglishQuery(translated);
+          setSearchStatus("已根据改写前原稿生成英文素材关键词（Chrome 本地翻译）");
+          return queryText;
+        }
+      } catch (error) {
+        setSearchStatus(`本地翻译暂不可用，已使用内置视觉词典：${error.message}`, true);
+      }
+    }
+
+    const fallback = dictionaryEnglishQuery(title, summary);
+    applyEnglishQuery(fallback);
+    if (!query(".lsa-search-status")?.classList.contains("is-error")) {
+      setSearchStatus("当前浏览器没有本地翻译模型，已使用内置视觉词典生成英文关键词");
+    }
+    return fallback;
+  }
+
   function create(tag, className, text) {
     const element = document.createElement(tag);
     if (className) element.className = className;
@@ -183,6 +295,10 @@
           title: query(".lsa-floating-title")?.value || "",
           summary: query(".lsa-floating-summary")?.value || "",
           query: query(".lsa-stock-query")?.value || "",
+          originalTitle: state.originalCopy.title,
+          originalSummary: state.originalCopy.summary,
+          hasRewritten: state.hasRewritten,
+          pageUrl: location.href,
           updatedAt: Date.now(),
         },
       });
@@ -259,10 +375,17 @@
       const summaryInput = query(".lsa-floating-summary");
       if (force || !titleInput.value) titleInput.value = cleanText(sourceTitle);
       if (force || !summaryInput.value) summaryInput.value = cleanText(sourceSummary);
+      if (force || (!state.originalCopy.title && !state.originalCopy.summary)) {
+        state.originalCopy = {
+          title: cleanText(sourceTitle),
+          summary: cleanText(sourceSummary),
+        };
+        state.hasRewritten = false;
+      }
       const host = query(".lsa-assistant-host");
       if (host) host.textContent = state.pageContext.hostname || "当前网页";
       updateCounts();
-      refreshKeywords(!query(".lsa-stock-query")?.value);
+      refreshKeywords(false);
       scheduleDraftSave();
       setStatus("已读取页面原文；可点击智能改写生成合规文案");
     } catch (error) {
@@ -277,17 +400,21 @@
       return setStatus("请先输入或读取原文", true);
     }
     const button = query(".lsa-rewrite-button");
+    if (!state.hasRewritten) {
+      state.originalCopy = { title: titleInput.value.trim(), summary: summaryInput.value.trim() };
+    }
     button.disabled = true;
     button.textContent = "正在改写…";
     setStatus("正在根据关键信息重写标题和简介");
 
     let result;
     let usedAi = false;
+    let aiImageQuery = "";
     try {
       const response = await chrome.runtime.sendMessage({
         type: "REWRITE_COPY",
-        title: titleInput.value,
-        summary: summaryInput.value,
+        title: state.originalCopy.title,
+        summary: state.originalCopy.summary,
         context: [state.pageContext.heading, state.pageContext.description].filter(Boolean).join("；"),
         titleLimit: state.settings.titleLimit,
         summaryLimit: state.settings.summaryLimit,
@@ -296,19 +423,23 @@
       if (response.configured) {
         result = localRewrite(response.title, response.summary);
         usedAi = true;
+        aiImageQuery = response.imageQueryEn || "";
       } else {
-        result = localRewrite(titleInput.value, summaryInput.value);
+        result = localRewrite(state.originalCopy.title, state.originalCopy.summary);
       }
     } catch (error) {
-      result = localRewrite(titleInput.value, summaryInput.value);
+      result = localRewrite(state.originalCopy.title, state.originalCopy.summary);
       setStatus(`在线改写不可用，已改用本地智能精简：${error.message}`, true);
     }
 
     titleInput.value = result.title;
     summaryInput.value = result.summary;
+    state.hasRewritten = true;
     updateCounts();
-    refreshKeywords(true);
+    refreshKeywords(false);
     scheduleDraftSave();
+    if (aiImageQuery) applyEnglishQuery(aiImageQuery);
+    else await generateEnglishQuery();
     if (!query(".lsa-copy-status")?.classList.contains("is-error")) {
       setStatus(usedAi ? "AI 语义改写完成，已校验 12/50 字限制" : "本地智能精简完成；配置 AI 接口后可获得更自然的语义改写");
     }
@@ -365,11 +496,17 @@
       meta.append(document.createTextNode(`${item.creator} · `));
       meta.append(createLink(item.license || "查看许可", item.licenseUrl));
       const actions = create("div", "lsa-stock-actions");
-      const use = create("button", "lsa-image-action is-use", "用于换图");
+      const use = create("button", "lsa-image-action is-use", "上传到后台");
       use.type = "button";
-      use.addEventListener("click", () => {
-        globalThis.__lsaPageTools.chooseReplacement(item.imageUrl, item.source === "pexels" ? "Pexels" : "Openverse");
-        setSearchStatus("请在网页上点击需要替换的图片；按 Esc 可取消");
+      use.addEventListener("click", async () => {
+        use.disabled = true;
+        use.textContent = "正在上传…";
+        setSearchStatus("正在下载素材并写入后台图片上传控件…");
+        const result = await globalThis.__lsaPageTools.uploadStockImage(item.imageUrl, item.fileName);
+        setSearchStatus(result.message, !result.ok);
+        if (result.needsBinding) globalThis.__lsaPageTools.startBindingMode();
+        use.disabled = false;
+        use.textContent = "上传到后台";
       });
       const source = create("button", "lsa-image-action", "查看来源");
       source.type = "button";
@@ -395,9 +532,12 @@
   }
 
   async function searchStock(page = 1) {
-    const searchQuery = query(".lsa-stock-query").value.trim();
+    let searchQuery = query(".lsa-stock-query").value.trim();
     const source = query(".lsa-source-select").value;
-    if (!searchQuery) return setSearchStatus("请先输入或选择搜索词", true);
+    if (!searchQuery || /[\u3400-\u9fff]/.test(searchQuery)) {
+      searchQuery = await generateEnglishQuery();
+    }
+    if (!searchQuery) return setSearchStatus("请先生成英文图片关键词", true);
     state.searchPage = page;
     renderSearchMessage("正在搜索允许商业使用的图片…", "lsa-loading");
     setSearchStatus("");
@@ -519,18 +659,18 @@
         </section>
         <section class="lsa-tab-panel" data-panel="images" hidden>
           <div class="lsa-section-card">
-            <div class="lsa-section-row"><h2 class="lsa-section-title">搜索可商用素材</h2><button class="lsa-text-action lsa-refresh-keywords" type="button">重算关键词</button></div>
-            <p class="lsa-section-hint">根据标题和简介推荐关键词，结果优先横图。</p>
+            <div class="lsa-section-row"><h2 class="lsa-section-title">搜索可商用素材</h2><button class="lsa-text-action lsa-generate-english" type="button">生成英文关键词</button></div>
+            <p class="lsa-section-hint">从改写前的原标题和原简介总结英文视觉关键词，Pexels 搜索更准确。</p>
             <div class="lsa-keyword-chips"></div>
             <div class="lsa-search-row">
               <select class="lsa-source-select" aria-label="素材来源"><option value="openverse">Openverse</option><option value="pexels">Pexels</option></select>
-              <input class="lsa-assistant-input lsa-stock-query" type="search" placeholder="图片搜索词" />
+              <input class="lsa-assistant-input lsa-stock-query" type="search" placeholder="English image keywords" />
               <button class="lsa-primary-button lsa-search-button" type="button">搜索</button>
             </div>
             <p class="lsa-license-note"><a href="https://openverse.org/" target="_blank" rel="noopener noreferrer">素材由 Openverse 提供</a>并默认筛选商业使用许可；<a href="https://www.pexels.com/api/" target="_blank" rel="noopener noreferrer">Pexels 免费 API Key</a> 可在设置中填写。</p>
             <p class="lsa-status-text lsa-search-status"></p>
           </div>
-          <div class="lsa-stock-results"><div class="lsa-empty-result">输入关键词后搜索，图片会在这里显示</div></div>
+          <div class="lsa-stock-results"><div class="lsa-empty-result">生成英文关键词后搜索，图片会在这里显示</div></div>
           <div class="lsa-pagination">
             <button class="lsa-secondary-button lsa-prev-page" type="button" disabled>上一页</button>
             <span class="lsa-page-number">第 1 页</span>
@@ -562,9 +702,15 @@
       query(".lsa-restore").title = "恢复";
     }
 
-    query(".lsa-floating-title").value = draft.title || "";
-    query(".lsa-floating-summary").value = draft.summary || "";
-    query(".lsa-stock-query").value = draft.query || "";
+    const samePageDraft = draft.pageUrl === location.href;
+    query(".lsa-floating-title").value = samePageDraft ? draft.title || "" : "";
+    query(".lsa-floating-summary").value = samePageDraft ? draft.summary || "" : "";
+    query(".lsa-stock-query").value = samePageDraft ? draft.query || "" : "";
+    state.originalCopy = {
+      title: samePageDraft ? draft.originalTitle || draft.title || "" : "",
+      summary: samePageDraft ? draft.originalSummary || draft.summary || "" : "",
+    };
+    state.hasRewritten = samePageDraft && Boolean(draft.hasRewritten);
     updateCounts();
 
     query(".lsa-assistant-header").addEventListener("pointerdown", startDrag);
@@ -579,7 +725,7 @@
     query(".lsa-rewrite-button").addEventListener("click", rewriteCopy);
     query(".lsa-apply-draft").addEventListener("click", applyDraft);
     query(".lsa-bind-fields").addEventListener("click", () => globalThis.__lsaPageTools.startBindingMode());
-    query(".lsa-refresh-keywords").addEventListener("click", () => refreshKeywords(true));
+    query(".lsa-generate-english").addEventListener("click", generateEnglishQuery);
     query(".lsa-search-button").addEventListener("click", () => searchStock(1));
     query(".lsa-stock-query").addEventListener("keydown", (event) => {
       if (event.key === "Enter") searchStock(1);
@@ -589,6 +735,12 @@
     query(".lsa-open-settings").addEventListener("click", () => chrome.runtime.sendMessage({ type: "OPEN_OPTIONS" }));
     for (const input of [query(".lsa-floating-title"), query(".lsa-floating-summary")]) {
       input.addEventListener("input", () => {
+        if (!state.hasRewritten) {
+          state.originalCopy = {
+            title: query(".lsa-floating-title").value,
+            summary: query(".lsa-floating-summary").value,
+          };
+        }
         updateCounts();
         scheduleDraftSave();
       });
@@ -600,7 +752,8 @@
       if (rect) applyPosition({ left: rect.left, top: rect.top });
     });
 
-    refreshKeywords(!draft.query);
+    refreshKeywords(false);
+    if (samePageDraft && draft.query) applyEnglishQuery(draft.query);
     await readPage(false);
     if (!restore) await saveAssistantState({ enabled: true });
   }

@@ -92,6 +92,7 @@ function normalizeOpenverseImage(item) {
     attribution: item.attribution || "",
     width: item.width || 0,
     height: item.height || 0,
+    fileName: `openverse-${item.id}.${item.filetype || "jpg"}`,
   };
 }
 
@@ -110,6 +111,7 @@ function normalizePexelsImage(item) {
     attribution: `Photo by ${item.photographer || "photographer"} on Pexels`,
     width: item.width || 0,
     height: item.height || 0,
+    fileName: `pexels-${item.id}.jpg`,
   };
 }
 
@@ -124,7 +126,7 @@ async function searchStockImages(source, query, page = 1) {
     const url = new URL("https://api.pexels.com/v1/search");
     url.searchParams.set("query", query.trim());
     url.searchParams.set("orientation", "landscape");
-    url.searchParams.set("locale", "zh-CN");
+    url.searchParams.set("locale", /[\u3400-\u9fff]/.test(query) ? "zh-CN" : "en-US");
     url.searchParams.set("per_page", "12");
     url.searchParams.set("page", String(page));
     const data = await fetchJson(url.href, {
@@ -169,6 +171,54 @@ function extractJson(text) {
   }
 }
 
+function arrayBufferToBase64(buffer) {
+  const bytes = new Uint8Array(buffer);
+  let binary = "";
+  const chunkSize = 0x8000;
+  for (let offset = 0; offset < bytes.length; offset += chunkSize) {
+    binary += String.fromCharCode(...bytes.subarray(offset, offset + chunkSize));
+  }
+  return btoa(binary);
+}
+
+function safeFileName(value, contentType) {
+  const fallbackExtension = contentType.includes("png") ? "png" :
+    contentType.includes("webp") ? "webp" :
+    contentType.includes("gif") ? "gif" : "jpg";
+  const cleaned = String(value || "")
+    .split(/[?#]/)[0]
+    .split("/")
+    .pop()
+    .replace(/[^a-zA-Z0-9._-]/g, "-")
+    .replace(/-+/g, "-")
+    .slice(0, 100);
+  if (!cleaned || !/\.[a-zA-Z0-9]{2,5}$/.test(cleaned)) return `lockscreen-image.${fallbackExtension}`;
+  return cleaned;
+}
+
+async function fetchImageFile(imageUrl, suggestedName) {
+  if (!/^https?:\/\//i.test(imageUrl || "")) throw new Error("图片地址无效");
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 45000);
+  try {
+    const response = await fetch(imageUrl, { signal: controller.signal, redirect: "follow" });
+    if (!response.ok) throw new Error(`图片下载失败（${response.status}）`);
+    const contentType = (response.headers.get("content-type") || "image/jpeg").split(";")[0];
+    if (!contentType.startsWith("image/")) throw new Error("素材地址返回的不是图片文件");
+    const buffer = await response.arrayBuffer();
+    if (!buffer.byteLength) throw new Error("下载到的图片文件为空");
+    if (buffer.byteLength > 18 * 1024 * 1024) throw new Error("图片超过 18MB，请选择较小素材");
+    return {
+      dataUrl: `data:${contentType};base64,${arrayBufferToBase64(buffer)}`,
+      contentType,
+      fileName: safeFileName(suggestedName || imageUrl, contentType),
+      size: buffer.byteLength,
+    };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 async function rewriteWithAi(payload) {
   const [{ settings = {} }, { localSecrets = {} }] = await Promise.all([
     chrome.storage.sync.get("settings"),
@@ -187,7 +237,8 @@ async function rewriteWithAi(payload) {
     "你是中文杂志锁屏内容编辑。将原文改写成自然、准确、完整且有吸引力的标题和简介。",
     `标题最多${titleLimit}个Unicode字符，简介最多${summaryLimit}个Unicode字符。`,
     "不要机械截断，不要添加省略号，不要编造原文没有的事实。优先保留人物、事件、地点、数字等关键信息。",
-    "只输出严格JSON，格式为：{\"title\":\"...\",\"summary\":\"...\"}",
+    "同时根据原文生成适合英文图片素材库的搜索词：5到10个英文视觉关键词，优先人物、地点、物体、场景和氛围，不要抽象新闻套话。",
+    "只输出严格JSON，格式为：{\"title\":\"...\",\"summary\":\"...\",\"image_query_en\":\"...\"}",
   ].join("\n");
   const userPrompt = `原标题：${payload.title || "（空）"}\n原简介：${payload.summary || "（空）"}\n页面补充：${payload.context || "（无）"}`;
   const data = await fetchJson(endpoint, {
@@ -211,6 +262,7 @@ async function rewriteWithAi(payload) {
     configured: true,
     title: String(rewritten.title || "").trim(),
     summary: String(rewritten.summary || "").trim(),
+    imageQueryEn: String(rewritten.image_query_en || "").trim(),
   };
 }
 
@@ -241,6 +293,13 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     rewriteWithAi(message)
       .then((result) => sendResponse({ ok: true, ...result }))
       .catch((error) => sendResponse({ ok: false, error: error.message || "AI 改写失败" }));
+    return true;
+  }
+
+  if (message.type === "FETCH_IMAGE_FILE") {
+    fetchImageFile(message.imageUrl, message.fileName)
+      .then((result) => sendResponse({ ok: true, ...result }))
+      .catch((error) => sendResponse({ ok: false, error: error.message || "图片下载失败" }));
     return true;
   }
 });

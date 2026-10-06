@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "锁屏编辑助手",
-  "version": "0.2.0",
-  "description": "常驻网页的锁屏编辑悬浮助手：智能改写文案、搜索可商用素材并快速换图。",
+  "version": "0.3.0",
+  "description": "常驻网页的锁屏编辑悬浮助手：智能改写文案、生成英文素材词并上传可商用配图。",
   "permissions": [
     "activeTab",
     "clipboardWrite",

@@ -10,6 +10,7 @@
     pendingImage: null,
     binding: null,
     fieldHover: null,
+    fieldCandidate: null,
   };
 
   function createElement(tag, className, text) {
@@ -341,13 +342,43 @@
   const BIND_STEPS = [
     { key: "titleSelector", label: "第 1 步：点击后台的标题输入框" },
     { key: "summarySelector", label: "第 2 步：点击后台的简介输入框" },
-    { key: "imageSelector", label: "第 3 步：点击图片 URL 输入框（没有可跳过）" },
+    { key: "imageUploadSelector", label: "第 3 步：点击后台的图片上传按钮或选择文件区域（没有可跳过）" },
   ];
 
   function isEditableField(element) {
     return element instanceof HTMLInputElement ||
       element instanceof HTMLTextAreaElement ||
       element.isContentEditable;
+  }
+
+  function findUploadInput(target) {
+    const direct = target?.closest?.('input[type="file"]');
+    if (direct) return { field: direct, highlight: direct };
+
+    const trigger = target?.closest?.(
+      'label, button, [role="button"], [class*="upload" i], [class*="uploader" i], [class*="file" i]',
+    );
+    if (!trigger || trigger.closest(".lsa-assistant, .lsa-bar, .lsa-panel")) return null;
+    if (trigger instanceof HTMLLabelElement && trigger.control?.matches?.('input[type="file"]')) {
+      return { field: trigger.control, highlight: trigger };
+    }
+
+    let container = trigger;
+    for (let depth = 0; container && depth < 5; depth += 1, container = container.parentElement) {
+      const localInput = container.querySelector?.('input[type="file"]');
+      if (localInput) return { field: localInput, highlight: trigger };
+    }
+    const allInputs = [...document.querySelectorAll('input[type="file"]')];
+    if (allInputs.length === 1) return { field: allInputs[0], highlight: trigger };
+    return null;
+  }
+
+  function getBindingCandidate(target) {
+    if (!state.binding) return null;
+    if (state.binding.step === 2) return findUploadInput(target);
+    const field = target?.closest?.("input, textarea, [contenteditable='true']");
+    if (!isEditableField(field) || field.closest(".lsa-assistant, .lsa-bar, .lsa-panel")) return null;
+    return { field, highlight: field };
   }
 
   function startBindingMode() {
@@ -366,38 +397,39 @@
     const step = BIND_STEPS[state.binding.step];
     const actions = [];
     if (state.binding.step === 2) {
-      actions.push({ label: "跳过图片字段", onClick: finishBinding });
+      actions.push({ label: "跳过图片上传", onClick: finishBinding });
     }
     actions.push({ label: "取消（Esc）", onClick: stopBindingMode });
     showBar(step.label, actions);
   }
 
   function onFieldMouseOver(event) {
-    const field = event.target.closest?.("input, textarea, [contenteditable='true']");
-    if (!isEditableField(field) || field.closest(".lsa-bar")) return;
+    const candidate = getBindingCandidate(event.target);
+    if (!candidate) return;
     state.fieldHover?.classList.remove("lsa-field-hover");
-    state.fieldHover = field;
-    field.classList.add("lsa-field-hover");
+    state.fieldHover = candidate.highlight;
+    state.fieldCandidate = candidate.field;
+    candidate.highlight.classList.add("lsa-field-hover");
   }
 
   function onFieldMouseOut(event) {
-    const field = event.target.closest?.("input, textarea, [contenteditable='true']");
-    if (field && field === state.fieldHover) {
-      field.classList.remove("lsa-field-hover");
+    if (state.fieldHover && !state.fieldHover.contains(event.relatedTarget)) {
+      state.fieldHover.classList.remove("lsa-field-hover");
       state.fieldHover = null;
+      state.fieldCandidate = null;
     }
   }
 
   function onFieldClick(event) {
-    const field = event.target.closest?.("input, textarea, [contenteditable='true']");
-    if (!state.binding || !isEditableField(field) || field.closest(".lsa-bar")) return;
+    const candidate = getBindingCandidate(event.target);
+    if (!state.binding || !candidate) return;
     event.preventDefault();
     event.stopPropagation();
     const step = BIND_STEPS[state.binding.step];
-    state.binding.rule[step.key] = selectorFor(field);
-    field.classList.remove("lsa-field-hover");
-    field.classList.add("lsa-field-flash");
-    setTimeout(() => field.classList.remove("lsa-field-flash"), 1300);
+    state.binding.rule[step.key] = selectorFor(candidate.field);
+    candidate.highlight.classList.remove("lsa-field-hover");
+    candidate.highlight.classList.add("lsa-field-flash");
+    setTimeout(() => candidate.highlight.classList.remove("lsa-field-flash"), 1300);
     state.binding.step += 1;
     if (state.binding.step >= BIND_STEPS.length) finishBinding();
     else renderBindingBar();
@@ -419,7 +451,7 @@
     };
     await chrome.storage.sync.set({ settings: nextSettings });
     stopBindingMode();
-    const doneBar = showBar(`已绑定 ${location.hostname}，现在可以一键填写后台`, [
+    const doneBar = showBar(`已绑定 ${location.hostname}，现在可以一键填写文案并上传图片`, [
       { label: "知道了", onClick: removeBar },
     ]);
     setTimeout(() => doneBar.isConnected && removeBar(), 3500);
@@ -429,6 +461,7 @@
     if (!state.binding && !state.fieldHover) return;
     state.fieldHover?.classList.remove("lsa-field-hover");
     state.fieldHover = null;
+    state.fieldCandidate = null;
     state.binding = null;
     document.removeEventListener("mouseover", onFieldMouseOver, true);
     document.removeEventListener("mouseout", onFieldMouseOut, true);
@@ -480,6 +513,55 @@
     return { ok: true, message: "标题和简介已填写到后台" };
   }
 
+  function dataUrlToFile(dataUrl, fileName) {
+    const [header, encoded] = dataUrl.split(",", 2);
+    const contentType = header.match(/^data:([^;]+);base64$/)?.[1] || "image/jpeg";
+    const binary = atob(encoded || "");
+    const bytes = new Uint8Array(binary.length);
+    for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
+    return new File([bytes], fileName, { type: contentType, lastModified: Date.now() });
+  }
+
+  async function uploadStockImage(imageUrl, fileName = "lockscreen-image.jpg") {
+    const rule = await getSiteRule();
+    let uploadSelector = rule?.imageUploadSelector;
+    if (!uploadSelector && rule?.imageSelector) {
+      const legacyField = safeQuery(rule.imageSelector);
+      if (legacyField instanceof HTMLInputElement && legacyField.type === "file") {
+        uploadSelector = rule.imageSelector;
+      }
+    }
+    if (!uploadSelector) {
+      return { ok: false, needsBinding: true, message: "请先点击“绑定字段”，绑定后台图片上传按钮" };
+    }
+    const uploadInput = safeQuery(uploadSelector);
+    if (!(uploadInput instanceof HTMLInputElement) || uploadInput.type !== "file") {
+      return { ok: false, needsBinding: true, message: "未找到已绑定的图片上传控件，请重新绑定字段" };
+    }
+
+    const response = await chrome.runtime.sendMessage({
+      type: "FETCH_IMAGE_FILE",
+      imageUrl,
+      fileName,
+    });
+    if (!response?.ok) return { ok: false, message: response?.error || "图片下载失败" };
+    const file = dataUrlToFile(response.dataUrl, response.fileName || fileName);
+    const transfer = new DataTransfer();
+    transfer.items.add(file);
+    const filesSetter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "files")?.set;
+    if (filesSetter) filesSetter.call(uploadInput, transfer.files);
+    else uploadInput.files = transfer.files;
+    uploadInput.dispatchEvent(new Event("input", { bubbles: true }));
+    uploadInput.dispatchEvent(new Event("change", { bubbles: true }));
+    uploadInput.classList.add("lsa-field-flash");
+    setTimeout(() => uploadInput.classList.remove("lsa-field-flash"), 1600);
+    const sizeMb = (file.size / 1024 / 1024).toFixed(1);
+    return {
+      ok: true,
+      message: `已把 ${file.name}（${sizeMb}MB）写入后台上传控件，请确认上传预览`,
+    };
+  }
+
   function findImageByUrl(url) {
     return [...document.images].find((image) =>
       [image.currentSrc, image.src, image.getAttribute("src")].filter(Boolean).some((src) => src === url),
@@ -497,6 +579,7 @@
     startReplaceMode,
     startBindingMode,
     chooseReplacement,
+    uploadStockImage,
   };
 
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
