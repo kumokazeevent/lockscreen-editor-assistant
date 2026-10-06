@@ -12,16 +12,17 @@
         <div class="brand">锁</div>
         <div>
           <h1>锁屏编辑助手设置</h1>
-          <p>0.7.4 · DeepSeek 官方接口与空响应修复</p>
+          <p>0.7.5 · 模型原样发送与完整 API 配置</p>
         </div>
       </header>
 
       <section>
         <h2>独立 AI 接口</h2>
-        <p class="section-description">一次请求生成同语种标题、简介和英文图片搜索词。密钥只存于本机；更新扩展时不要卸载，点击“重新加载”即可保留配置。</p>
-        <div class="form-grid ai-grid">
+        <p class="section-description">模型名称不设默认值、不改名、不纠正：输入什么就原样发送什么。密钥只存于本机；更新扩展时不要卸载，点击“重新加载”即可保留配置。</p>
+        <div class="api-row">
+          <div class="api-row-title">AI API</div>
           <label>Chat Completions 完整地址<input id="aiEndpoint" type="url" placeholder="https://api.deepseek.com/chat/completions" /></label>
-          <label>模型名称<input id="aiModel" type="text" placeholder="deepseek-v4-flash" /></label>
+          <label>模型名称（原样发送）<input id="aiModel" type="text" placeholder="填写提供商给出的准确模型 ID" /></label>
           <label>API Key<input id="aiApiKey" type="password" placeholder="留空则不修改现有密钥" autocomplete="new-password" /></label>
         </div>
         <div class="form-grid">
@@ -59,11 +60,17 @@
       <section>
         <h2>免费商用素材接口</h2>
         <p class="section-description">优先使用 Pexels，失败或无结果时可回退 Pixabay。两个来源都会请求竖图并再次验证实际宽高。使用前仍需核对素材页许可、肖像和商标限制。<a href="https://www.pexels.com/api/" target="_blank" rel="noopener noreferrer">申请 Pexels Key</a> · <a href="https://pixabay.com/api/docs/" target="_blank" rel="noopener noreferrer">申请 Pixabay Key</a></p>
-        <div class="secret-row">
-          <label>Pexels API Key<input id="pexelsApiKey" type="password" placeholder="留空则不修改现有密钥" autocomplete="new-password" /></label>
-          <label>Pixabay API Key<input id="pixabayApiKey" type="password" placeholder="留空则不修改现有密钥" autocomplete="new-password" /></label>
-          <button id="clearSecrets" class="secondary" type="button">清除本机密钥</button>
+        <div class="api-row">
+          <div class="api-row-title">Pexels API</div>
+          <label>搜索接口地址<input id="pexelsEndpoint" type="url" placeholder="https://api.pexels.com/v1/search" /></label>
+          <label class="api-key-wide">API Key<input id="pexelsApiKey" type="password" placeholder="留空则不修改现有密钥" autocomplete="new-password" /></label>
         </div>
+        <div class="api-row">
+          <div class="api-row-title">Pixabay API（备用）</div>
+          <label>搜索接口地址<input id="pixabayEndpoint" type="url" placeholder="https://pixabay.com/api/" /></label>
+          <label class="api-key-wide">API Key<input id="pixabayApiKey" type="password" placeholder="留空则不修改现有密钥" autocomplete="new-password" /></label>
+        </div>
+        <button id="clearSecrets" class="secondary" type="button">清除本机全部密钥</button>
       </section>
 
       <section>

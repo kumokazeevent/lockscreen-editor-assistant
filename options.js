@@ -5,7 +5,9 @@ const DEFAULT_SETTINGS = {
   batchConcurrency: 2,
   aiTimeoutMs: 30000,
   aiEndpoint: "https://api.deepseek.com/chat/completions",
-  aiModel: "deepseek-v4-flash",
+  aiModel: "",
+  pexelsEndpoint: "https://api.pexels.com/v1/search",
+  pixabayEndpoint: "https://pixabay.com/api/",
   preferredRatio: "auto",
   originalFolder: "锁屏批次/原始内容",
   imageFolder: "锁屏批次/成品图片",
@@ -21,6 +23,8 @@ const fields = {
   aiTimeoutSeconds: document.querySelector("#aiTimeoutSeconds"),
   aiEndpoint: document.querySelector("#aiEndpoint"),
   aiModel: document.querySelector("#aiModel"),
+  pexelsEndpoint: document.querySelector("#pexelsEndpoint"),
+  pixabayEndpoint: document.querySelector("#pixabayEndpoint"),
   preferredRatio: document.querySelector("#preferredRatio"),
   originalFolder: document.querySelector("#originalFolder"),
   imageFolder: document.querySelector("#imageFolder"),
@@ -35,13 +39,6 @@ const saveMessage = document.querySelector("#saveMessage");
 function clamp(value, min, max, fallback) {
   const number = Number(value);
   return Number.isFinite(number) ? Math.max(min, Math.min(max, Math.round(number))) : fallback;
-}
-
-function normalizeModelId(value) {
-  const raw = String(value || "").trim();
-  const compact = raw.toLowerCase().replace(/[-_.\s/]+/g, "");
-  if (["dsv4flash", "deepseekv4flash"].includes(compact)) return "deepseek-v4-flash";
-  return raw;
 }
 
 function cleanDownloadFolder(value, fallback) {
@@ -74,7 +71,9 @@ async function loadSettings() {
   fields.batchConcurrency.value = settings.batchConcurrency;
   fields.aiTimeoutSeconds.value = Math.round(settings.aiTimeoutMs / 1000);
   fields.aiEndpoint.value = settings.aiEndpoint || "";
-  fields.aiModel.value = normalizeModelId(settings.aiModel || "");
+  fields.aiModel.value = settings.aiModel || "";
+  fields.pexelsEndpoint.value = settings.pexelsEndpoint || DEFAULT_SETTINGS.pexelsEndpoint;
+  fields.pixabayEndpoint.value = settings.pixabayEndpoint || DEFAULT_SETTINGS.pixabayEndpoint;
   fields.preferredRatio.value = ["auto", "9:16", "9:20"].includes(settings.preferredRatio)
     ? settings.preferredRatio
     : "auto";
@@ -135,8 +134,10 @@ async function saveAllSettings() {
   saveMessage.classList.remove("error");
   try {
     const endpoint = fields.aiEndpoint.value.trim();
-    if (endpoint && !/^https?:\/\//i.test(endpoint)) {
-      throw new Error("接口地址必须以 http:// 或 https:// 开头");
+    const pexelsEndpoint = fields.pexelsEndpoint.value.trim();
+    const pixabayEndpoint = fields.pixabayEndpoint.value.trim();
+    for (const [label, value] of [["AI", endpoint], ["Pexels", pexelsEndpoint], ["Pixabay", pixabayEndpoint]]) {
+      if (value && !/^https?:\/\//i.test(value)) throw new Error(`${label} 接口地址必须以 http:// 或 https:// 开头`);
     }
     const { settings: saved = {} } = await chrome.storage.sync.get("settings");
     const settings = {
@@ -148,7 +149,9 @@ async function saveAllSettings() {
       batchConcurrency: clamp(fields.batchConcurrency.value, 1, 2, 2),
       aiTimeoutMs: clamp(fields.aiTimeoutSeconds.value, 10, 120, 30) * 1000,
       aiEndpoint: endpoint,
-      aiModel: normalizeModelId(fields.aiModel.value),
+      aiModel: fields.aiModel.value.trim(),
+      pexelsEndpoint,
+      pixabayEndpoint,
       preferredRatio: fields.preferredRatio.value,
       originalFolder: cleanDownloadFolder(fields.originalFolder.value, DEFAULT_SETTINGS.originalFolder),
       imageFolder: cleanDownloadFolder(fields.imageFolder.value, DEFAULT_SETTINGS.imageFolder),

@@ -414,14 +414,17 @@ async function cachePixabaySearch(cacheKey, result) {
 }
 
 async function searchPexels(query, page = 1, options = {}) {
-  const { localSecrets = {} } = await chrome.storage.local.get("localSecrets");
+  const [{ settings = {} }, { localSecrets = {} }] = await Promise.all([
+    chrome.storage.sync.get("settings"),
+    chrome.storage.local.get("localSecrets"),
+  ]);
   if (!localSecrets.pexelsApiKey) {
     throw new RequestError("请先在扩展设置中填写免费的 Pexels API Key", {
       code: "PEXELS_KEY_MISSING",
       retryable: false,
     });
   }
-  const url = new URL("https://api.pexels.com/v1/search");
+  const url = validateHttpUrl(settings.pexelsEndpoint || "https://api.pexels.com/v1/search", "Pexels 接口地址");
   url.searchParams.set("query", options.safeQuery ? buildSafeStockQuery(query) : String(query).trim());
   url.searchParams.set("orientation", "portrait");
   url.searchParams.set("locale", options.safeQuery ? "en-US" : /[\u3400-\u9fff]/.test(query) ? "zh-CN" : "en-US");
@@ -441,7 +444,10 @@ async function searchPexels(query, page = 1, options = {}) {
 }
 
 async function searchPixabay(query, page = 1, options = {}) {
-  const { localSecrets = {} } = await chrome.storage.local.get("localSecrets");
+  const [{ settings = {} }, { localSecrets = {} }] = await Promise.all([
+    chrome.storage.sync.get("settings"),
+    chrome.storage.local.get("localSecrets"),
+  ]);
   if (!localSecrets.pixabayApiKey) {
     throw new RequestError("请先在扩展设置中填写免费的 Pixabay API Key", {
       code: "PIXABAY_KEY_MISSING",
@@ -451,10 +457,11 @@ async function searchPixabay(query, page = 1, options = {}) {
   const safeQuery = options.safeQuery ? buildSafeStockQuery(query) : String(query).trim();
   const normalizedQuery = Array.from(safeQuery).slice(0, 100).join("");
   const perPage = options.perPage || 20;
-  const cacheKey = `v2|${normalizedQuery.toLowerCase()}|${page}|${perPage}`;
+  const configuredEndpoint = settings.pixabayEndpoint || "https://pixabay.com/api/";
+  const cacheKey = `v3|${configuredEndpoint}|${normalizedQuery.toLowerCase()}|${page}|${perPage}`;
   const cachedResult = await getCachedPixabaySearch(cacheKey);
   if (cachedResult) return cachedResult;
-  const url = new URL("https://pixabay.com/api/");
+  const url = validateHttpUrl(configuredEndpoint, "Pixabay 接口地址");
   url.searchParams.set("key", localSecrets.pixabayApiKey);
   url.searchParams.set("q", normalizedQuery);
   url.searchParams.set("lang", "en");
@@ -585,16 +592,12 @@ function normalizeLanguageCode(value) {
   return text.slice(0, 12);
 }
 
-function normalizeModelId(value) {
-  const raw = String(value || "").trim();
-  const compact = raw.toLowerCase().replace(/[-_.\s/]+/g, "");
-  if (["dsv4flash", "deepseekv4flash"].includes(compact)) return "deepseek-v4-flash";
-  return raw;
-}
-
-function shouldDisableThinking(model) {
+function shouldDisableThinking(model, endpoint = "") {
   const value = String(model || "").trim();
-  return /^glm[-_.\s]?5(?:\D|$)/i.test(value) || /^deepseek-v4(?:[-_.]|$)/i.test(value);
+  let hostname = "";
+  try { hostname = new URL(endpoint).hostname; } catch {}
+  return /(^|\.)api\.deepseek\.com$/i.test(hostname) ||
+    /^glm[-_.\s]?5(?:\D|$)/i.test(value) || /^deepseek-v4(?:[-_.]|$)/i.test(value);
 }
 
 function normalizeAiEndpoint(value) {
@@ -679,11 +682,19 @@ function getAiResponseText(data) {
 function describeEmptyAiResponse(data) {
   const choice = data?.choices?.[0];
   const reasoning = normalizeAiContent(choice?.message?.reasoning_content).trim();
-  if (reasoning) return "模型只返回了思考内容，没有生成最终正文";
-  if (choice?.finish_reason === "length") return "模型输出达到 token 上限，没有生成最终正文";
-  if (choice?.finish_reason === "content_filter") return "模型输出被内容安全策略过滤";
-  if (choice?.finish_reason === "insufficient_system_resource") return "DeepSeek 当前推理资源不足";
-  return "AI 返回内容为空";
+  let reason = "AI 返回内容为空";
+  if (reasoning) reason = "模型只返回了思考内容，没有生成最终正文";
+  else if (choice?.finish_reason === "length") reason = "模型输出达到 token 上限，没有生成最终正文";
+  else if (choice?.finish_reason === "content_filter") reason = "模型输出被内容安全策略过滤";
+  else if (choice?.finish_reason === "insufficient_system_resource") reason = "上游当前推理资源不足";
+  const details = [
+    `model=${String(data?.model || "未返回")}`,
+    `choices=${Array.isArray(data?.choices) ? data.choices.length : "无"}`,
+    `finish_reason=${String(choice?.finish_reason || "无")}`,
+    `reasoning_chars=${Array.from(reasoning).length}`,
+    `top_fields=${Object.keys(data || {}).slice(0, 8).join(",") || "无"}`,
+  ];
+  return `${reason}（${details.join("；")}）`;
 }
 
 function validateAiResult(raw, context) {
@@ -791,7 +802,7 @@ async function generateBatchItemWithAi(payload = {}) {
   ]);
   const settings = { ...DEFAULT_BATCH_SETTINGS, ...savedSettings };
   let endpoint = String(settings.aiEndpoint || "").trim();
-  const model = normalizeModelId(settings.aiModel);
+  const model = String(settings.aiModel || "").trim();
   const apiKey = String(localSecrets.aiApiKey || "").trim();
   if (!endpoint || !model || !apiKey) {
     throw new RequestError("独立 AI 接口未配置完整，请在设置中填写接口地址、模型和 API Key", {
@@ -825,11 +836,11 @@ async function generateBatchItemWithAi(payload = {}) {
     const requestBody = {
       model,
       temperature: 0.1,
-      max_tokens: 220,
+      max_tokens: 500,
       stream: false,
       messages: buildAiMessages(context),
     };
-    if (shouldDisableThinking(model)) {
+    if (shouldDisableThinking(model, endpoint)) {
       requestBody.thinking = { type: "disabled" };
     }
     try {
@@ -843,7 +854,7 @@ async function generateBatchItemWithAi(payload = {}) {
       }, timeout, "AI 改写");
       const content = getAiResponseText(data);
       if (!content) {
-        throw new RequestError(describeEmptyAiResponse(data), { code: "AI_INVALID", retryable: true });
+        throw new RequestError(describeEmptyAiResponse(data), { code: "AI_INVALID", retryable: false });
       }
       const result = validateAiResult(extractJson(content), context);
       return {
@@ -882,7 +893,7 @@ async function generateImageQueryWithAi(payload) {
     chrome.storage.local.get("localSecrets"),
   ]);
   const configuredEndpoint = settings.aiEndpoint?.trim();
-  const model = normalizeModelId(settings.aiModel);
+  const model = String(settings.aiModel || "").trim();
   const apiKey = localSecrets.aiApiKey?.trim();
   if (!configuredEndpoint || !model || !apiKey) return { configured: false };
   const endpoint = normalizeAiEndpoint(configuredEndpoint);
@@ -890,7 +901,7 @@ async function generateImageQueryWithAi(payload) {
   const requestBody = {
     model,
     temperature: 0.1,
-    max_tokens: 100,
+    max_tokens: 180,
     messages: [
       {
         role: "system",
@@ -905,7 +916,7 @@ async function generateImageQueryWithAi(payload) {
       { role: "user", content: `${String(payload.title || "")}\n${String(payload.summary || "")}`.trim() },
     ],
   };
-  if (shouldDisableThinking(model)) {
+  if (shouldDisableThinking(model, endpoint)) {
     requestBody.thinking = { type: "disabled" };
   }
   const data = await fetchJson(endpoint, {

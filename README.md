@@ -1,4 +1,4 @@
-# 锁屏编辑助手 0.7.4
+# 锁屏编辑助手 0.7.5
 
 面向杂志锁屏内容审核的 Chrome / Edge 扩展。它在指定后台页面显示常驻悬浮窗，批量读取文章、调用你自己的 AI 接口生成同语种文案、寻找竖屏商用图片，并在编辑页把文案和图片写入真实表单。
 
@@ -22,7 +22,7 @@ Chrome 的匹配规则不能直接限制 `#` 后的地址，所以清单先限�
   - 简介不超过 50 个字符；
   - 标题和简介必须与原标题语种一致；
   - 搜图词从原始标题和文章内容生成，而不是从改写结果反推；
-  - 默认使用快速的 `deepseek-v4-flash`；DeepSeek V4 和 GLM 5.x 都会明确关闭深度思考。默认并发 2；超时立即返回，429/5xx 或格式错误最多重试 2 次。
+  - 模型没有默认值，也不会纠正或替换名称；设置中输入什么模型 ID，请求就原样发送什么。DeepSeek 官方端点会明确关闭深度思考。默认并发 2；超时立即返回，429/5xx 或格式错误最多重试 2 次。
 - Pexels 优先、Pixabay 备用；只保留实际高度大于宽度的图片，并优先接近 9:16 或 9:20。
 - 搜索词和本地规则会尽量避开清晰正脸、大面积皮肤裸露等风险；无法确定的图片会标记为“需人工复核”，不会伪装成已通过。
 - 原稿/批次 JSON 与重命名后的图片保存到两个独立子目录。
@@ -46,11 +46,11 @@ Chrome 的匹配规则不能直接限制 `#` 后的地址，所以清单先限�
 设置页默认预填：
 
 - Chat Completions 地址：`https://api.deepseek.com/chat/completions`
-- 模型：`deepseek-v4-flash`（设置中输入 `dsv4flash` 也会自动纠正）
+- 模型：不预填；必须填写购买接口时提供商给出的准确模型 ID，插件不会改名
 - 超时：30 秒
 - 并发：2
 
-请填写你自己的 API Key。接口必须兼容 OpenAI Chat Completions 请求与 `choices[0].message.content` 响应。此处使用的是独立 API 额度，不会读取 ChatGPT Plus 登录状态。
+设置页会分别列出 AI、Pexels 和备用 Pixabay 的接口地址与 API Key。请填写你自己的密钥。AI 接口需兼容 OpenAI Chat Completions 请求；插件可读取 `choices[0].message.content`、`output_text` 或 Responses 风格的 `output`。此处使用的是独立 API 额度，不会读取 ChatGPT Plus 登录状态。
 
 密钥保存在 `chrome.storage.local`，不会写入扩展源码或打包文件。
 
@@ -89,7 +89,7 @@ Windows 文件名不能包含 `////`，因此界面可继续展示 `标题////�
 ## 常见问题
 
 - `Endpoint is unavailable`：提供商对应模型端点暂时不可用，核对完整地址、模型 ID 和账户额度；扩展不会用本地精简悄悄替代失败结果。
-- DeepSeek 返回内容为空：V4 默认会开启思考，旧版可能让 220 个输出 token 全部消耗在思考阶段。0.7.4 起会向 DeepSeek V4 发送 `thinking: {"type":"disabled"}`，直接生成改写结果。
+- AI 返回内容为空：0.7.5 会停止无意义的连续重试，并显示返回模型、choices 数量、finish_reason、思考内容长度和顶层字段，便于判断提供商实际采用的响应格式。
 - OpenCode 返回 404 网页：Go 接口必须填写 `https://opencode.ai/zen/go/v1/chat/completions`，模型填写正式 ID `deepseek-v4-flash`。0.7.1 会自动纠正 `dsv4flash` 等简称，并在首次致命接口错误后停止剩余批次。
 - `signal is aborted without reason` 或“超过 30 秒”：通常是请求超过设置超时、页面/扩展刚重载或上游主动断开。0.7.1 起超时只请求一次，避免同一条连续等待约 90 秒；可稍后点击重试，确实经常在 30–60 秒返回时再调高超时。
 - 提示语言不一致：返回结果没有通过原标题语种校验，扩展会重试，仍失败则保留原稿等待人工处理。
