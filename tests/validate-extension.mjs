@@ -13,7 +13,7 @@ function assert(condition, message) {
 }
 
 assert(manifest.manifest_version === 3, "必须使用 Manifest V3");
-assert(manifest.version === "0.12.0", "构建版本应为 0.12.0");
+assert(manifest.version === "0.12.1", "构建版本应为 0.12.1");
 assert(manifest.permissions.includes("downloads"), "缺少下载权限");
 assert(manifest.permissions.includes("storage"), "缺少存储权限");
 assert(
@@ -87,6 +87,8 @@ assert(assistant.includes("mountRevision") && assistant.includes("removeAllAssis
 assert(assistant.includes('lsa-record-fold lsa-inner-fold') && assistant.includes('lsa-folder-summary'),
   "批次记录或当前文件夹未改成折叠区域");
 assert(assistant.includes("Math.min(4, candidates.length)"), "批量图片下载未提升到最多 4 路并发");
+assert(assistant.includes('item.image?.safetyStatus === "passed"') && assistant.includes("当前没有自动通过的图片"),
+  "自动通过图按钮仍错误依赖整条记录状态，或缺少可见反馈");
 assert(background.includes("reviewAiCandidate") && background.includes('reasoning_effort = "medium"'),
   "第二 AI 审核或中等推理未接入");
 assert(background.includes("reviewWarning") && background.includes("disableThinking(requestBody"),
@@ -98,4 +100,4 @@ for (const file of ["workflow.js", "page-bridge.js", "background.js", "content.j
   execFileSync(process.execPath, ["--check", path.join(root, file)], { stdio: "inherit" });
 }
 
-console.log("锁屏编辑助手 0.12.0 静态验证通过");
+console.log("锁屏编辑助手 0.12.1 静态验证通过");

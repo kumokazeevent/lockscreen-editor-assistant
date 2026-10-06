@@ -96,6 +96,16 @@ try {
   assert.equal(store.local[ka.batchState].items[0].id,'101');
   assert.equal(store.local[kb.batchState].items[0].id,'202');
   assert.equal(store.local[kb.batchState].items[0].title,'A calm guide to caring for cats at home');
+  const reviewCopy=structuredClone(store.local[kb.batchState]);
+  reviewCopy.items[0].status='needs_review';reviewCopy.updatedAt=Date.now()+1000;
+  await chrome.storage.local.set({[kb.batchState]:reviewCopy});
+  await b.waitForFunction(()=>document.querySelector('.lsa-download-all')?.textContent.includes('（1）'));
+  assert.equal(await b.locator('.lsa-download-all').isEnabled(),true,'文案需复核但图片已通过时，批量下载按钮必须可用');
+  const beforeDownloads=messages.filter((message)=>message.action==='DOWNLOAD_FINAL_IMAGE').length;
+  await b.locator('.lsa-download-all').click();
+  await b.waitForFunction(()=>document.querySelector('.lsa-batch-status').textContent.includes('下载结束'));
+  assert.equal(messages.filter((message)=>message.action==='DOWNLOAD_FINAL_IMAGE').length,beforeDownloads+1,'批量下载按钮必须发送图片下载请求');
+  assert.ok((await b.locator('.lsa-batch-status').textContent()).includes('1 张加入下载'));
   const bSnapshot=structuredClone(store.local[kb.batchState]);
   await a.locator('.lsa-quick-settings summary').click();
   await a.locator('[data-setting="titleLimit"]').fill('5');
@@ -216,6 +226,6 @@ try {
   const before=await run('getTabContext(202)');startup();const after=await run('getTabContext(202)');
   assert.notEqual(before.keys.batchState,after.keys.batchState,'浏览器重启后不误认复用的标签ID');
   assert.ok((await run('savedBatches()')).batches.some((batch)=>batch.key===before.keys.batchState),'旧批次保留可恢复');
-  console.log('0.12.0 浏览器测试通过：实际扫描40条、语言国家读取、重复导入不堆积、71条拆3文件夹、归档恢复、JSON目录、30/40切换及原双标签并行测试');
+  console.log('0.12.1 浏览器测试通过：实际扫描40条、语言国家读取、重复导入不堆积、71条拆3文件夹、归档恢复、JSON目录、30/40切换及原双标签并行测试');
   await context.close();
 } finally { await browser.close(); }

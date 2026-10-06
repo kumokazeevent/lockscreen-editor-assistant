@@ -46,6 +46,7 @@
     workToken: `${Date.now()}-${Math.random()}`, workOwned: false, leaseTimer: null, scanning: false,
     imageHistory: {}, imagePage: 1, imageHasNext: false, imageBusy: false, searchRevision: 0,
     imageQuery: "", imageTargetIndex: null, pageFilter: "all", autoReadRevision: 0,
+    downloadBusy: false, downloadProgress: null,
   };
 
   function create(tag, className, text) {
@@ -773,6 +774,9 @@
   function downloadDestination() {
     return { folder: state.settings.imageFolder, batchFolder: currentFolder(), batchLimit: currentBatchLimit() };
   }
+  function autoDownloadCandidates() {
+    return getBatchItems().filter((item) => item.image?.safetyStatus === "passed");
+  }
   async function downloadFinalImage(item, button, force = false, destination = downloadDestination()) {
     if (!item?.image) throw new Error("该条还没有可下载图片");
     if (button) { button.disabled = true; button.textContent = "下载中…"; }
@@ -814,26 +818,47 @@
   }
 
   async function downloadAllImages() {
+    if (state.downloadBusy) return;
     const destination = downloadDestination();
-    const candidates = getBatchItems().filter((item) => item.image && item.status === "completed"
-      && item.image.safetyStatus === "passed");
-    if (!candidates.length) return setPanelStatus(".lsa-batch-status", "没有可下载的成品图", true);
+    const candidates = autoDownloadCandidates();
+    if (!candidates.length) {
+      const selected = getBatchItems().filter((item) => item.image).length;
+      const review = getBatchItems().filter((item) => item.image?.safetyStatus === "review").length;
+      return setPanelStatus(".lsa-batch-status", `当前没有自动通过的图片；已选图 ${selected} 张，其中需人工复核 ${review} 张。`, true);
+    }
     const button = q(".lsa-download-all");
-    if (button) button.disabled = true;
+    state.downloadBusy = true;
+    state.downloadProgress = { finished: 0, total: candidates.length };
+    if (button) { button.disabled = true; button.textContent = `下载中 0/${candidates.length}`; }
     let cursor = 0;
     let failed = 0;
     let skipped = 0;
+    const errors = [];
     setPanelStatus(".lsa-batch-status", `正在下载 ${candidates.length} 张成品图；每累计 ${destination.batchLimit} 张自动新建一个分组目录…`);
     const worker = async () => {
       while (cursor < candidates.length) {
         const item = candidates[cursor++];
-        try { const result = await downloadFinalImage(item, null, false, destination); if (result.skipped) skipped += 1; } catch { failed += 1; }
+        try {
+          const result = await downloadFinalImage(item, null, false, destination);
+          if (result.skipped) skipped += 1;
+        } catch (error) {
+          failed += 1;
+          errors.push(`${String(item.index).padStart(2, "0")}：${error.message}`);
+        } finally {
+          state.downloadProgress.finished += 1;
+          const liveButton = q(".lsa-download-all");
+          if (liveButton) liveButton.textContent = `下载中 ${state.downloadProgress.finished}/${state.downloadProgress.total}`;
+          setPanelStatus(".lsa-batch-status", `正在下载：${state.downloadProgress.finished}/${state.downloadProgress.total}；成功 ${state.downloadProgress.finished - failed - skipped}，跳过 ${skipped}，失败 ${failed}`,
+            Boolean(failed));
+        }
       }
     };
     const workerCount = Math.min(4, candidates.length);
     await Promise.all(Array.from({ length: workerCount }, () => worker()));
-    if (button) button.disabled = false;
-    if (currentFolder() === destination.batchFolder) setPanelStatus(".lsa-batch-status", `下载结束：${candidates.length - failed - skipped} 张加入下载，跳过重复 ${skipped} 张，失败 ${failed} 张；每 ${destination.batchLimit} 张分组。`, Boolean(failed));
+    state.downloadBusy = false;
+    state.downloadProgress = null;
+    renderBatch();
+    if (currentFolder() === destination.batchFolder) setPanelStatus(".lsa-batch-status", `下载结束：${candidates.length - failed - skipped} 张加入下载，跳过重复 ${skipped} 张，失败 ${failed} 张；每 ${destination.batchLimit} 张分组。${errors[0] ? ` 首个错误：${errors[0]}` : ""}`, Boolean(failed));
   }
 
   function stageStatusText(status) {
@@ -1020,7 +1045,14 @@
     const save = q(".lsa-save-batch-json");
     const downloadAll = q(".lsa-download-all");
     if (save) save.disabled = !counts.total;
-    if (downloadAll) downloadAll.disabled = !counts.done;
+    if (downloadAll) {
+      const candidates = autoDownloadCandidates();
+      downloadAll.disabled = state.downloadBusy || !counts.total;
+      downloadAll.textContent = state.downloadBusy && state.downloadProgress
+        ? `下载中 ${state.downloadProgress.finished}/${state.downloadProgress.total}`
+        : `下载自动通过图${candidates.length ? `（${candidates.length}）` : ""}`;
+      downloadAll.title = candidates.length ? `下载 ${candidates.length} 张图片；最多 4 张同时处理` : "当前没有自动通过图片；点击可查看原因";
+    }
     const scan = q(".lsa-scan-batch");
     if (scan) scan.disabled = state.workOwned || ["running", "pausing"].includes(state.batch?.status);
     renderBatchItems();
