@@ -58,6 +58,10 @@ assert(evaluate("describeEmptyAiResponse({choices:[{finish_reason:'length',messa
   "DeepSeek 空响应诊断不明确");
 assert(evaluate("describeEmptyAiResponse({model:'custom-model',choices:[]})").includes("model=custom-model"),
   "空响应诊断未包含实际返回模型");
+assert(evaluate("isReasoningTruncated({choices:[{finish_reason:'length',message:{content:'',reasoning_content:'long reasoning'}}]})") === true,
+  "未识别思考内容耗尽输出预算");
+assert(evaluate("isReasoningTruncated({choices:[{finish_reason:'stop',message:{content:'',reasoning_content:'reasoning'}}]})") === false,
+  "非 length 空响应不应触发扩容重试");
 assert(evaluate("shouldRetry({code:'TIMEOUT',retryable:true})") === false, "超时不应再连续自动重试");
 assert(evaluate("getNearestAspect(1080, 1920, 'auto').aspectLabel") === "9:16", "9:16 比例识别失败");
 assert(evaluate("getNearestAspect(1080, 2400, 'auto').aspectLabel") === "9:20", "9:20 比例识别失败");

@@ -13,7 +13,7 @@ function assert(condition, message) {
 }
 
 assert(manifest.manifest_version === 3, "必须使用 Manifest V3");
-assert(manifest.version === "0.7.7", "构建版本应为 0.7.7");
+assert(manifest.version === "0.7.8", "构建版本应为 0.7.8");
 assert(manifest.permissions.includes("downloads"), "缺少下载权限");
 assert(manifest.permissions.includes("storage"), "缺少存储权限");
 assert(
@@ -76,9 +76,11 @@ assert(assistant.includes("lsa-record-option-status") && assistant.includes("sel
   "记录列表未实现编号-状态显示或点击跳转");
 assert(background.includes("reviewAiCandidate") && background.includes('reasoning_effort = "medium"'),
   "第二 AI 审核或中等推理未接入");
+assert(background.includes("outputTokenBudget = 8192") && background.includes("isReasoningTruncated"),
+  "思考截断未实现输出预算扩容重试");
 
 for (const file of ["page-bridge.js", "background.js", "content.js", "assistant.js", "options.js"]) {
   execFileSync(process.execPath, ["--check", path.join(root, file)], { stdio: "inherit" });
 }
 
-console.log("锁屏编辑助手 0.7.7 静态验证通过");
+console.log("锁屏编辑助手 0.7.8 静态验证通过");

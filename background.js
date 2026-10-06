@@ -704,6 +704,13 @@ function describeEmptyAiResponse(data) {
   return `${reason}（${details.join("；")}）`;
 }
 
+function isReasoningTruncated(data) {
+  const choice = data?.choices?.[0];
+  return choice?.finish_reason === "length" &&
+    !normalizeAiContent(choice?.message?.content).trim() &&
+    Boolean(normalizeAiContent(choice?.message?.reasoning_content).trim());
+}
+
 function validateAiResult(raw, context) {
   const title = String(raw?.title || "").replace(/^['\"`]+|['\"`]+$/g, "").trim();
   const summary = String(raw?.summary || "").replace(/^['\"`]+|['\"`]+$/g, "").trim();
@@ -781,6 +788,7 @@ function buildAiMessages(context, correction = "") {
     "For people, prefer side profile, back view, silhouette, fully clothed subjects or wide shots. Avoid frontal close-ups, selfies, swimwear, nudity, exposed skin and sexualized poses. Prefer objects or scenery when people are unnecessary.",
     "LANGUAGE CODE: language must be the ISO 639-1 two-letter code of the original title, such as en, vi, es, ru, be, ar or it.",
     "MANDATORY FINAL CHECK: count every Unicode character in title and summary before answering.",
+    "Keep internal reasoning concise and reserve enough output budget for the final JSON answer.",
     `If title exceeds ${context.titleLimit} characters, rewrite it shorter and count again. If summary exceeds ${context.summaryLimit} characters, rewrite it shorter and count again.`,
     "Never exceed either limit. Further shortening is always preferable to exceeding a limit.",
     "Return exactly one strict JSON object with no Markdown, labels, explanations, analysis or character counts:",
@@ -812,7 +820,7 @@ async function reviewAiCandidate(candidate, context, settings, localSecrets, tim
   const requestBody = {
     model,
     temperature: 0,
-    max_tokens: 1400,
+    max_tokens: 4096,
     stream: false,
     messages: [
       {
@@ -825,6 +833,7 @@ async function reviewAiCandidate(candidate, context, settings, localSecrets, tim
           "Preserve the core meaning, important proper nouns and every stated number of methods, steps, tips or items. Do not invent facts.",
           "image_query_en must remain a concrete English stock-photo query based on the original material.",
           "Count title and summary character by character before replying. Rewrite and recount until both limits are satisfied.",
+          "Keep internal reasoning concise and always reserve enough output budget for the final JSON answer.",
           "Return exactly one strict JSON object and nothing else:",
           '{"title":"...","summary":"...","image_query_en":"...","language":"..."}',
         ].join("\n"),
@@ -841,19 +850,25 @@ async function reviewAiCandidate(candidate, context, settings, localSecrets, tim
     ],
   };
   enableMediumThinking(requestBody, model, endpoint);
-  const data = await fetchJson(endpoint, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${apiKey}`,
-    },
-    body: JSON.stringify(requestBody),
-  }, timeout, "审核 AI");
-  const content = getAiResponseText(data);
-  if (!content) {
-    throw new RequestError(describeEmptyAiResponse(data), { code: "REVIEW_AI_INVALID", retryable: true });
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    requestBody.max_tokens = attempt === 0 ? 4096 : 8192;
+    const data = await fetchJson(endpoint, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify(requestBody),
+    }, timeout, "审核 AI");
+    const content = getAiResponseText(data);
+    if (content) return validateAiResult(extractJson(content), context);
+    if (attempt === 0 && isReasoningTruncated(data)) continue;
+    throw new RequestError(describeEmptyAiResponse(data), {
+      code: isReasoningTruncated(data) ? "REASONING_TRUNCATED" : "REVIEW_AI_INVALID",
+      retryable: false,
+    });
   }
-  return validateAiResult(extractJson(content), context);
+  throw new RequestError("审核 AI 未生成最终正文", { code: "REVIEW_AI_INVALID", retryable: false });
 }
 
 function shouldRetry(error) {
@@ -902,13 +917,14 @@ async function generateBatchItemWithAi(payload = {}) {
   const maxRetries = clampNumber(payload.maxRetries, 2, 0, 2);
   let lastError;
   let attemptsMade = 0;
+  let outputTokenBudget = 4096;
 
   for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
     attemptsMade = attempt + 1;
     const requestBody = {
       model,
       temperature: 0.1,
-      max_tokens: 1600,
+      max_tokens: outputTokenBudget,
       stream: false,
       messages: buildAiMessages(context, attempt > 0 ? cleanErrorMessage(lastError, "The previous output was invalid") : ""),
     };
@@ -924,7 +940,11 @@ async function generateBatchItemWithAi(payload = {}) {
       }, timeout, "AI 改写");
       const content = getAiResponseText(data);
       if (!content) {
-        throw new RequestError(describeEmptyAiResponse(data), { code: "AI_INVALID", retryable: false });
+        const truncated = isReasoningTruncated(data);
+        throw new RequestError(describeEmptyAiResponse(data), {
+          code: truncated ? "REASONING_TRUNCATED" : "AI_INVALID",
+          retryable: truncated,
+        });
       }
       const candidate = extractJson(content);
       const result = settings.reviewAiEnabled
@@ -943,6 +963,7 @@ async function generateBatchItemWithAi(payload = {}) {
       };
     } catch (error) {
       lastError = error;
+      if (error?.code === "REASONING_TRUNCATED") outputTokenBudget = 8192;
       if (attempt >= maxRetries || !shouldRetry(error)) break;
       await new Promise((resolve) => setTimeout(resolve, 250 * (attempt + 1)));
     }
@@ -975,7 +996,7 @@ async function generateImageQueryWithAi(payload) {
   const requestBody = {
     model,
     temperature: 0.1,
-    max_tokens: 700,
+    max_tokens: 2048,
     messages: [
       {
         role: "system",
