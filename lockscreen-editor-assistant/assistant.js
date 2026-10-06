@@ -49,6 +49,9 @@
     imageHistory: {}, globalManual: {}, globalUsage: {}, imagePage: 1, imageHasNext: false, imageBusy: false, searchRevision: 0,
     imageQuery: "", imageTargetIndex: null, pageFilter: "all", autoReadRevision: 0,
     downloadBusy: false, downloadProgress: null,
+    backendPreviewSession: null, backendPreviewBusy: false, backendPreviewStop: false,
+    backendPreviewPhase: "idle", backendPreviewProgress: { finished: 0, total: 0 },
+    backendPreviewMessage: "可直接读取当前列表的右侧预览图，无需先运行 AI。",
     titleTranslationStatus: new Map(), titleTranslationInFlight: new Set(),
     aiTranslation: { loaded: false, configured: false, reason: "正在检查主 AI 配置…" },
   };
@@ -140,6 +143,7 @@
     const methodMap = {
       GET_SITE_ROUTE: "getSiteRoute", SCAN_LIST_ITEMS: "scanListItems", GET_PAGE_CONTEXT: "getPageContext",
       SCAN_PAGE_SNAPSHOT: "scanPageSnapshot",
+      READ_BACKEND_PREVIEW_IMAGE: "readBackendPreviewImage",
       APPLY_BATCH_RECORD: "applyBatchRecord", APPLY_DRAFT: "applyDraft", START_BINDING: "startBindingMode",
     };
     const method = globalThis.__lsaPageTools?.[methodMap[name]];
@@ -966,6 +970,160 @@
     return button;
   }
 
+  function renderBackendPreviews() {
+    const session = state.backendPreviewSession;
+    const rows = session?.items || [];
+    const candidates = rows.filter((row) => row.image && row.status !== "completed");
+    const read = q(".lsa-read-backend-previews");
+    const download = q(".lsa-download-backend-previews");
+    const stop = q(".lsa-stop-backend-previews");
+    if (read) read.disabled = state.backendPreviewBusy;
+    if (download) {
+      download.disabled = state.backendPreviewBusy || !candidates.length;
+      download.textContent = `下载已读取图${candidates.length ? `（${candidates.length}）` : ""}`;
+    }
+    if (stop) stop.disabled = !state.backendPreviewBusy || state.backendPreviewStop;
+    const progress = q(".lsa-backend-preview-progress");
+    if (progress) {
+      progress.hidden = !state.backendPreviewProgress.total;
+      progress.max = state.backendPreviewProgress.total || 1;
+      progress.value = state.backendPreviewProgress.finished;
+    }
+    setPanelStatus(".lsa-backend-preview-status", state.backendPreviewMessage, rows.some((row) => row.status === "error"));
+    const folder = q(".lsa-backend-preview-folder");
+    if (folder) folder.textContent = session ? `保存目录：${session.destination.folder}/${session.destination.batchFolder}/后台预览图` : "";
+    const list = q(".lsa-backend-preview-list");
+    const label = q(".lsa-backend-preview-label");
+    if (label) label.textContent = `图片记录（${rows.length} 条）`;
+    if (!list) return;
+    list.replaceChildren();
+    const labels = { pending: "等待读取", reading: "读取详情", ready: "可下载", missing: "右侧无图",
+      downloading: "正在下载", completed: "已保存", error: "失败" };
+    for (const row of rows) {
+      const item = create("div", "lsa-backend-preview-row");
+      const text = create("div", "lsa-backend-preview-copy");
+      text.append(create("strong", row.status === "error" ? "is-error" : "",
+        `${String(row.index).padStart(2, "0")}-${labels[row.status] || row.status}`),
+      create("span", "", row.title || row.originalTitle || "无标题"),
+      create("small", "", row.id || "未识别 ID"));
+      if (row.error) text.append(create("small", "is-error", row.error));
+      if (row.path) text.append(create("small", "", row.path));
+      item.append(text);
+      if (row.image) {
+        const link = create("a", "lsa-text-action", "查看右侧图");
+        link.href = row.image.url; link.target = "_blank"; link.rel = "noopener noreferrer";
+        item.append(link);
+      }
+      list.append(item);
+    }
+  }
+
+  async function readBackendPreviews() {
+    if (state.backendPreviewBusy) return;
+    state.backendPreviewBusy = true;
+    state.backendPreviewStop = false;
+    state.backendPreviewPhase = "reading";
+    state.backendPreviewSession = null;
+    state.backendPreviewProgress = { finished: 0, total: 0 };
+    state.backendPreviewMessage = "正在识别当前列表条目…";
+    renderBackendPreviews();
+    try {
+      const limit = currentBatchLimit();
+      const snapshot = await pageTool("SCAN_PAGE_SNAPSHOT", limit);
+      if (!snapshot?.items?.length) throw new Error(snapshot?.message || "当前列表未识别到条目");
+      if (state.backendPreviewStop) return;
+      const createdAt = Date.now();
+      const metadata = LSAWorkflow.batchMeta(snapshot.metadata, { capturedAt: createdAt });
+      const batchId = `backend-preview-${state.tabContext.tabId}-${createdAt}`;
+      const seen = new Set();
+      const rows = snapshot.items.slice(0, limit).filter((item) => {
+        if (!item.id) return true;
+        if (seen.has(String(item.id))) return false;
+        seen.add(String(item.id)); return true;
+      }).map((item, index) => ({ index: index + 1, id: String(item.id || ""),
+        originalTitle: item.originalTitle || item.title || "", title: item.originalTitle || item.title || "", status: "pending", image: null, error: "" }));
+      state.backendPreviewSession = { createdAt, metadata, sourcePage: location.href, items: rows,
+        destination: { folder: state.settings.imageFolder, batchFolder: LSAWorkflow.folderName({ batchId, metadata, createdAt }), batchLimit: limit } };
+      state.backendPreviewProgress = { finished: 0, total: rows.length };
+      let cursor = 0;
+      const worker = async () => {
+        while (cursor < rows.length && !state.backendPreviewStop) {
+          const row = rows[cursor++]; row.status = "reading";
+          renderBackendPreviews();
+          try {
+            const detail = await pageTool("READ_BACKEND_PREVIEW_IMAGE", row.id);
+            row.title = detail.title || row.title;
+            row.image = detail.image || null;
+            row.status = row.image ? "ready" : "missing";
+          } catch (error) {
+            row.status = "error"; row.error = error.message;
+          }
+          state.backendPreviewProgress.finished += 1;
+          const available = rows.filter((item) => item.image).length;
+          const missing = rows.filter((item) => item.status === "missing").length;
+          state.backendPreviewMessage = `读取 ${state.backendPreviewProgress.finished}/${rows.length}；右侧有图 ${available}，无图 ${missing}，失败 ${rows.filter((item) => item.status === "error").length}。`;
+          renderBackendPreviews();
+        }
+      };
+      await Promise.all(Array.from({ length: Math.min(4, rows.length) }, worker));
+      state.backendPreviewMessage = `${state.backendPreviewStop ? "读取已停止。" : "读取完成。"}${state.backendPreviewMessage}`;
+    } catch (error) {
+      state.backendPreviewMessage = `读取失败：${error.message}`;
+    } finally {
+      state.backendPreviewBusy = false;
+      state.backendPreviewPhase = "idle";
+      renderBackendPreviews();
+    }
+  }
+
+  async function downloadBackendPreviews() {
+    if (state.backendPreviewBusy) return;
+    const session = state.backendPreviewSession;
+    const candidates = session?.items.filter((row) => row.image && row.status !== "completed") || [];
+    if (!candidates.length) return;
+    state.backendPreviewBusy = true;
+    state.backendPreviewStop = false;
+    state.backendPreviewPhase = "downloading";
+    state.backendPreviewProgress = { finished: 0, total: candidates.length };
+    state.backendPreviewMessage = `正在保存 ${candidates.length} 张右侧预览图…`;
+    renderBackendPreviews();
+    let cursor = 0;
+    const worker = async () => {
+      while (cursor < candidates.length && !state.backendPreviewStop) {
+        const row = candidates[cursor++]; row.status = "downloading"; row.error = "";
+        renderBackendPreviews();
+        try {
+          const result = await sendRuntime("DOWNLOAD_BACKEND_PREVIEW", { record: { id: row.id, index: row.index, title: row.title },
+            image: row.image, ...session.destination });
+          row.status = "completed"; row.path = result.path; row.fileName = result.fileName;
+          row.mime = result.mime; row.size = result.size; row.converted = result.converted;
+        } catch (error) {
+          row.status = "error"; row.error = error.message;
+        }
+        state.backendPreviewProgress.finished += 1;
+        const saved = candidates.filter((item) => item.status === "completed").length;
+        const failed = candidates.filter((item) => item.status === "error").length;
+        state.backendPreviewMessage = `下载 ${state.backendPreviewProgress.finished}/${candidates.length}；已保存 ${saved}，失败 ${failed}。`;
+        renderBackendPreviews();
+      }
+    };
+    try {
+      await Promise.all(Array.from({ length: Math.min(4, candidates.length) }, worker));
+      state.backendPreviewMessage = `${state.backendPreviewStop ? "下载已停止，可继续下载剩余图片。" : "下载结束。"}${state.backendPreviewMessage}`;
+      await sendRuntime("SAVE_TEXT_FILE", { folder: `${session.destination.folder}/${session.destination.batchFolder}`,
+        batchFolder: "后台预览图", fileName: "图片下载记录.json", text: JSON.stringify({
+          format: "lockscreen-backend-preview-downloads", sourceField: "originImageWebp", createdAt: session.createdAt,
+          metadata: session.metadata, sourcePage: session.sourcePage, items: session.items,
+        }, null, 2) });
+    } catch (error) {
+      state.backendPreviewMessage += ` 下载记录保存失败：${error.message}`;
+    } finally {
+      state.backendPreviewBusy = false;
+      state.backendPreviewPhase = "idle";
+      renderBackendPreviews();
+    }
+  }
+
   function downloadDestination() {
     return { folder: state.settings.imageFolder, batchFolder: currentFolder(), batchLimit: currentBatchLimit() };
   }
@@ -1290,6 +1448,7 @@
     if (scan) scan.disabled = state.workOwned || ["running", "pausing"].includes(state.batch?.status);
     renderBatchItems();
     renderEditRecordSelector();
+    renderBackendPreviews();
   }
 
   function renderPages() {
@@ -1915,6 +2074,15 @@
             <div class="lsa-button-row"><button class="lsa-secondary-button lsa-save-batch-json" type="button" disabled>保存批次 JSON</button><button class="lsa-secondary-button lsa-download-all" type="button" disabled>下载自动通过图</button></div>
             <p class="lsa-status-text lsa-batch-status">扫描后可开始；并发固定不超过 2，状态实时保存。</p>
           </div>
+          <div class="lsa-section-card lsa-backend-preview-section">
+            <h2 class="lsa-section-title">后台右侧预览图下载</h2>
+            <p class="lsa-section-hint">按当前列表条目读取编辑页上传框右侧的图片；即使列表显示“请添加图片”也可读取。每条单独保存，文件名包含编号与 ID。</p>
+            <div class="lsa-button-row"><button class="lsa-secondary-button lsa-read-backend-previews" type="button">读取本页右侧图</button><button class="lsa-primary-button lsa-download-backend-previews" type="button" disabled>下载已读取图</button><button class="lsa-secondary-button lsa-stop-backend-previews" type="button" disabled>停止</button></div>
+            <progress class="lsa-backend-preview-progress" max="1" value="0" hidden aria-label="后台预览图进度"></progress>
+            <p class="lsa-status-text lsa-backend-preview-status"></p>
+            <p class="lsa-section-hint lsa-backend-preview-folder"></p>
+            <details class="lsa-inner-fold"><summary class="lsa-backend-preview-label">图片记录（0 条）</summary><div class="lsa-backend-preview-list"></div></details>
+          </div>
           ${transferPanel}
           ${quickSettings}
           <div class="lsa-batch-items"></div>
@@ -2029,6 +2197,7 @@
   }
 
   function unmount({ disable = false, invalidate = true } = {}) {
+    if (state.backendPreviewBusy) state.backendPreviewStop = true;
     if (invalidate) state.mountRevision += 1;
     clearTimeout(state.resizeTimer);
     state.resizeObserver?.disconnect();
@@ -2130,6 +2299,13 @@
     q(".lsa-retry-failed")?.addEventListener("click", () => retryFailed(null, q(".lsa-retry-type")?.value || ""));
     q(".lsa-save-batch-json")?.addEventListener("click", () => saveTextSnapshot("batch").catch(() => {}));
     q(".lsa-download-all")?.addEventListener("click", downloadAllImages);
+    q(".lsa-read-backend-previews")?.addEventListener("click", readBackendPreviews);
+    q(".lsa-download-backend-previews")?.addEventListener("click", downloadBackendPreviews);
+    q(".lsa-stop-backend-previews")?.addEventListener("click", () => {
+      state.backendPreviewStop = true;
+      state.backendPreviewMessage = "正在停止，当前已发出的请求结束后不再读取或下载下一条…";
+      renderBackendPreviews();
+    });
     q(".lsa-refresh-record")?.addEventListener("click", () => {
       state.selectedRecordIndex = -1;
       renderEditRecordSelector();

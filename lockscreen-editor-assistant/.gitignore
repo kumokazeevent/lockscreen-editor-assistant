@@ -1,0 +1,26 @@
+# Local dependencies and test output
+node_modules/
+coverage/
+test-results/
+playwright-report/
+*.log
+
+# Local credentials and settings
+.env
+.env.*
+!.env.example
+local-secrets*.json
+*.pem
+*.key
+
+# Local browser profiles and downloaded batches
+browser-profile/
+downloads/
+锁屏批次/
+*.zip
+
+# Editor and OS files
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
