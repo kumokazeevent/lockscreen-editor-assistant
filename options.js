@@ -4,7 +4,7 @@ const DEFAULT_SETTINGS = {
   batchLimit: 30,
   batchConcurrency: 2,
   aiTimeoutMs: 30000,
-  aiEndpoint: "https://opencode.ai/zen/go/v1/chat/completions",
+  aiEndpoint: "https://api.deepseek.com/chat/completions",
   aiModel: "deepseek-v4-flash",
   preferredRatio: "auto",
   originalFolder: "锁屏批次/原始内容",

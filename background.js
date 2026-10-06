@@ -592,6 +592,31 @@ function normalizeModelId(value) {
   return raw;
 }
 
+function shouldDisableThinking(model) {
+  const value = String(model || "").trim();
+  return /^glm[-_.\s]?5(?:\D|$)/i.test(value) || /^deepseek-v4(?:[-_.]|$)/i.test(value);
+}
+
+function normalizeAiEndpoint(value) {
+  const endpointUrl = validateHttpUrl(value, "AI 接口地址");
+  endpointUrl.pathname = endpointUrl.pathname.replace(/\/+$/g, "");
+  if (/^(?:www\.)?opencode\.ai$/i.test(endpointUrl.hostname)) {
+    endpointUrl.hostname = "opencode.ai";
+    if (endpointUrl.pathname.startsWith("/zen/go/") && endpointUrl.pathname !== "/zen/go/v1/chat/completions") {
+      throw new RequestError(
+        "OpenCode Go 接口地址不完整；请填写 https://opencode.ai/zen/go/v1/chat/completions",
+        { code: "AI_ENDPOINT_INVALID", retryable: false },
+      );
+    }
+  }
+  if (/^(?:www\.)?api\.deepseek\.com$/i.test(endpointUrl.hostname)) {
+    endpointUrl.hostname = "api.deepseek.com";
+    if (!endpointUrl.pathname || endpointUrl.pathname === "/") endpointUrl.pathname = "/chat/completions";
+    if (endpointUrl.pathname === "/v1") endpointUrl.pathname = "/v1/chat/completions";
+  }
+  return endpointUrl.href;
+}
+
 function detectSourceLanguage(text) {
   const value = String(text || "").trim();
   if (!value) return { code: "", confidence: 0 };
@@ -649,6 +674,16 @@ function getAiResponseText(data) {
       .join("");
   }
   return "";
+}
+
+function describeEmptyAiResponse(data) {
+  const choice = data?.choices?.[0];
+  const reasoning = normalizeAiContent(choice?.message?.reasoning_content).trim();
+  if (reasoning) return "模型只返回了思考内容，没有生成最终正文";
+  if (choice?.finish_reason === "length") return "模型输出达到 token 上限，没有生成最终正文";
+  if (choice?.finish_reason === "content_filter") return "模型输出被内容安全策略过滤";
+  if (choice?.finish_reason === "insufficient_system_resource") return "DeepSeek 当前推理资源不足";
+  return "AI 返回内容为空";
 }
 
 function validateAiResult(raw, context) {
@@ -764,18 +799,7 @@ async function generateBatchItemWithAi(payload = {}) {
       retryable: false,
     });
   }
-  const endpointUrl = validateHttpUrl(endpoint, "AI 接口地址");
-  endpointUrl.pathname = endpointUrl.pathname.replace(/\/+$/g, "");
-  if (/^(?:www\.)?opencode\.ai$/i.test(endpointUrl.hostname)) {
-    endpointUrl.hostname = "opencode.ai";
-    if (endpointUrl.pathname.startsWith("/zen/go/") && endpointUrl.pathname !== "/zen/go/v1/chat/completions") {
-      throw new RequestError(
-        "OpenCode Go 接口地址不完整；请填写 https://opencode.ai/zen/go/v1/chat/completions",
-        { code: "AI_ENDPOINT_INVALID", retryable: false },
-      );
-    }
-  }
-  endpoint = endpointUrl.href;
+  endpoint = normalizeAiEndpoint(endpoint);
 
   const originalTitle = String(item.originalTitle || item.title || "").trim();
   if (!originalTitle) throw new Error("没有读取到原标题，无法改写");
@@ -805,7 +829,7 @@ async function generateBatchItemWithAi(payload = {}) {
       stream: false,
       messages: buildAiMessages(context),
     };
-    if (/^glm[-_.\s]?5(?:\D|$)/i.test(model)) {
+    if (shouldDisableThinking(model)) {
       requestBody.thinking = { type: "disabled" };
     }
     try {
@@ -819,7 +843,7 @@ async function generateBatchItemWithAi(payload = {}) {
       }, timeout, "AI 改写");
       const content = getAiResponseText(data);
       if (!content) {
-        throw new RequestError("AI 返回内容为空", { code: "AI_INVALID", retryable: true });
+        throw new RequestError(describeEmptyAiResponse(data), { code: "AI_INVALID", retryable: true });
       }
       const result = validateAiResult(extractJson(content), context);
       return {
@@ -857,10 +881,11 @@ async function generateImageQueryWithAi(payload) {
     chrome.storage.sync.get("settings"),
     chrome.storage.local.get("localSecrets"),
   ]);
-  const endpoint = settings.aiEndpoint?.trim();
+  const configuredEndpoint = settings.aiEndpoint?.trim();
   const model = normalizeModelId(settings.aiModel);
   const apiKey = localSecrets.aiApiKey?.trim();
-  if (!endpoint || !model || !apiKey) return { configured: false };
+  if (!configuredEndpoint || !model || !apiKey) return { configured: false };
+  const endpoint = normalizeAiEndpoint(configuredEndpoint);
 
   const requestBody = {
     model,
@@ -880,7 +905,7 @@ async function generateImageQueryWithAi(payload) {
       { role: "user", content: `${String(payload.title || "")}\n${String(payload.summary || "")}`.trim() },
     ],
   };
-  if (/^glm[-_.\s]?5(?:\D|$)/i.test(model)) {
+  if (shouldDisableThinking(model)) {
     requestBody.thinking = { type: "disabled" };
   }
   const data = await fetchJson(endpoint, {

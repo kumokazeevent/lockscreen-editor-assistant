@@ -46,6 +46,12 @@ assert(evaluate("buildSafeStockQuery('peony garden morning light')") === "peony 
 assert(evaluate("buildSafeStockQuery('woman walking in city')").includes("side profile"),
   "人物搜索词应追加侧脸/背影约束");
 assert(evaluate("normalizeModelId('dsv4flash')") === "deepseek-v4-flash", "模型简称未纠正为正式 ID");
+assert(evaluate("shouldDisableThinking('deepseek-v4-flash')") === true, "DeepSeek V4 未关闭思考模式");
+assert(evaluate("shouldDisableThinking('deepseek-v4-pro')") === true, "DeepSeek V4 Pro 未关闭思考模式");
+assert(evaluate("shouldDisableThinking('glm-5')") === true, "GLM 5 未关闭思考模式");
+assert(evaluate("normalizeAiEndpoint('https://api.deepseek.com')") === "https://api.deepseek.com/chat/completions", "DeepSeek 根地址未补全");
+assert(evaluate("describeEmptyAiResponse({choices:[{finish_reason:'length',message:{reasoning_content:'thinking'}}]})").includes("思考内容"),
+  "DeepSeek 空响应诊断不明确");
 assert(evaluate("shouldRetry({code:'TIMEOUT',retryable:true})") === false, "超时不应再连续自动重试");
 assert(evaluate("getNearestAspect(1080, 1920, 'auto').aspectLabel") === "9:16", "9:16 比例识别失败");
 assert(evaluate("getNearestAspect(1080, 2400, 'auto').aspectLabel") === "9:20", "9:20 比例识别失败");
