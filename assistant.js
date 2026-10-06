@@ -10,6 +10,7 @@
     summaryLimit: 50,
     batchLimit: 30,
     batchConcurrency: 2,
+    pageCount: 1, rewriteMode: "ai", thinkingLevel: "medium", autoSearch: true, duplicateCheck: true,
     preferredRatio: "auto",
     originalFolder: "锁屏批次/原始内容",
     imageFolder: "锁屏批次/成品图片",
@@ -21,7 +22,7 @@
   };
   const PROCESS_STAGES = [
     { key: "article", label: "读取文章" },
-    { key: "ai", label: "AI 改写" },
+    { key: "ai", label: "文案改写" },
     { key: "image", label: "搜索图片" },
   ];
 
@@ -41,6 +42,9 @@
     resizeTimer: null,
     lastLocation: location.href,
     mountRevision: 0,
+    workToken: `${Date.now()}-${Math.random()}`, workOwned: false, leaseTimer: null, scanning: false,
+    imageHistory: {}, imagePage: 1, imageHasNext: false, imageBusy: false, searchRevision: 0,
+    imageQuery: "", imageTargetIndex: null, pageFilter: "all", autoReadRevision: 0,
   };
 
   function create(tag, className, text) {
@@ -72,7 +76,7 @@
   }
 
   function textLength(value) {
-    return graphemes(value).length;
+    return LSAWorkflow.count(value);
   }
 
   function formatOriginal(title = "", summary = "") {
@@ -124,6 +128,7 @@
   async function pageTool(name, ...args) {
     const methodMap = {
       GET_SITE_ROUTE: "getSiteRoute", SCAN_LIST_ITEMS: "scanListItems", GET_PAGE_CONTEXT: "getPageContext",
+      SCAN_PAGE_SNAPSHOT: "scanPageSnapshot", NEXT_LIST_PAGE: "nextListPage",
       APPLY_BATCH_RECORD: "applyBatchRecord", APPLY_DRAFT: "applyDraft", START_BINDING: "startBindingMode",
     };
     const method = globalThis.__lsaPageTools?.[methodMap[name]];
@@ -218,7 +223,10 @@
   }
 
   function cloneBatch() {
-    return state.batch ? JSON.parse(JSON.stringify(state.batch)) : null;
+    if (!state.batch) return null;
+    const copy = JSON.parse(JSON.stringify(state.batch));
+    copy.items.forEach((item) => { item.manualDuplicate = Boolean(state.imageHistory[LSAWorkflow.imageKey(item.image || {})]?.manual); });
+    return copy;
   }
 
   function persistBatch({ render = true } = {}) {
@@ -229,6 +237,87 @@
       .then(() => chrome.storage.local.set({ batchState: snapshot }));
     if (render) renderBatch();
     return state.storageChain;
+  }
+
+  async function acquireWork() {
+    await sendRuntime("WORK_LOCK", { operation: "acquire", token: state.workToken });
+    state.workOwned = true;
+    const { batchState } = await chrome.storage.local.get("batchState");
+    if (batchState && (!state.batch || batchState.updatedAt > state.batch.updatedAt)) state.batch = batchState;
+    clearInterval(state.leaseTimer);
+    state.leaseTimer = setInterval(() => {
+      sendRuntime("WORK_LOCK", { operation: "renew", token: state.workToken }).catch(() => {
+        state.pauseRequested = true;
+        state.workOwned = false;
+        clearInterval(state.leaseTimer);
+      });
+    }, 8000);
+  }
+
+  async function releaseWork() {
+    clearInterval(state.leaseTimer);
+    state.workOwned = false;
+    await sendRuntime("WORK_LOCK", { operation: "release", token: state.workToken }).catch(() => {});
+    renderBatch();
+  }
+
+  async function recoverInterruptedBatch() {
+    if (state.workOwned || !["running", "pausing"].includes(state.batch?.status)) return;
+    const lease = await sendRuntime("WORK_LOCK", { operation: "status", token: state.workToken });
+    if (lease.active) return;
+    try {
+      await acquireWork();
+      state.batch.status = "paused";
+      getBatchItems().forEach((item) => {
+        if (["fetching", "rewriting", "searching"].includes(item.status)) item.status = "pending";
+        for (const stage of Object.keys(item.stages || {})) if (item.stages[stage] === "working") item.stages[stage] = "pending";
+      });
+      await persistBatch();
+    } finally { if (state.workOwned) await releaseWork(); }
+  }
+
+  function pagesInBatch() {
+    const pages = new Map();
+    for (const item of getBatchItems()) {
+      const key = item.pageKey || "legacy";
+      if (!pages.has(key)) pages.set(key, { key, label: item.pageLabel || "原有批次", items: [] });
+      pages.get(key).items.push(item);
+    }
+    return [...pages.values()];
+  }
+
+  async function exportResults(pageKey = null) {
+    if (!state.batch) return;
+    const pages = pagesInBatch().filter((page) => pageKey ? page.key === pageKey
+      : page.items.every((item) => ["completed", "needs_review"].includes(item.status)));
+    const items = pages.flatMap((page) => page.items);
+    if (!items.length) return setPanelStatus(".lsa-transfer-status", "尚无已完成页面；可保存完整批次 JSON 保留当前进度", true);
+    await sendRuntime("SAVE_TEXT_FILE", { folder: state.settings.originalFolder,
+      fileName: `${state.batch.batchId}-${pageKey ? pages[0].label : "已完成页面"}.json`,
+      text: JSON.stringify({ ...cloneBatch(), version: 3, format: "lockscreen-results", items: items.map((item) => ({ ...item, manualDuplicate: Boolean(state.imageHistory[LSAWorkflow.imageKey(item.image || {})]?.manual) })) }, null, 2) });
+    setPanelStatus(".lsa-transfer-status", `已导出 ${pages.length} 页、${items.length} 条结果`);
+  }
+
+  async function importResults(file) {
+    if (!file) return;
+    if (state.workOwned) return setPanelStatus(".lsa-transfer-status", "请先暂停当前读取或处理", true);
+    try {
+      if (file.size > 32 * 1024 * 1024) throw new Error("JSON 超过 32MB，请按页面导入");
+      const batch = LSAWorkflow.importBatch(JSON.parse(await file.text()), state.settings);
+      await acquireWork();
+      const existing = new Map(getBatchItems().map((item) => [LSAWorkflow.recordKey(item), item]));
+      batch.items.forEach((item) => existing.set(LSAWorkflow.recordKey(item), item));
+      if (existing.size > 600) throw new Error("合并后超过 600 条，请先导出当前结果并新建批次");
+      for (const item of batch.items) {
+        if (item.manualDuplicate && item.image) await sendRuntime("MARK_IMAGE_DUPLICATE", { image: item.image, marked: true });
+      }
+      state.batch = { ...batch, items: [...existing.values()].map((item, i) => ({ ...item, index: i + 1 })) };
+      state.selectedRecordIndex = -1;
+      state.pageFilter = "all";
+      await persistBatch();
+      setPanelStatus(".lsa-transfer-status", `已导入 ${batch.items.length} 条并按内容 ID 合并；编辑页会自动匹配结果`);
+    } catch (error) { setPanelStatus(".lsa-transfer-status", `导入失败：${error.message}`, true); }
+    finally { if (state.workOwned) await releaseWork(); }
   }
 
   function makeBatchId() {
@@ -294,19 +383,18 @@
   }
 
   async function scanListItems() {
+    if (state.workOwned || state.scanning) return;
     const button = q(".lsa-scan-batch");
     if (button) button.disabled = true;
     setPanelStatus(".lsa-batch-status", "正在按页面左上到右下顺序扫描…");
     try {
+      await acquireWork();
+      state.scanning = true;
+      state.pauseRequested = false;
+      const pageCount = LSAWorkflow.number(q(".lsa-page-count")?.value ?? state.settings.pageCount, 1, 20, 1);
       const limit = Math.max(1, Math.min(30, Number(state.settings.batchLimit) || 30));
-      const response = await pageTool("SCAN_LIST_ITEMS", limit);
-      const rawItems = Array.isArray(response) ? response : response?.items;
-      if (!Array.isArray(rawItems) || !rawItems.length) {
-        throw new Error(response?.message || "没有识别到内容卡片；请确认位于海外内容列表页，或在诊断信息中检查选择器");
-      }
-      const items = rawItems.slice(0, limit).map(normalizeScannedItem);
-      state.batch = {
-        version: 2,
+      state.batch ||= {
+        version: 3, format: "lockscreen-results",
         batchId: makeBatchId(),
         sourcePage: location.href,
         createdAt: Date.now(),
@@ -315,18 +403,48 @@
         originalFolder: state.settings.originalFolder,
         imageFolder: state.settings.imageFolder,
         preferredRatio: state.settings.preferredRatio,
-        diagnostics: response?.diagnostics || [],
-        items,
+        diagnostics: [], items: [],
       };
+      const mergePage = async (response) => {
+        if (!response?.items?.length) throw new Error(response?.message || "页面未识别到内容");
+        const keys = new Set(getBatchItems().map(LSAWorkflow.recordKey));
+        const pageKey = response.items.map((item) => item.id || item.originalTitle).join("|");
+        let hash = 0;
+        for (const char of pageKey) hash = (hash * 31 + char.codePointAt(0)) | 0;
+        for (const raw of response.items) {
+          const item = normalizeScannedItem(raw, state.batch.items.length);
+          if (keys.has(LSAWorkflow.recordKey(item))) continue;
+          if (state.batch.items.length >= 600) throw new Error("当前批次已达 600 条，请导出并新建批次");
+          Object.assign(item, { pageKey: `page-${hash >>> 0}`, pageLabel: response.pageLabel || "当前页", sourcePage: response.sourcePage || location.href });
+          state.batch.items.push(item); keys.add(LSAWorkflow.recordKey(item));
+        }
+        state.batch.status = "ready";
+        await persistBatch();
+      };
+      if (q(".lsa-read-mode")?.value === "tabs") {
+        const response = await sendRuntime("SCAN_OPEN_PAGES", { pageCount, limit });
+        for (const page of response.pages) await mergePage(page);
+        if (response.warnings.length) state.batch.diagnostics = response.warnings;
+        if (!response.pages.length) throw new Error(response.warnings.join("；") || "没有可读取的后台标签页");
+      } else {
+        for (let page = 0; page < pageCount && !state.pauseRequested && state.workOwned; page += 1) {
+          setPanelStatus(".lsa-batch-status", `正在读取第 ${page + 1}/${pageCount} 页；已保存 ${state.batch.items.length} 条…`);
+          const response = await pageTool(page === 0 ? "SCAN_PAGE_SNAPSHOT" : "NEXT_LIST_PAGE", limit);
+          if (response.ended) break;
+          await mergePage(response);
+        }
+      }
       state.selectedRecordIndex = -1;
       await persistBatch();
-      setPanelStatus(".lsa-batch-status", `已扫描 ${items.length} 条；编号顺序为页面左上到右下。`);
+      setPanelStatus(".lsa-batch-status", `已保存 ${pagesInBatch().length} 页、${getBatchItems().length} 条；相同 ID 自动去重。${Array.isArray(state.batch.diagnostics) ? state.batch.diagnostics.join("；") : ""}`);
       saveTextSnapshot("original-list", true).catch((error) => {
-        setPanelStatus(".lsa-batch-status", `已扫描 ${items.length} 条，但原始 JSON 保存失败：${error.message}`, true);
+        setPanelStatus(".lsa-batch-status", `原始 JSON 保存失败：${error.message}`, true);
       });
     } catch (error) {
       setPanelStatus(".lsa-batch-status", error.message || "扫描失败", true);
     } finally {
+      state.scanning = false;
+      if (state.workOwned) await releaseWork();
       if (button) button.disabled = false;
       renderBatch();
     }
@@ -350,6 +468,7 @@
       imageQueryEn: cleanText(data.imageQueryEn || data.image_query_en || data.imageQuery || data.query || ""),
       language: cleanText(data.language || data.languageCode || ""),
       reviewWarning: cleanText(response.reviewWarning || data.reviewWarning || ""),
+      rewriteMode: data.rewriteMode || response.rewriteMode || "ai",
     };
   }
 
@@ -421,7 +540,7 @@
 
   function validateAiResult(result) {
     if (!result.title || !result.summary) throw new Error("AI 未返回完整标题和简介");
-    if (!result.imageQueryEn) throw new Error("AI 未返回英文图片搜索词");
+    if (!result.imageQueryEn && result.rewriteMode !== "local") throw new Error("AI 未返回英文图片搜索词");
     if (textLength(result.title) > Number(state.settings.titleLimit || 12)) {
       throw new Error(`AI 标题为 ${textLength(result.title)} 字，超过 ${state.settings.titleLimit} 字；未自动截断，请重试`);
     }
@@ -449,21 +568,21 @@
     resetItemProgress(item);
     try {
       setItemStage(item, "article", "working");
-      if (!item.sourceUrl) throw new Error("未读取到“查看链接”的文章地址");
       item.status = "fetching";
       await persistBatch();
-      const articleResponse = await sendRuntime("FETCH_ARTICLE", { url: item.sourceUrl, sourceUrl: item.sourceUrl });
-      const articleText = articleTextFromResponse(articleResponse);
-      if (!articleText) throw new Error("文章链接已打开，但没有提取到正文");
+      const articleResponse = !item.articleText && item.sourceUrl
+        ? await sendRuntime("FETCH_ARTICLE", { url: item.sourceUrl, sourceUrl: item.sourceUrl }) : {};
+      const articleText = item.articleText || articleTextFromResponse(articleResponse) || item.originalSummary || item.originalTitle;
       item.articleText = articleText;
       item.articleTitle = cleanText(articleResponse.title || articleResponse.article?.title || "");
       setItemStage(item, "article", "done");
 
-      if (token !== state.runToken) return;
+      if (token !== state.runToken || !state.workOwned) return;
       setItemStage(item, "ai", "working");
       item.status = "rewriting";
       await persistBatch();
-      const aiResponse = await sendRuntime("AI_PROCESS_ITEM", {
+      const aiResponse = !item.forceRewrite && item.title && item.summary && textLength(item.title) <= state.settings.titleLimit
+        && textLength(item.summary) <= state.settings.summaryLimit ? { result: item } : await sendRuntime("AI_PROCESS_ITEM", {
         item: {
           index: item.index, id: item.id, originalTitle: item.originalTitle,
           originalSummary: item.originalSummary, articleTitle: item.articleTitle,
@@ -475,20 +594,24 @@
       const ai = normalizeAiResult(aiResponse);
       validateAiResult(ai);
       Object.assign(item, ai);
+      item.forceRewrite = false;
+      item.imageQueryEn ||= item.originalTitle;
       setItemStage(item, "ai", "done");
 
-      if (token !== state.runToken) return;
+      if (token !== state.runToken || !state.workOwned) return;
       setItemStage(item, "image", "working");
       item.status = "searching";
       await persistBatch();
       const imageResponse = await sendRuntime("SEARCH_PEXELS_BATCH", {
-        query: ai.imageQueryEn, imageQueryEn: ai.imageQueryEn,
+        query: item.imageQueryEn, imageQueryEn: item.imageQueryEn,
         preferredRatio: state.settings.preferredRatio, orientation: "portrait",
       });
-      item.image = selectBestImage(imageResponse);
+      const available = (imageResponse.items || []).filter((image) => !duplicateInfo(image));
+      if (token !== state.runToken || !state.workOwned) return;
+      item.image = selectBestImage({ ...imageResponse, items: available.length ? available : imageResponse.items });
       setItemStage(item, "image", "done");
       item.currentStage = "";
-      item.status = item.image.safetyStatus === "passed" ? "completed" : "needs_review";
+      item.status = item.image.safetyStatus === "passed" && item.rewriteMode !== "local" ? "completed" : "needs_review";
       item.error = "";
     } catch (error) {
       setItemStage(item, item.currentStage || "article", "error");
@@ -501,15 +624,17 @@
         state.batch.fatalError = item.error;
       }
     }
-    await persistBatch();
+    if (state.workOwned) await persistBatch();
   }
 
   async function runBatch() {
+    if (state.workOwned || state.scanning) return;
     if (!state.batch || !getBatchItems().length) {
       setPanelStatus(".lsa-batch-status", "请先扫描当前列表", true);
       return;
     }
-    if (state.batch.status === "running") return;
+    try { await acquireWork(); } catch (error) { return setPanelStatus(".lsa-batch-status", error.message, true); }
+    try {
     state.pauseRequested = false;
     state.runToken += 1;
     const token = state.runToken;
@@ -525,12 +650,16 @@
       }
     });
     await persistBatch();
-    setPanelStatus(".lsa-batch-status", "批处理已开始；并发数最多为 2。切换页面不会丢失已完成记录。");
+    const requestedPages = LSAWorkflow.number(q(".lsa-page-count")?.value ?? state.settings.pageCount, 1, 20, 1);
+    const scheduledPages = pagesInBatch().filter((page) => (state.pageFilter === "all" || page.key === state.pageFilter)
+      && page.items.some((item) => item.status === "pending")).slice(0, requestedPages);
+    const scheduledItems = new Set(scheduledPages.flatMap((page) => page.items));
+    setPanelStatus(".lsa-batch-status", `开始处理 ${scheduledPages.length} 页；并发最多 2 条，其他页面保留进度。`);
 
     const concurrency = Math.max(1, Math.min(2, Number(state.settings.batchConcurrency) || 2));
     const claimNext = () => {
       if (state.pauseRequested || token !== state.runToken) return null;
-      return getBatchItems().find((item) => item.status === "pending") || null;
+      return getBatchItems().find((item) => item.status === "pending" && scheduledItems.has(item)) || null;
     };
     const workers = Array.from({ length: concurrency }, async () => {
       while (!state.pauseRequested && token === state.runToken) {
@@ -552,6 +681,9 @@
           : "已暂停；正在执行的请求已完成并保存，可稍后继续。",
         Boolean(state.batch.fatalError),
       );
+    } else if (counts.pending) {
+      state.batch.status = "paused";
+      setPanelStatus(".lsa-batch-status", `本轮 ${scheduledPages.length} 页已处理；另有 ${counts.pending} 条等待下一轮，失败 ${counts.failed} 条。`);
     } else if (counts.failed) {
       state.batch.status = "partial";
       setPanelStatus(".lsa-batch-status", `本轮完成，${counts.failed} 条失败。请查看原因后点击“重试失败项”。`, true);
@@ -564,9 +696,15 @@
       saveTextSnapshot("original", true),
       saveTextSnapshot("batch", true),
     ]).catch(() => {});
+    } catch (error) {
+      state.batch.status = "paused";
+      setPanelStatus(".lsa-batch-status", error.message, true);
+    } finally { await releaseWork(); renderBatch(); }
   }
 
   function pauseBatch() {
+    if (state.scanning) { state.pauseRequested = true; return; }
+    if (!state.workOwned) return;
     if (!state.batch || state.batch.status !== "running") return;
     state.pauseRequested = true;
     state.batch.status = "pausing";
@@ -574,8 +712,11 @@
     setPanelStatus(".lsa-batch-status", "正在暂停；不会强行中断当前两条网络请求…");
   }
 
-  function retryFailed(index = null) {
+  async function retryFailed(index = null) {
+    if (state.workOwned) return;
     if (!state.batch) return;
+    try { await acquireWork(); } catch (error) { return setPanelStatus(".lsa-batch-status", error.message, true); }
+    try {
     const targets = index === null
       ? getBatchItems().filter((item) => item.status === "error")
       : getBatchItems().filter((item) => item.index === index);
@@ -589,8 +730,9 @@
       resetItemProgress(item);
     });
     state.batch.status = "ready";
-    persistBatch();
-    runBatch();
+    await persistBatch();
+    } finally { await releaseWork(); }
+    await runBatch();
   }
 
   function safetyText(image) {
@@ -606,25 +748,58 @@
     return `${image.source || "素材源未知"} · ${size} · ${image.aspectLabel || closestRatioLabel(image)} · ${safetyText(image)}`;
   }
 
-  async function downloadFinalImage(item, button) {
+  function duplicateInfo(image) {
+    const entry = state.imageHistory[LSAWorkflow.imageKey(image)];
+    if (entry?.manual) return "已手动标记重复";
+    if (["queued", "completed"].includes(entry?.status)) return "已下载过";
+    return "";
+  }
+
+  function duplicateButton(image) {
+    const marked = state.imageHistory[LSAWorkflow.imageKey(image)]?.manual;
+    const button = create("button", "lsa-secondary-button", marked ? "取消重复标记" : "标记重复");
+    button.type = "button";
+    button.addEventListener("click", async () => {
+      try {
+        const response = await sendRuntime("MARK_IMAGE_DUPLICATE", { image, marked: !marked });
+        state.imageHistory[response.key] = response.entry;
+        renderBatch(); renderManualImages();
+      } catch (error) { setPanelStatus(".lsa-image-status", error.message, true); }
+    });
+    return button;
+  }
+
+  async function downloadFinalImage(item, button, force = false) {
     if (!item?.image) throw new Error("该条还没有可下载图片");
     if (button) { button.disabled = true; button.textContent = "下载中…"; }
     try {
       const response = await sendRuntime("DOWNLOAD_FINAL_IMAGE", {
         item, record: item, image: item.image, index: item.index,
         folder: state.settings.imageFolder, preferredRatio: state.settings.preferredRatio,
+        force,
       });
+      if (response.skipped) {
+        item.downloadStatus = "duplicate";
+        item.downloadError = `已跳过重复：${response.reason}${response.path ? `（${response.path}）` : ""}`;
+        if (button) {
+          const retry = create("button", "lsa-secondary-button", "仍然下载这张图");
+          retry.type = "button";
+          retry.addEventListener("click", () => { retry.remove(); downloadFinalImage(item, button, true).catch(() => {}); });
+          button.after(retry);
+        }
+        return response;
+      }
       item.downloadStatus = "completed";
       item.downloadFileName = response.fileName || response.filename || "";
       item.downloadPath = response.path || item.downloadFileName;
       item.downloadGroupFolder = response.groupFolder || "";
       item.downloadError = "";
-      if (state.batch?.items?.includes(item)) await persistBatch();
+      if (!state.workOwned && state.batch?.status !== "running" && state.batch?.items?.includes(item)) await persistBatch();
       return response;
     } catch (error) {
       item.downloadStatus = "error";
       item.downloadError = error.message;
-      if (state.batch?.items?.includes(item)) await persistBatch();
+      if (!state.workOwned && !["running", "pausing"].includes(state.batch?.status) && state.batch?.items?.includes(item)) await persistBatch();
       throw error;
     } finally {
       if (button) {
@@ -642,18 +817,17 @@
     if (button) button.disabled = true;
     let cursor = 0;
     let failed = 0;
+    let skipped = 0;
     setPanelStatus(".lsa-batch-status", `正在下载 ${candidates.length} 张成品图；每累计 30 张自动新建一个分组目录…`);
     const worker = async () => {
       while (cursor < candidates.length) {
         const item = candidates[cursor++];
-        try { await downloadFinalImage(item); } catch { failed += 1; }
+        try { const result = await downloadFinalImage(item); if (result.skipped) skipped += 1; } catch { failed += 1; }
       }
     };
     await Promise.all([worker(), worker()]);
     if (button) button.disabled = false;
-    setPanelStatus(".lsa-batch-status", failed
-      ? `下载结束：${candidates.length - failed} 张成功，${failed} 张失败。`
-      : `已加入下载列表：${candidates.length} 张；成品图已按每 30 张自动分组。`, Boolean(failed));
+    setPanelStatus(".lsa-batch-status", `下载结束：${candidates.length - failed - skipped} 张加入下载，跳过重复 ${skipped} 张，失败 ${failed} 张；每 30 张分组。`, Boolean(failed));
   }
 
   function stageStatusText(status) {
@@ -717,12 +891,14 @@
     const wrap = q(".lsa-batch-items");
     if (!wrap) return;
     wrap.replaceChildren();
-    const items = getBatchItems();
+    const items = getBatchItems().filter((item) => state.pageFilter === "all" || (item.pageKey || "legacy") === state.pageFilter);
     if (!items.length) {
-      wrap.append(create("div", "lsa-empty-result", "点击“扫描当前页”，最多读取 30 条内容"));
+      wrap.append(create("div", "lsa-empty-result", "选择页数后点击“读取并合并页面”，每页最多 30 条"));
       return;
     }
-    for (const item of items) {
+    const visibleItems = state.pageFilter === "all" ? items.slice(0, 60) : items;
+    if (visibleItems.length < items.length) wrap.append(create("p", "lsa-section-hint", "当前展示前 60 条；请用页面筛选查看其余页面，总进度包含所有记录。"));
+    for (const item of visibleItems) {
       const card = create("article", `lsa-batch-card is-${item.status || "pending"}`);
       const header = create("div", "lsa-batch-card-header");
       header.append(create("span", "lsa-item-number", String(item.index).padStart(2, "0")));
@@ -756,6 +932,28 @@
         card.append(create("p", "lsa-item-error", `下载失败：${item.downloadError}`));
       }
       const actions = create("div", "lsa-item-actions");
+      if (item.title && item.summary && !state.workOwned && !["running", "pausing"].includes(state.batch?.status)) {
+        const rewrite = create("button", "lsa-secondary-button", "按新设置重写");
+        rewrite.type = "button";
+        rewrite.addEventListener("click", async () => {
+          item.forceRewrite = true;
+          await retryFailed(item.index);
+        });
+        actions.append(rewrite);
+      }
+      if (item.imageQueryEn || item.originalTitle) {
+        const search = create("button", "lsa-secondary-button", "换图 / 翻页");
+        search.type = "button";
+        search.disabled = state.imageBusy;
+        search.addEventListener("click", () => {
+          state.imageTargetIndex = item.index;
+          state.originalForSearch = { title: item.originalTitle, summary: item.originalSummary };
+          q(".lsa-stock-query").value = item.imageQueryEn || item.originalTitle;
+          switchTab("images");
+          searchManualImages(1, !item.imageQueryEn);
+        });
+        actions.append(search);
+      }
       if (item.status === "error") {
         const retry = create("button", "lsa-secondary-button", "重试此项");
         retry.type = "button";
@@ -770,10 +968,12 @@
           setPanelStatus(".lsa-batch-status", `第 ${item.index} 条下载失败：${error.message}`, true);
         }));
         actions.append(download);
+        actions.append(duplicateButton(item.image));
+        if (duplicateInfo(item.image)) card.append(create("p", "lsa-item-error", duplicateInfo(item.image)));
       }
       if (item.editUrl) {
         const edit = create("a", "lsa-link-button", "打开编辑页");
-        edit.href = item.editUrl;
+        edit.href = LSAWorkflow.editUrl(item.editUrl, item.id);
         actions.append(edit);
       }
       if (actions.childNodes.length) card.append(actions);
@@ -791,22 +991,50 @@
         : "尚未建立批次";
     }
     renderTotalProgress();
+    renderPages();
     const start = q(".lsa-start-batch");
     const pause = q(".lsa-pause-batch");
     const retry = q(".lsa-retry-failed");
     if (start) {
-      start.disabled = !counts.total || state.batch?.status === "running" || state.batch?.status === "pausing"
+      start.disabled = state.scanning || !counts.total || state.batch?.status === "running" || state.batch?.status === "pausing"
         || (!counts.pending && !counts.working);
       start.textContent = state.batch?.status === "paused" ? "继续处理" : "开始处理";
     }
-    if (pause) pause.disabled = state.batch?.status !== "running";
+    if (pause) pause.disabled = !state.scanning && (!state.workOwned || state.batch?.status !== "running");
     if (retry) retry.disabled = !counts.failed || state.batch?.status === "running";
     const save = q(".lsa-save-batch-json");
     const downloadAll = q(".lsa-download-all");
     if (save) save.disabled = !counts.total;
     if (downloadAll) downloadAll.disabled = !counts.done;
+    const scan = q(".lsa-scan-batch");
+    if (scan) scan.disabled = state.workOwned || ["running", "pausing"].includes(state.batch?.status);
     renderBatchItems();
     renderEditRecordSelector();
+  }
+
+  function renderPages() {
+    const wrap = q(".lsa-page-results");
+    const filter = q(".lsa-page-filter");
+    const pages = pagesInBatch();
+    if (filter) {
+      filter.replaceChildren(create("option", "", "全部页面")); filter.firstChild.value = "all";
+      pages.forEach((page) => { const option = create("option", "", page.label); option.value = page.key; filter.append(option); });
+      filter.value = state.pageFilter;
+    }
+    if (!wrap) return;
+    wrap.replaceChildren();
+    for (const page of pages) {
+      const done = page.items.filter((item) => ["completed", "needs_review"].includes(item.status)).length;
+      const failed = page.items.filter((item) => item.status === "error").length;
+      const row = create("div", "lsa-page-result");
+      row.append(create("span", "", `${page.label} · 完成 ${done}/${page.items.length}${failed ? ` · 失败 ${failed}` : ""}`));
+      const progress = create("progress", ""); progress.max = page.items.length; progress.value = done;
+      row.append(progress);
+      const exportButton = create("button", "lsa-text-action", "导出本页 JSON");
+      exportButton.type = "button"; exportButton.disabled = done !== page.items.length;
+      exportButton.addEventListener("click", () => exportResults(page.key).catch((error) => setPanelStatus(".lsa-transfer-status", error.message, true)));
+      row.append(exportButton); wrap.append(row);
+    }
   }
 
   function recordMatchesRoute(item) {
@@ -867,7 +1095,8 @@
       setPanelStatus(".lsa-edit-status", `第 ${item.index} 条没有识别到编辑页地址，无法跳转`, true);
       return;
     }
-    const target = new URL(item.editUrl, location.href).href;
+    const target = LSAWorkflow.editUrl(item.editUrl, item.id);
+    if (!target) return setPanelStatus(".lsa-edit-status", "编辑页地址无效", true);
     if (target === location.href) {
       setPanelStatus(".lsa-edit-status", `已选择第 ${item.index} 条，当前已在对应编辑页。`);
       return;
@@ -941,20 +1170,60 @@
   async function readPage() {
     try {
       const context = await pageTool("GET_PAGE_CONTEXT");
+      if (state.route.kind === "edit" && !context.boundTitle) return false;
       state.pageContext = context || {};
-      const title = cleanText(context.boundTitle || context.heading || context.title || context.selectedText || "");
-      const summary = cleanText(context.boundSummary || context.description || "");
+      const matched = getBatchItems().find(recordMatchesRoute);
+      const title = cleanText(matched?.originalTitle || context.boundTitle || context.heading || context.title || context.selectedText || "");
+      const summary = cleanText(matched?.originalSummary || context.boundSummary || context.description || "");
+      state.originalForSearch = { title, summary };
       const original = q(".lsa-original-copy");
       const draft = q(".lsa-draft-copy");
       if (original) original.value = formatOriginal(title, summary);
-      if (draft && !draft.value) draft.value = `${title}\n${summary}`.trim();
+      if (draft && !draft.value) draft.value = `${matched?.title || title}\n${matched?.summary || summary}`.trim();
       const queryInput = q(".lsa-stock-query");
       if (queryInput && !queryInput.value) queryInput.value = title;
       updateManualCounts();
       setPanelStatus(".lsa-manual-status", "已读取当前页面；手动填写不会点击后台保存。");
+      return true;
     } catch (error) {
       setPanelStatus(".lsa-manual-status", `读取失败：${error.message}`, true);
     }
+  }
+
+  async function autoReadAndSearch() {
+    const revision = ++state.autoReadRevision;
+    const root = state.root;
+    for (let attempt = 0; attempt < 24; attempt += 1) {
+      if (state.root !== root || revision !== state.autoReadRevision) return;
+      const context = await pageTool("GET_PAGE_CONTEXT");
+      if (context.boundTitle) {
+        await new Promise((resolve) => setTimeout(resolve, 500));
+        if (state.root !== root || revision !== state.autoReadRevision) return;
+        await readPage();
+        if (state.settings.autoSearch !== false) await searchManualImages(1, true);
+        return;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 400));
+    }
+    setPanelStatus(".lsa-manual-status", "页面字段尚未加载，完成加载后可点击读取页面", true);
+  }
+
+  async function rewriteManual() {
+    const source = parseOriginal(q(".lsa-original-copy")?.value || "");
+    const root = state.root;
+    const button = q(".lsa-rewrite-manual");
+    if (button) button.disabled = true;
+    try {
+      setPanelStatus(".lsa-manual-status", state.settings.rewriteMode === "local" ? "正在生成本地候选…" : "正在调用 AI 改写…");
+      const response = await sendRuntime("AI_PROCESS_ITEM", { item: { originalTitle: source.title, originalSummary: source.summary } });
+      if (state.root !== root) return;
+      const result = normalizeAiResult(response);
+      validateAiResult(result);
+      q(".lsa-draft-copy").value = `${result.title}\n${result.summary}`;
+      updateManualCounts();
+      setPanelStatus(".lsa-manual-status", result.reviewWarning || "改写完成，请核对后填写");
+    } catch (error) { if (state.root === root) setPanelStatus(".lsa-manual-status", error.message, true); }
+    finally { if (button) button.disabled = false; }
   }
 
   async function applyManualDraft() {
@@ -971,34 +1240,46 @@
     }
   }
 
-  async function makeManualEnglishQuery(source) {
-    try {
-      const response = await sendRuntime("GENERATE_IMAGE_QUERY", { title: source, summary: "" });
+  async function makeManualEnglishQuery(source, summary = "") {
+    if (state.settings.rewriteMode === "local") return source;
+    {
+      const response = await sendRuntime("GENERATE_IMAGE_QUERY", { title: source, summary });
       const value = cleanText(response.imageQueryEn || response.query || response.result?.imageQueryEn || "");
       if (value) return value;
-    } catch { /* Continue with the independent batch API. */ }
-    const response = await sendRuntime("AI_PROCESS_ITEM", {
-      item: { originalTitle: source, originalSummary: "", articleText: source, sourceUrl: location.href },
-      mode: "image_query_only",
-    });
-    const value = normalizeAiResult(response).imageQueryEn;
-    if (!value) throw new Error("AI 未返回英文图片搜索词");
-    return value;
+    }
+    throw new Error("AI 未配置或未返回英文关键词；也可直接输入英文关键词搜索");
   }
 
-  async function searchManualImages() {
+  async function searchManualImages(page = 1, fromOriginal = false) {
+    if (state.imageBusy) return;
+    page = LSAWorkflow.number(page, 1, 1000, 1);
     const input = q(".lsa-stock-query");
-    let value = cleanText(input?.value || parseOriginal(q(".lsa-original-copy")?.value || "").title);
+    let value = page > 1 ? state.imageQuery : cleanText(input?.value || state.originalForSearch?.title);
     if (!value) return setPanelStatus(".lsa-image-status", "请先输入原标题或英文关键词", true);
     const button = q(".lsa-search-images");
+    state.imageBusy = true;
+    const revision = ++state.searchRevision;
     if (button) button.disabled = true;
     setPanelStatus(".lsa-image-status", "正在生成英文提示词并搜索竖屏图片…");
     try {
-      value = await makeManualEnglishQuery(value);
+      if (page === 1 && value !== state.imageQuery) {
+        const matched = getBatchItems().find((item) => item.index === state.imageTargetIndex) || getBatchItems().find(recordMatchesRoute);
+        if (fromOriginal && matched?.imageQueryEn) value = matched.imageQueryEn;
+        else if (fromOriginal || /[^\x00-\x7f]/.test(value)) {
+          value = await makeManualEnglishQuery(value, state.originalForSearch?.summary || "");
+        }
+      }
+      if (revision !== state.searchRevision) return;
       input.value = value;
       const response = await sendRuntime("SEARCH_PEXELS_BATCH", {
         query: value, imageQueryEn: value, preferredRatio: state.settings.preferredRatio, orientation: "portrait",
+        page, source: page > 1 || value === state.imageQuery ? state.imageProvider : "",
       });
+      if (revision !== state.searchRevision) return;
+      state.imageQuery = value;
+      state.imageProvider = response.source;
+      state.imagePage = page;
+      state.imageHasNext = Boolean(response.hasNext);
       const raw = response.items || response.images || response.results || [];
       state.manualResults = raw.map(normalizeImage)
         .filter((image) => image.width > 0 && image.height > image.width && image.safetyStatus !== "rejected")
@@ -1009,15 +1290,23 @@
       renderManualImages();
       const sources = [...new Set(state.manualResults.map((image) => image.source).filter(Boolean))].join(" / ");
       setPanelStatus(".lsa-image-status", state.manualResults.length
-        ? `找到 ${state.manualResults.length} 张经尺寸验证的竖图；来源：${sources || "Pexels/Pixabay"}。安全标记仅为自动初筛。`
-        : "没有找到尺寸可验证的竖图，请更换关键词。", !state.manualResults.length);
+        ? `第 ${page} 页 · ${state.manualResults.length} 张竖图 · ${sources || "Pexels/Pixabay"}${state.settings.rewriteMode === "local" ? " · 本地模式使用原词，可自行输入英文关键词" : ""}`
+        : "本页没有通过竖图规则的结果，可继续翻页或更换关键词。", !state.manualResults.length);
     } catch (error) {
+      if (revision !== state.searchRevision) return;
       state.manualResults = [];
       renderManualImages();
       setPanelStatus(".lsa-image-status", error.message, true);
     } finally {
-      if (button) button.disabled = false;
+      if (revision === state.searchRevision) { state.imageBusy = false; renderImagePager(); if (button) button.disabled = false; }
     }
+  }
+
+  function renderImagePager() {
+    const previous = q(".lsa-images-prev"), next = q(".lsa-images-next"), label = q(".lsa-images-page");
+    if (previous) previous.disabled = state.imageBusy || state.imagePage <= 1;
+    if (next) next.disabled = state.imageBusy || !state.imageHasNext;
+    if (label) label.textContent = `第 ${state.imagePage} 页`;
   }
 
   function renderManualImages() {
@@ -1038,6 +1327,7 @@
       const copy = create("div", "lsa-stock-copy");
       copy.append(create("p", "lsa-stock-title", `${image.source || "素材"} · ${image.creator || "作者信息见来源页"}`));
       copy.append(create("p", image.safetyStatus === "passed" ? "lsa-stock-meta" : "lsa-stock-meta is-warning", imageMeta(image)));
+      if (duplicateInfo(image)) copy.append(create("p", "lsa-item-error", duplicateInfo(image)));
       const download = create("button", "lsa-image-action", "下载此图");
       download.type = "button";
       download.addEventListener("click", async () => {
@@ -1047,13 +1337,32 @@
           summary: original.summary || "", image,
         };
         try {
-          await downloadFinalImage(synthetic, download);
-          setPanelStatus(".lsa-image-status", "图片已加入浏览器下载列表");
+          const result = await downloadFinalImage(synthetic, download);
+          setPanelStatus(".lsa-image-status", result.skipped ? `跳过重复：${result.reason}` : `图片已加入下载：${result.path}`);
         } catch (error) {
           setPanelStatus(".lsa-image-status", error.message, true);
         }
       });
       copy.append(download);
+      copy.append(duplicateButton(image));
+      const target = getBatchItems().find((item) => item.index === state.imageTargetIndex) || selectedRecord();
+      if (target) {
+        const choose = create("button", "lsa-secondary-button", `选为第 ${target.index} 条配图`);
+        choose.type = "button";
+        choose.disabled = state.workOwned || ["running", "pausing"].includes(state.batch?.status);
+        choose.addEventListener("click", async () => {
+          try {
+            await acquireWork();
+            target.image = image; target.imageQueryEn = state.imageQuery; target.downloadStatus = ""; target.downloadError = "";
+            target.stages.image = "done";
+            target.status = target.title && target.summary ? (image.safetyStatus === "passed" && target.rewriteMode !== "local" ? "completed" : "needs_review") : "pending";
+            await persistBatch();
+            setPanelStatus(".lsa-image-status", `已替换第 ${target.index} 条配图`);
+          } catch (error) { setPanelStatus(".lsa-image-status", error.message, true); }
+          finally { if (state.workOwned) await releaseWork(); }
+        });
+        copy.append(choose);
+      }
       card.append(preview, copy);
       wrap.append(card);
     });
@@ -1093,7 +1402,7 @@
     root.innerHTML = `
       <header class="lsa-assistant-header">
         <div class="lsa-assistant-logo">锁</div>
-        <div class="lsa-assistant-name"><strong>锁屏编辑助手</strong><small>${isList ? "列表批处理" : `编辑页 ${route.id ? `· ID ${route.id}` : ""}`}</small></div>
+        <div class="lsa-assistant-name"><strong>锁屏编辑助手</strong><small>${isList ? "列表批处理" : "编辑页"}</small></div>
         <div class="lsa-window-actions"><button class="lsa-window-button lsa-minimize" type="button" title="最小化">—</button><button class="lsa-window-button lsa-close" type="button" title="关闭">×</button></div>
       </header>
       <nav class="lsa-assistant-nav" data-tabs="${isList ? "2" : "3"}">
@@ -1101,11 +1410,26 @@
         <button class="lsa-tab-button" data-tab="images" type="button">单条配图</button>
       </nav>
       <div class="lsa-assistant-body">
+        <details class="lsa-quick-settings lsa-section-card">
+          <summary>改写设置 · 字数 / 模式 / 思考强度</summary>
+          <div class="lsa-quick-grid">
+            <label>标题字符上限<input data-setting="titleLimit" type="number" min="1" max="100"></label>
+            <label>简介字符上限<input data-setting="summaryLimit" type="number" min="1" max="500"></label>
+            <label>改写方式<select data-setting="rewriteMode"><option value="ai">AI 改写</option><option value="local">本地候选</option></select></label>
+            <label>思考强度<select data-setting="thinkingLevel"><option value="off">关闭</option><option value="low">低</option><option value="medium">中等</option><option value="high">高</option><option value="max">最高</option><option value="provider">提供商默认</option></select></label>
+          </div><p class="lsa-status-text lsa-quick-status">修改后立即保存；完整提示词可在底部“设置”中编辑。</p>
+        </details>
+        <div class="lsa-section-card lsa-transfer">
+          <div class="lsa-button-row"><button class="lsa-secondary-button lsa-import-json" type="button">导入结果 JSON</button><button class="lsa-secondary-button lsa-export-completed" type="button">导出已完成页面</button><button class="lsa-text-action lsa-new-batch" type="button">导出并新建批次</button></div>
+          <input class="lsa-import-file" type="file" accept=".json,application/json" hidden>
+          <p class="lsa-status-text lsa-transfer-status">导入后按内容 ID 合并结果，进入编辑页自动匹配。</p>
+        </div>
         ${isList ? `
         <section class="lsa-tab-panel" data-panel="batch">
           <div class="lsa-section-card">
-            <div class="lsa-section-row"><h2 class="lsa-section-title">列表批处理（最多 30 条）</h2><button class="lsa-text-action lsa-scan-batch" type="button">扫描当前页</button></div>
-            <p class="lsa-section-hint">卡片按页面左上到右下编号；读取“查看链接”的正文后，独立 API 一次生成同语言标题、简介和英文配图词。</p>
+            <div class="lsa-section-row"><h2 class="lsa-section-title">多页面处理</h2><button class="lsa-text-action lsa-scan-batch" type="button">读取并合并页面</button></div>
+            <div class="lsa-quick-grid"><label>读取来源<select class="lsa-read-mode"><option value="pagination">从当前列表连续翻页</option><option value="tabs">合并已打开的后台标签页</option></select></label><label>每次读取 / 处理页数（1–20）<input class="lsa-page-count" type="number" min="1" max="20"></label></div>
+            <p class="lsa-section-hint">当前页计入页数；相同 ID 自动合并。每轮处理所选页面中前 N 个待处理页，每页最多 30 条。</p>
             <div class="lsa-total-progress" aria-label="批次总进度">
               <div class="lsa-total-progress-head"><span>总进度</span><strong class="lsa-total-progress-value">0%</strong></div>
               <div class="lsa-progress-track lsa-total-progress-track"><span class="lsa-progress-fill lsa-total-progress-fill"></span></div>
@@ -1113,6 +1437,8 @@
               <div class="lsa-stage-progress-list"></div>
             </div>
             <p class="lsa-batch-summary">尚未建立批次</p>
+            <div class="lsa-page-results"></div>
+            <label class="lsa-field-label">显示页面<select class="lsa-page-filter"><option value="all">全部页面</option></select></label>
             <div class="lsa-button-row"><button class="lsa-primary-button lsa-start-batch" type="button" disabled>开始处理</button><button class="lsa-secondary-button lsa-pause-batch" type="button" disabled>暂停</button><button class="lsa-secondary-button lsa-retry-failed" type="button" disabled>重试失败项</button></div>
             <div class="lsa-button-row"><button class="lsa-secondary-button lsa-save-batch-json" type="button" disabled>保存批次 JSON</button><button class="lsa-secondary-button lsa-download-all" type="button" disabled>下载自动通过图</button></div>
             <p class="lsa-status-text lsa-batch-status">扫描后可开始；并发固定不超过 2，状态实时保存。</p>
@@ -1135,6 +1461,7 @@
             <label class="lsa-field-label"><span>页面原稿</span><span>标题////简介</span></label><textarea class="lsa-assistant-textarea lsa-original-copy" placeholder="标题////简介"></textarea>
             <label class="lsa-field-label"><span>待填写文案</span><span><span class="lsa-counter lsa-title-count">标题 0 / 12</span> <span class="lsa-counter lsa-summary-count">简介 0 / 50</span></span></label><textarea class="lsa-assistant-textarea lsa-draft-copy" placeholder="第一行标题&#10;第二行起简介"></textarea>
             <div class="lsa-button-row"><button class="lsa-primary-button lsa-apply-draft" type="button">填写标题和简介</button><button class="lsa-secondary-button lsa-bind-fields" type="button">重新绑定字段</button></div><p class="lsa-status-text lsa-manual-status">不会自动点击后台保存。</p>
+            <button class="lsa-secondary-button lsa-rewrite-manual" type="button">按当前模式改写</button>
           </div>
         </section>`}
         <section class="lsa-tab-panel" data-panel="images" hidden>
@@ -1143,12 +1470,14 @@
             <p class="lsa-section-hint">自动把原标题总结为英文视觉词；优先 Pexels，必要时回退 Pixabay。只展示可验证为竖向的图片。</p>
             <div class="lsa-search-row"><input class="lsa-assistant-input lsa-stock-query" type="search" placeholder="原标题或 English keywords"><button class="lsa-primary-button lsa-search-images" type="button">搜索</button></div>
             <p class="lsa-status-text lsa-image-status">正脸与裸露检测存在局限，无法确定的图片会明确标为“需复核”。</p>
+            <div class="lsa-image-pager"><button class="lsa-secondary-button lsa-images-prev" type="button" disabled>上一页</button><span class="lsa-images-page">第 1 页</span><button class="lsa-secondary-button lsa-images-next" type="button" disabled>下一页</button></div>
           </div>
           <div class="lsa-stock-results"><div class="lsa-empty-result">这里只展示已验证宽度小于高度的图片</div></div>
         </section>
         <details class="lsa-diagnostics"><summary>诊断信息</summary><pre class="lsa-diagnostics-text"></pre></details>
       </div>
       <footer class="lsa-assistant-footer"><span class="lsa-global-status">草稿与批次状态自动保存</span><button class="lsa-text-action lsa-open-settings" type="button">设置</button></footer>`;
+    if (!isList) root.querySelector(".lsa-assistant-name small").textContent = `编辑页${route.id ? ` · ID ${route.id}` : ""}`;
     return root;
   }
 
@@ -1176,8 +1505,8 @@
 
   function applySize(size) {
     if (!state.root || !size) return;
-    const width = Math.max(320, Math.min(window.innerWidth - 12, Number(size.width) || 410));
-    const height = Math.max(300, Math.min(window.innerHeight - 12, Number(size.height) || 760));
+    const width = Math.min(window.innerWidth - 12, Math.max(320, Number(size.width) || 640));
+    const height = Math.min(window.innerHeight - 12, Math.max(300, Number(size.height) || window.innerHeight * 0.92));
     state.root.style.width = `${width}px`;
     state.root.style.height = `${height}px`;
   }
@@ -1225,10 +1554,46 @@
     state.resizeObserver = null;
     removeAllAssistantNodes();
     state.root = null;
+    state.searchRevision += 1; state.autoReadRevision += 1; state.imageBusy = false;
+    state.manualResults = []; state.imageQuery = ""; state.imageProvider = ""; state.imagePage = 1; state.imageHasNext = false;
+    state.pageContext = {}; state.originalForSearch = null; state.imageTargetIndex = null;
     if (disable) saveAssistantState({ enabled: false });
   }
 
   function bindAssistantEvents() {
+    qa("[data-setting]").forEach((input) => {
+      input.value = state.settings[input.dataset.setting];
+      input.addEventListener("change", async () => {
+        const key = input.dataset.setting;
+        const value = input.type === "number" ? LSAWorkflow.number(input.value, 1, key === "titleLimit" ? 100 : 500, state.settings[key]) : input.value;
+        const { settings = {} } = await chrome.storage.sync.get("settings");
+        await chrome.storage.sync.set({ settings: { ...settings, [key]: value } });
+        input.value = value; setPanelStatus(".lsa-quick-status", "已保存；后续处理使用新设置");
+      });
+    });
+    if (q(".lsa-page-count")) q(".lsa-page-count").value = state.settings.pageCount;
+    q(".lsa-page-count")?.addEventListener("change", async (event) => {
+      const pageCount = LSAWorkflow.number(event.target.value, 1, 20, 1);
+      event.target.value = pageCount;
+      const { settings = {} } = await chrome.storage.sync.get("settings");
+      await chrome.storage.sync.set({ settings: { ...settings, pageCount } });
+    });
+    q(".lsa-page-filter")?.addEventListener("change", (event) => { state.pageFilter = event.target.value; renderBatchItems(); });
+    q(".lsa-import-json")?.addEventListener("click", () => q(".lsa-import-file").click());
+    q(".lsa-import-file")?.addEventListener("change", (event) => { importResults(event.target.files[0]); event.target.value = ""; });
+    q(".lsa-export-completed")?.addEventListener("click", () => exportResults().catch((error) => setPanelStatus(".lsa-transfer-status", error.message, true)));
+    q(".lsa-new-batch")?.addEventListener("click", async () => {
+      if (state.workOwned) return setPanelStatus(".lsa-transfer-status", "请先暂停处理", true);
+      try {
+        await acquireWork();
+        if (getBatchItems().length) await saveTextSnapshot("batch");
+        state.batch = null;
+        await chrome.storage.local.set({ batchState: null });
+        state.pageFilter = "all"; state.selectedRecordIndex = -1; renderBatch();
+        setPanelStatus(".lsa-transfer-status", "旧批次已导出；可以读取新页面");
+      } catch (error) { setPanelStatus(".lsa-transfer-status", error.message, true); }
+      finally { if (state.workOwned) await releaseWork(); }
+    });
     q(".lsa-assistant-header")?.addEventListener("pointerdown", startDrag);
     q(".lsa-minimize")?.addEventListener("click", () => setMinimized(true));
     q(".lsa-close")?.addEventListener("click", () => {
@@ -1256,10 +1621,13 @@
       if (q(".lsa-stock-query")) q(".lsa-stock-query").value = title;
     });
     q(".lsa-apply-draft")?.addEventListener("click", applyManualDraft);
+    q(".lsa-rewrite-manual")?.addEventListener("click", rewriteManual);
     q(".lsa-bind-fields")?.addEventListener("click", () => pageTool("START_BINDING")
       .catch((error) => setPanelStatus(".lsa-manual-status", error.message, true)));
     q(".lsa-draft-copy")?.addEventListener("input", updateManualCounts);
-    q(".lsa-search-images")?.addEventListener("click", searchManualImages);
+    q(".lsa-search-images")?.addEventListener("click", () => searchManualImages());
+    q(".lsa-images-prev")?.addEventListener("click", () => searchManualImages(state.imagePage - 1));
+    q(".lsa-images-next")?.addEventListener("click", () => searchManualImages(state.imagePage + 1));
     q(".lsa-stock-query")?.addEventListener("keydown", (event) => { if (event.key === "Enter") searchManualImages(); });
     q(".lsa-diagnostics")?.addEventListener("toggle", updateDiagnostics);
   }
@@ -1271,25 +1639,23 @@
     state.mountRevision = revision;
     unmount({ invalidate: false });
     const [{ settings = {} }, local] = await Promise.all([
-      chrome.storage.sync.get("settings"), chrome.storage.local.get(["batchState", "assistantState"]),
+      chrome.storage.sync.get("settings"), chrome.storage.local.get(["batchState", "assistantState", "imageHistory"]),
     ]);
     if (revision !== state.mountRevision) return;
     if (!force && local.assistantState?.enabled === false) return;
     state.settings = { ...DEFAULT_SETTINGS, ...settings };
-    state.batch = local.batchState || state.batch;
-    if (state.batch?.status === "running" || state.batch?.status === "pausing") {
-      state.batch.status = "paused";
-      getBatchItems().forEach((item) => {
-        if (["fetching", "rewriting", "searching"].includes(item.status)) item.status = "pending";
-      });
-      persistBatch({ render: false });
-    }
+    if (!state.workOwned) state.batch = local.batchState || null;
+    state.imageHistory = local.imageHistory || {};
+    const lease = await sendRuntime("WORK_LOCK", { operation: "status", token: state.workToken });
+    if (revision !== state.mountRevision) return;
+    if (!lease.active) await recoverInterruptedBatch();
+    if (revision !== state.mountRevision) return;
     state.route = route;
     state.selectedRecordIndex = -1;
     removeAllAssistantNodes();
     state.root = buildAssistant(route);
     document.documentElement.append(state.root);
-    applySize(local.assistantState?.size);
+    applySize(local.assistantState?.layoutVersion === 9 ? local.assistantState?.size : { width: Math.min(680, window.innerWidth * 0.48), height: window.innerHeight * 0.92 });
     applyPosition(local.assistantState?.position);
     if (local.assistantState?.minimized) {
       state.root.classList.add("is-minimized");
@@ -1304,7 +1670,8 @@
         state.resizeTimer = setTimeout(() => {
           const rect = state.root?.getBoundingClientRect();
           if (!rect) return;
-          saveAssistantState({ size: { width: Math.round(rect.width), height: Math.round(rect.height) },
+          state.viewportSize = { widthRatio: rect.width / window.innerWidth, heightRatio: rect.height / window.innerHeight };
+          saveAssistantState({ layoutVersion: 9, size: { width: Math.round(rect.width), height: Math.round(rect.height) },
             position: clampPosition(rect.left, rect.top) });
         }, 200);
       });
@@ -1312,7 +1679,7 @@
     }
     renderBatch();
     updateDiagnostics();
-    if (route.kind === "edit") readPage();
+    if (route.kind === "edit") autoReadAndSearch().catch((error) => setPanelStatus(".lsa-image-status", error.message, true));
     saveAssistantState({ enabled: true });
   }
 
@@ -1340,11 +1707,15 @@
     if (area === "sync" && changes.settings?.newValue) {
       state.settings = { ...state.settings, ...changes.settings.newValue };
       updateManualCounts();
+      qa("[data-setting]").forEach((input) => { if (input !== document.activeElement) input.value = state.settings[input.dataset.setting]; });
       renderBatch();
     }
-    if (area === "local" && changes.batchState?.newValue) {
+    if (area === "local" && changes.imageHistory) {
+      state.imageHistory = changes.imageHistory.newValue || {};
+    }
+    if (area === "local" && changes.batchState && !state.workOwned) {
       const incoming = changes.batchState.newValue;
-      if (!state.batch || Number(incoming.updatedAt || 0) > Number(state.batch.updatedAt || 0)) {
+      if (!incoming || !state.batch || Number(incoming.updatedAt || 0) > Number(state.batch.updatedAt || 0)) {
         state.batch = incoming;
         renderBatch();
       }
@@ -1356,7 +1727,7 @@
   window.addEventListener("resize", () => {
     if (!state.root || state.root.classList.contains("is-minimized")) return;
     const rect = state.root.getBoundingClientRect();
-    applySize({ width: rect.width, height: rect.height });
+    applySize(state.viewportSize ? { width: state.viewportSize.widthRatio * window.innerWidth, height: state.viewportSize.heightRatio * window.innerHeight } : { width: rect.width, height: rect.height });
     applyPosition({ left: rect.left, top: rect.top });
   });
   setInterval(() => {
@@ -1364,6 +1735,7 @@
     state.lastLocation = location.href;
     handleRouteChange().catch(() => {});
   }, 800);
+  setInterval(() => recoverInterruptedBatch().catch(() => {}), 10000);
 
   handleRouteChange().catch(() => {});
 })();

@@ -9,7 +9,7 @@ body { margin: 0; }
 button, input, select { font: inherit; }
 
 .settings-shell {
-  width: min(860px, calc(100% - 32px));
+  width: min(1100px, calc(100% - 32px));
   margin: 38px auto 80px;
 }
 
@@ -71,6 +71,7 @@ input, select {
   background: #fbfcfa;
 }
 input:focus, select:focus { border-color: #4a8b6d; box-shadow: 0 0 0 3px rgba(74,139,109,.12); }
+textarea { width: 100%; box-sizing: border-box; margin: 8px 0 14px; padding: 12px; border: 1px solid #d5ddd7; border-radius: 9px; resize: vertical; font: inherit; font-size: 14px; line-height: 1.6; }
 
 button {
   min-height: 35px;

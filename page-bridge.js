@@ -45,7 +45,8 @@
     const editUrl = safeUrl(primitiveFromKeys(object, EDIT_KEYS));
     const key = `${id}\u0000${title}`;
     const previous = captured.get(key) || {};
-    captured.set(key, { id, title, sourceUrl: sourceUrl || previous.sourceUrl || "", editUrl: editUrl || previous.editUrl || "" });
+    const summary = primitiveFromKeys(object, ["originalSummary", "summary", "description", "intro", "contentDesc"]);
+    captured.set(key, { id, title, summary: summary || previous.summary || "", sourceUrl: sourceUrl || previous.sourceUrl || "", editUrl: editUrl || previous.editUrl || "" });
     while (captured.size > 300) captured.delete(captured.keys().next().value);
   }
 

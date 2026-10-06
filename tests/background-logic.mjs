@@ -18,6 +18,7 @@ const chrome = {
   downloads: { download: async () => 1 },
 };
 const context = vm.createContext({
+  importScripts: () => {},
   chrome,
   console,
   URL,
@@ -31,6 +32,7 @@ const context = vm.createContext({
   fetch: async () => { throw new Error("测试不应访问网络"); },
   btoa: (value) => Buffer.from(value, "binary").toString("base64"),
 });
+vm.runInContext(fs.readFileSync(path.resolve(here, "..", "workflow.js"), "utf8"), context);
 vm.runInContext(source, context, { filename: "background.js" });
 
 function evaluate(expression) {

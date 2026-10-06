@@ -1,0 +1,115 @@
+(() => {
+  "use strict";
+  const count = (value) => Array.from(String(value || "").normalize("NFC")).length;
+  const clean = (value, max = 12000) => String(value ?? "").normalize("NFC").replace(/\s+/g, " ").trim().slice(0, max);
+  const number = (value, min, max, fallback) => Number.isFinite(Number(value))
+    ? Math.max(min, Math.min(max, Math.round(Number(value)))) : fallback;
+  const DEFAULT_PROMPT = "Preserve the original language and core meaning. Rewrite naturally within {titleLimit} title characters and {summaryLimit} description characters, counting spaces and punctuation. Keep important proper nouns. Never change a stated number of methods or steps to a different number. Remove repetition and excessive modifiers. Do not invent facts. Check both character counts before answering.";
+  function httpUrl(value) {
+    try { const url = new URL(String(value)); return /https?:/.test(url.protocol) ? url.href : ""; } catch { return ""; }
+  }
+  function editUrl(value, id = "") {
+    const fallback = id ? `https://lockscreen-admin.mofeeds.com/#/nav/overseasDeliver?index=5&type=editEMPTY&id=${encodeURIComponent(id)}` : "";
+    try {
+      const url = new URL(value || fallback);
+      const [path, query] = url.hash.slice(1).split("?");
+      const params = new URLSearchParams(query);
+      return url.origin === "https://lockscreen-admin.mofeeds.com" && path === "/nav/overseasDeliver"
+        && params.get("index") === "5" && params.get("type") === "editEMPTY" ? url.href : fallback;
+    } catch { return fallback; }
+  }
+  function imageKey(image = {}) {
+    const source = clean(image.source || image.provider).toLowerCase();
+    if (image.id && ["pexels", "pixabay"].includes(source)) return `${source}:${image.id}`;
+    try {
+      const url = new URL(image.originalUrl || image.imageUrl || image.downloadUrl || "");
+      if (/images\.pexels\.com$/.test(url.hostname)) {
+        const id = url.pathname.match(/\/photos\/(\d+)\//)?.[1];
+        if (id) return `pexels:${id}`;
+      }
+      // Ignore only known resizing parameters, preserving resource-identifying query values.
+      for (const key of ["w", "h", "width", "height", "fit", "crop", "auto", "q", "cs", "dpr", "fm"]) url.searchParams.delete(key);
+      url.hash = "";
+      url.searchParams.sort();
+      return url.href;
+    } catch { return ""; }
+  }
+  function recordKey(item) { return item.id ? `id:${item.id}` : `${item.sourceUrl || item.editUrl}|${item.originalTitle}`; }
+  function safeImage(raw) {
+    if (!raw || typeof raw !== "object") return null;
+    const width = Number(raw.width), height = Number(raw.height);
+    const imageUrl = httpUrl(raw.originalUrl || raw.imageUrl || raw.downloadUrl);
+    if (!imageUrl || !width || height <= width) return null;
+    return {
+      id: clean(raw.id, 100), source: clean(raw.source || raw.provider, 40), imageUrl, originalUrl: imageUrl,
+      previewUrl: httpUrl(raw.previewUrl) || imageUrl, pageUrl: httpUrl(raw.pageUrl), width, height,
+      creator: clean(raw.creator, 200), aspectLabel: clean(raw.aspectLabel, 20),
+      safetyStatus: ["passed", "rejected", "review"].includes(raw.safetyStatus) ? raw.safetyStatus : "review",
+      safetyReason: clean(raw.safetyReason, 400),
+    };
+  }
+  function importBatch(data, settings = {}) {
+    if (!data || !Array.isArray(data.items) || !data.items.length || data.items.length > 600) throw new Error("JSON 必须含 1–600 条 items 记录");
+    if (!data.version && data.format !== "lockscreen-results") throw new Error("这是原稿或未知 JSON，请导入插件导出的批次结果文件");
+    const seen = new Set();
+    const items = data.items.map((raw, index) => {
+      if (!raw || typeof raw !== "object") throw new Error(`第 ${index + 1} 条记录格式错误`);
+      const id = clean(raw.id, 100);
+      const item = {
+        index: index + 1, id, originalTitle: clean(raw.originalTitle, 2000), originalSummary: clean(raw.originalSummary, 4000),
+        sourceUrl: httpUrl(raw.sourceUrl), editUrl: editUrl(raw.editUrl, id),
+        pageKey: clean(raw.pageKey || "imported", 160), pageLabel: clean(raw.pageLabel || "导入页面", 160),
+        sourcePage: httpUrl(raw.sourcePage || data.sourcePage), pageOrder: number(raw.pageOrder, 0, 600, index),
+        articleText: clean(raw.articleText), title: clean(raw.title, 1000), summary: clean(raw.summary, 2000),
+        imageQueryEn: clean(raw.imageQueryEn || raw.image_query_en, 500), language: clean(raw.language, 20),
+        image: safeImage(raw.image), rewriteMode: raw.rewriteMode === "local" ? "local" : "ai",
+        reviewWarning: clean(raw.reviewWarning, 1000), error: clean(raw.error, 2000), attempts: 0,
+        downloadStatus: "", downloadPath: "", manualDuplicate: Boolean(raw.manualDuplicate),
+        stages: { article: "pending", ai: "pending", image: "pending" }, status: "pending",
+      };
+      if (!item.originalTitle) throw new Error(`第 ${index + 1} 条缺少原始标题`);
+      if (item.articleText) item.stages.article = "done";
+      const validCopy = item.title && item.summary && count(item.title) <= (settings.titleLimit || 12)
+        && count(item.summary) <= (settings.summaryLimit || 50);
+      if (validCopy) item.stages.ai = "done";
+      if (item.image && item.image.safetyStatus !== "rejected") item.stages.image = "done";
+      if (validCopy && item.stages.image === "done") {
+        item.status = item.image.safetyStatus === "passed" && item.rewriteMode !== "local" ? "completed" : "needs_review";
+      } else if (raw.status === "error" || (item.title && !validCopy)) {
+        item.status = "error";
+        item.error ||= "导入结果未通过当前字数限制，请重新改写";
+      }
+      return item;
+    }).filter((item) => { const key = recordKey(item); if (seen.has(key)) return false; seen.add(key); return true; });
+    return { version: 3, format: "lockscreen-results", batchId: clean(data.batchId, 100) || `import-${Date.now()}`,
+      sourcePage: httpUrl(data.sourcePage), createdAt: Date.now(), updatedAt: Date.now(), status: "ready", items };
+  }
+  function localShorten(text, limit) {
+    const source = clean(text);
+    if (count(source) <= limit) return source;
+    const segments = typeof Intl.Segmenter === "function"
+      ? [...new Intl.Segmenter(undefined, { granularity: "word" }).segment(source)].filter((part) => part.isWordLike).map((part) => part.segment)
+      : source.split(/\s+/);
+    const stop = /^(?:the|a|an|and|of|to|for|how|can|you|your|this|that|el|la|los|las|de|del|un|una|y|para|как|и|в|на|для|это|ваш|вашего|của|và|là|các|những|một|cách|في|من|على|و)$/iu;
+    const candidates = segments.filter((word) => !stop.test(word));
+    let best = "";
+    for (let start = 0; start < candidates.length; start += 1) {
+      let candidate = "";
+      for (let end = start; end < candidates.length; end += 1) {
+        const joined = candidate ? `${candidate}${/[\u3400-\u9fff]$/.test(candidate) && /^[\u3400-\u9fff]/.test(candidates[end]) ? "" : " "}${candidates[end]}` : candidates[end];
+        if (count(joined) > limit) break;
+        candidate = joined;
+      }
+      if (count(candidate) > count(best)) best = candidate;
+    }
+    if (!best) throw new Error(`原稿没有能放进 ${limit} 字符的完整词语，请增加限制或使用 AI 改写`);
+    return best;
+  }
+  function localRewrite(item, settings) {
+    const summary = item.originalSummary || item.articleText || item.originalTitle;
+    return { title: localShorten(item.originalTitle, settings.titleLimit || 12),
+      summary: localShorten(summary, settings.summaryLimit || 50), imageQueryEn: item.imageQueryEn || "",
+      rewriteMode: "local", reviewWarning: "本地词语候选：未做语义理解或翻译，请人工核对原意与专有名词。" };
+  }
+  globalThis.LSAWorkflow = { count, clean, number, DEFAULT_PROMPT, httpUrl, editUrl, imageKey, recordKey, safeImage, importBatch, localShorten, localRewrite };
+})();

@@ -3,6 +3,11 @@ const DEFAULT_SETTINGS = {
   summaryLimit: 50,
   batchLimit: 30,
   batchConcurrency: 2,
+  pageCount: 1,
+  rewriteMode: "ai",
+  thinkingLevel: "medium",
+  autoSearch: true,
+  duplicateCheck: true,
   aiTimeoutMs: 30000,
   aiEndpoint: "https://api.deepseek.com/chat/completions",
   aiModel: "",
@@ -19,6 +24,12 @@ const DEFAULT_SETTINGS = {
 };
 
 const fields = {
+  pageCount: document.querySelector("#pageCount"),
+  rewriteMode: document.querySelector("#rewriteMode"),
+  thinkingLevel: document.querySelector("#thinkingLevel"),
+  autoSearch: document.querySelector("#autoSearch"),
+  duplicateCheck: document.querySelector("#duplicateCheck"),
+  rewritePrompt: document.querySelector("#rewritePrompt"),
   titleLimit: document.querySelector("#titleLimit"),
   summaryLimit: document.querySelector("#summaryLimit"),
   batchLimit: document.querySelector("#batchLimit"),
@@ -67,11 +78,14 @@ function setSecretPlaceholder(input, present, label) {
 }
 
 async function loadSettings() {
-  const [{ settings: saved = {} }, { localSecrets = {} }] = await Promise.all([
+  const [{ settings: saved = {} }, { localSecrets = {}, rewritePrompt = "" }] = await Promise.all([
     chrome.storage.sync.get("settings"),
-    chrome.storage.local.get("localSecrets"),
+    chrome.storage.local.get(["localSecrets", "rewritePrompt"]),
   ]);
   const settings = { ...DEFAULT_SETTINGS, ...saved, siteRules: saved.siteRules || {} };
+  for (const key of ["pageCount", "rewriteMode", "thinkingLevel"]) fields[key].value = settings[key];
+  for (const key of ["autoSearch", "duplicateCheck"]) fields[key].checked = settings[key];
+  fields.rewritePrompt.value = rewritePrompt || LSAWorkflow.DEFAULT_PROMPT;
   fields.titleLimit.value = settings.titleLimit;
   fields.summaryLimit.value = settings.summaryLimit;
   fields.batchLimit.value = settings.batchLimit;
@@ -119,7 +133,6 @@ function renderRules(rules) {
     detail.textContent = [
       `标题：${rule.titleSelector || "自动识别"}`,
       `简介：${rule.summarySelector || "自动识别"}`,
-      `上传：${rule.imageUploadSelector || "自动识别"}`,
     ].join("\n");
     copy.append(hostElement, detail);
 
@@ -158,6 +171,11 @@ async function saveAllSettings() {
     const settings = {
       ...DEFAULT_SETTINGS,
       ...saved,
+      pageCount: clamp(fields.pageCount.value, 1, 20, 1),
+      rewriteMode: fields.rewriteMode.value,
+      thinkingLevel: fields.thinkingLevel.value,
+      autoSearch: fields.autoSearch.checked,
+      duplicateCheck: fields.duplicateCheck.checked,
       titleLimit: clamp(fields.titleLimit.value, 1, 100, 12),
       summaryLimit: clamp(fields.summaryLimit.value, 1, 500, 50),
       batchLimit: clamp(fields.batchLimit.value, 1, 30, 30),
@@ -188,7 +206,7 @@ async function saveAllSettings() {
     };
     await Promise.all([
       chrome.storage.sync.set({ settings }),
-      chrome.storage.local.set({ localSecrets }),
+      chrome.storage.local.set({ localSecrets, rewritePrompt: fields.rewritePrompt.value.trim().slice(0, 12000) }),
     ]);
     aiApiKey.value = "";
     reviewAiApiKey.value = "";
@@ -200,7 +218,7 @@ async function saveAllSettings() {
     setSecretPlaceholder(pixabayApiKey, Boolean(localSecrets.pixabayApiKey), "Pixabay API Key");
     fields.originalFolder.value = settings.originalFolder;
     fields.imageFolder.value = settings.imageFolder;
-    saveMessage.textContent = "已保存；重新加载扩展即可使用新配置";
+    saveMessage.textContent = "已保存；后续处理将使用新配置";
   } catch (error) {
     saveMessage.classList.add("error");
     saveMessage.textContent = error?.message || "保存失败";
@@ -208,6 +226,7 @@ async function saveAllSettings() {
 }
 
 document.querySelector("#saveSettings").addEventListener("click", saveAllSettings);
+document.querySelector("#resetPrompt").addEventListener("click", () => { fields.rewritePrompt.value = LSAWorkflow.DEFAULT_PROMPT; });
 document.querySelector("#clearSecrets").addEventListener("click", async () => {
   await chrome.storage.local.set({ localSecrets: {} });
   aiApiKey.value = "";

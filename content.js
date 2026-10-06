@@ -48,6 +48,7 @@
       .map((record) => ({
         id: cleanText(record?.id),
         title: cleanText(record?.title),
+        summary: cleanText(record?.summary),
         sourceUrl: cleanText(record?.sourceUrl),
         editUrl: cleanText(record?.editUrl),
       }))
@@ -94,10 +95,7 @@
   }
 
   function characterCount(value) {
-    if (globalThis.Intl?.Segmenter) {
-      return [...new Intl.Segmenter(undefined, { granularity: "grapheme" }).segment(String(value || ""))].length;
-    }
-    return Array.from(String(value || "").normalize("NFC")).length;
+    return LSAWorkflow.count(value);
   }
 
   function createElement(tag, className, text) {
@@ -961,8 +959,9 @@
         index: position + 1,
         id,
         originalTitle,
+        originalSummary: captured?.summary || "",
         title: originalTitle,
-        summary: "",
+        summary: captured?.summary || "",
         sourceUrl,
         editUrl,
         diagnostics: {
@@ -986,6 +985,49 @@
         warnings,
       },
     };
+  }
+
+  function listPageNumber() {
+    return cleanText(document.querySelector('.el-pagination .el-pager .active, .ant-pagination-item-active, [aria-current="page"]')?.textContent) || "当前页";
+  }
+
+  async function scanPageSnapshot(limit = 30) {
+    const route = getSiteRoute();
+    if (route.isEdit) {
+      const context = await getPageContext();
+      if (!context.boundTitle) throw new Error("编辑页标题尚未加载，请等待页面加载后再读取");
+      return { ok: true, pageLabel: `编辑页 ${route.id}`, sourcePage: location.href,
+        items: [{ id: route.id, originalTitle: context.boundTitle, originalSummary: context.boundSummary, editUrl: location.href }] };
+    }
+    const result = await scanListItems(limit);
+    return { ...result, sourcePage: location.href, pageLabel: `列表第 ${listPageNumber()} 页` };
+  }
+
+  async function nextListPage(limit = 30) {
+    if (!getSiteRoute().isList) throw new Error("当前不是列表页，无法翻页");
+    const next = [...document.querySelectorAll('.el-pagination .btn-next, .ant-pagination-next, .pagination-next, button[aria-label="Next page"], [title="下一页"], [aria-label="下一页"]')]
+      .find((node) => !node.closest(".lsa-assistant") && node.getBoundingClientRect().width > 0);
+    if (!next) throw new Error("未识别到列表下一页按钮，可选择合并已打开的后台标签页");
+    if (next.disabled || next.getAttribute("aria-disabled") === "true" || /disabled/.test(next.className)
+      || next.querySelector("button:disabled")) return { ended: true };
+    const before = await scanPageSnapshot(limit);
+    const fingerprint = (items) => (items || []).map((item) => `${item.id}|${item.originalTitle}`).join("\n");
+    const old = fingerprint(before.items);
+    const hash = location.hash;
+    next.click();
+    const until = Date.now() + 15000;
+    let stable = "", stableAt = 0;
+    while (Date.now() < until) {
+      await new Promise((resolve) => setTimeout(resolve, 350));
+      if (!getSiteRoute().isList || location.hash !== hash) throw new Error("页面路由已切换，已停止连续读取");
+      const snapshot = await scanPageSnapshot(limit);
+      const current = fingerprint(snapshot.items);
+      if (current && current !== old) {
+        if (stable === current && Date.now() - stableAt >= 700) return snapshot;
+        if (stable !== current) { stable = current; stableAt = Date.now(); }
+      } else { stable = ""; }
+    }
+    throw new Error("翻页后列表在 15 秒内未更新，已保留读取的页面；请确认网络或列表加载状态");
   }
 
   function dataUrlToBlob(dataUrl, fallbackMime = "image/jpeg") {
@@ -1137,6 +1179,8 @@
   globalThis.__lsaPageTools = {
     getSiteRoute,
     scanListItems,
+    scanPageSnapshot,
+    nextListPage,
     getPageContext,
     applyDraft,
     applyBatchRecord,
@@ -1147,6 +1191,10 @@
 
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     const action = message?.action || message?.type;
+    if (action === "SCAN_PAGE_SNAPSHOT") {
+      scanPageSnapshot(message.limit).then(sendResponse).catch((error) => sendResponse({ ok: false, message: error.message }));
+      return true;
+    }
     if (action === "GET_SITE_ROUTE") {
       sendResponse(getSiteRoute());
       return;

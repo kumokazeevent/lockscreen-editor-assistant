@@ -1,3 +1,4 @@
+importScripts("workflow.js");
 const SEARCH_ENGINES = {
   baidu: (query) =>
     `https://image.baidu.com/search/index?tn=baiduimage&word=${encodeURIComponent(query)}`,
@@ -12,6 +13,9 @@ const DEFAULT_BATCH_SETTINGS = {
   summaryLimit: 50,
   batchLimit: 30,
   batchConcurrency: 2,
+  rewriteMode: "ai",
+  thinkingLevel: "medium",
+  duplicateCheck: true,
   aiTimeoutMs: 30000,
   preferredRatio: "auto",
   originalFolder: "锁屏批次/原始内容",
@@ -27,7 +31,7 @@ const MAX_ARTICLE_HTML_CHARS = 500000;
 const MAX_ARTICLE_TEXT_CHARS = 160000;
 const MAX_AI_ARTICLE_CHARS = 6000;
 const MAX_IMAGE_BYTES = 24 * 1024 * 1024;
-const MAX_TEXT_DOWNLOAD_BYTES = 8 * 1024 * 1024;
+const MAX_TEXT_DOWNLOAD_BYTES = 32 * 1024 * 1024;
 
 chrome.runtime.onInstalled.addListener(() => {
   chrome.contextMenus.removeAll(() => {
@@ -517,9 +521,13 @@ async function searchStockImages(source, query, page = 1) {
   };
 }
 
-async function searchBatchImages(query, preferredRatio = "auto", page = 1) {
+async function searchBatchImages(query, preferredRatio = "auto", page = 1, source = "") {
   if (!String(query || "").trim()) throw new Error("AI 未生成可用的英文图片关键词");
   const ratio = normalizePreferredRatio(preferredRatio);
+  if (["pexels", "pixabay"].includes(source)) {
+    const result = await (source === "pexels" ? searchPexels : searchPixabay)(query, page, { safeQuery: true, perPage: 60, timeout: 30000 });
+    return { ...result, preferredRatio: ratio, items: enrichAndRankImages(result.items, ratio, 12) };
+  }
   let pexelsError = null;
   try {
     const pexels = await searchPexels(query, page, { safeQuery: true, perPage: 60, timeout: 30000 });
@@ -612,6 +620,16 @@ function disableThinking(requestBody, model, endpoint = "") {
   requestBody.thinking = { type: "disabled" };
   delete requestBody.reasoning_effort;
   return requestBody;
+}
+
+function configureThinking(body, model, endpoint, level = "medium") {
+  if (level === "provider") return body;
+  if (level === "off") return disableThinking(body, model, endpoint);
+  if (supportsThinkingControl(model, endpoint)) {
+    body.thinking = { type: "enabled" };
+    body.reasoning_effort = ["low", "medium", "high", "max"].includes(level) ? level : "medium";
+  }
+  return body;
 }
 
 function normalizeAiEndpoint(value) {
@@ -782,6 +800,8 @@ function buildAiMessages(context, correction = "") {
     : "Detect the title's original language first. The title and summary MUST stay in that language and MUST NOT default to Chinese or English.";
   const system = [
     "You are a professional lock-screen magazine title and description editor.",
+    (context.rewritePrompt || LSAWorkflow.DEFAULT_PROMPT)
+      .replaceAll("{titleLimit}", String(context.titleLimit)).replaceAll("{summaryLimit}", String(context.summaryLimit)),
     "Shorten the supplied title and description by rewriting them naturally. Do not merely cut off the text.",
     "KEEP THE ORIGINAL LANGUAGE: use exactly the same language as the input title. Never translate the title or summary.",
     `TITLE: at most ${context.titleLimit} Unicode characters. Spaces, punctuation, numbers and letters all count as characters.`,
@@ -887,11 +907,15 @@ function shouldRetry(error) {
 
 async function generateBatchItemWithAi(payload = {}) {
   const item = payload.item || payload;
-  const [{ settings: savedSettings = {} }, { localSecrets = {} }] = await Promise.all([
+  const [{ settings: savedSettings = {} }, { localSecrets = {}, rewritePrompt = "" }] = await Promise.all([
     chrome.storage.sync.get("settings"),
-    chrome.storage.local.get("localSecrets"),
+    chrome.storage.local.get(["localSecrets", "rewritePrompt"]),
   ]);
   const settings = { ...DEFAULT_BATCH_SETTINGS, ...savedSettings };
+  if (settings.rewriteMode === "local") {
+    const result = LSAWorkflow.localRewrite(item, settings);
+    return { configured: true, result, ...result, attempts: 1 };
+  }
   let endpoint = String(settings.aiEndpoint || "").trim();
   const model = String(settings.aiModel || "").trim();
   const apiKey = String(localSecrets.aiApiKey || "").trim();
@@ -914,6 +938,7 @@ async function generateBatchItemWithAi(payload = {}) {
     originalSummary,
     articleText: String(item.articleText || "").replace(/\s+/g, " ").trim().slice(0, MAX_AI_ARTICLE_CHARS),
     expectedLanguage,
+    rewritePrompt,
     titleLimit: clampNumber(payload.titleLimit ?? settings.titleLimit, 12, 1, 100),
     summaryLimit: clampNumber(payload.summaryLimit ?? settings.summaryLimit, 50, 1, 500),
   };
@@ -932,7 +957,7 @@ async function generateBatchItemWithAi(payload = {}) {
       stream: false,
       messages: buildAiMessages(context, attempt > 0 ? cleanErrorMessage(lastError, "The previous output was invalid") : ""),
     };
-    enableMediumThinking(requestBody, model, endpoint);
+    configureThinking(requestBody, model, endpoint, settings.thinkingLevel);
     try {
       const data = await fetchJson(endpoint, {
         method: "POST",
@@ -1017,6 +1042,7 @@ async function generateImageQueryWithAi(payload) {
     chrome.storage.local.get("localSecrets"),
   ]);
   const configuredEndpoint = settings.aiEndpoint?.trim();
+  if (settings.rewriteMode === "local") return { configured: false, imageQueryEn: "", local: true };
   const model = String(settings.aiModel || "").trim();
   const apiKey = localSecrets.aiApiKey?.trim();
   if (!configuredEndpoint || !model || !apiKey) return { configured: false };
@@ -1040,7 +1066,7 @@ async function generateImageQueryWithAi(payload) {
       { role: "user", content: `${String(payload.title || "")}\n${String(payload.summary || "")}`.trim() },
     ],
   };
-  enableMediumThinking(requestBody, model, endpoint);
+  configureThinking(requestBody, model, endpoint, settings.thinkingLevel || "medium");
   const data = await fetchJson(endpoint, {
     method: "POST",
     headers: {
@@ -1227,7 +1253,7 @@ async function saveTextFile(payload = {}) {
   const rawValue = payload.text ?? payload.contents ?? payload.data ?? payload.json ?? "";
   const text = typeof rawValue === "string" ? rawValue : JSON.stringify(rawValue, null, 2);
   const size = new TextEncoder().encode(text).byteLength;
-  if (size > MAX_TEXT_DOWNLOAD_BYTES) throw new Error("保存内容超过 8MB，请缩小批次后重试");
+  if (size > MAX_TEXT_DOWNLOAD_BYTES) throw new Error("保存内容超过 32MB，请按页面分别导出");
   const mimeType = String(payload.mimeType || "application/json;charset=utf-8");
   const defaultExtension = /json/i.test(mimeType) ? "json" : "txt";
   const defaultName = `锁屏批次-${new Date().toISOString().replace(/[:.]/g, "-")}.${defaultExtension}`;
@@ -1286,24 +1312,107 @@ function reserveFinalImageFolder(baseFolder) {
   return reservation;
 }
 
+let imageHistoryChain = Promise.resolve();
+function withImageHistory(task) {
+  const run = imageHistoryChain.then(task);
+  imageHistoryChain = run.catch(() => {});
+  return run;
+}
+async function imageHistory() {
+  return (await chrome.storage.local.get("imageHistory")).imageHistory || {};
+}
+async function markDuplicate(payload) {
+  return withImageHistory(async () => {
+    const key = LSAWorkflow.imageKey(payload.image);
+    if (!key) throw new Error("没有可识别的图片地址");
+    const history = await imageHistory();
+    history[key] = { ...history[key], manual: Boolean(payload.marked), updatedAt: Date.now() };
+    await chrome.storage.local.set({ imageHistory: history });
+    return { key, entry: history[key] };
+  });
+}
+
 async function downloadFinalImage(payload = {}) {
   const settings = await getBatchSettings();
   const item = payload.item || {};
   const image = payload.image || {};
   const url = chooseDownloadUrl(image, item);
   if (!/^(https?:\/\/|data:image\/)/i.test(url)) throw new Error("成品图片下载地址无效");
+  const key = LSAWorkflow.imageKey(image) || url;
+  const history = await imageHistory();
+  const isDuplicate = (entry) => entry?.manual || ["queued", "completed"].includes(entry?.status);
+  if (settings.duplicateCheck !== false && !payload.force && isDuplicate(history[key])) {
+    return { skipped: true, duplicate: true, path: history[key].path || "", reason: history[key].manual ? "你已标记为重复" : "此图已下载或正在下载" };
+  }
+  const file = await fetchImageFile({ url, item, image });
+  const bytes = Uint8Array.from(atob(file.dataUrl.split(",")[1]), (character) => character.charCodeAt(0));
+  const digest = await crypto.subtle.digest("SHA-256", bytes);
+  const hash = Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
+  return withImageHistory(async () => {
+  const fresh = await imageHistory();
+  const duplicate = Object.values(fresh).find((entry) => entry.hash === hash && isDuplicate(entry));
+  if (settings.duplicateCheck !== false && !payload.force && (isDuplicate(fresh[key]) || duplicate)) {
+    return { skipped: true, duplicate: true, path: (duplicate || fresh[key])?.path || "", reason: "图片已存在（素材或文件内容相同）" };
+  }
   const baseFolder = sanitizeRelativeFolder(payload.folder, settings.imageFolder);
   const allocation = await reserveFinalImageFolder(baseFolder);
   const folder = allocation.folder;
-  const fileName = sanitizeFileName(payload.fileName || buildFinalImageName(item, image), "lockscreen-image.jpg");
+  const fileName = sanitizeFileName(payload.fileName || file.fileName, "lockscreen-image.jpg");
   const path = joinDownloadPath(folder, fileName);
   const downloadId = await chrome.downloads.download({
-    url,
+    url: file.dataUrl,
     filename: path,
     conflictAction: "uniquify",
     saveAs: false,
   });
+  fresh[key] = { ...fresh[key], hash, path, downloadId, status: "queued", updatedAt: Date.now() };
+  await chrome.storage.local.set({ imageHistory: fresh });
   return { downloadId, path, fileName, url, ...allocation };
+  });
+}
+
+chrome.downloads.onChanged?.addListener((delta) => {
+  if (!delta.state || !["complete", "interrupted"].includes(delta.state.current)) return;
+  withImageHistory(async () => {
+    const history = await imageHistory();
+    for (const entry of Object.values(history)) {
+      if (entry.downloadId === delta.id) entry.status = delta.state.current === "complete" ? "completed" : "interrupted";
+    }
+    await chrome.storage.local.set({ imageHistory: history });
+  }).catch(() => {});
+});
+
+let workLockChain = Promise.resolve();
+function workLock(action, token, tabId) {
+  const run = workLockChain.then(async () => {
+    const { workLease } = await chrome.storage.local.get("workLease");
+    const active = workLease && workLease.expiresAt > Date.now();
+    const owns = active && workLease.token === token && workLease.tabId === tabId;
+    if (action === "status") return { active: Boolean(active), owns: Boolean(owns) };
+    if (action === "release") {
+      if (owns) await chrome.storage.local.set({ workLease: null });
+      return { active: false };
+    }
+    if ((action === "renew" && !owns) || (active && !owns)) throw new Error("另一后台标签页正在读取或处理，请等待它完成或暂停");
+    await chrome.storage.local.set({ workLease: { token, tabId, expiresAt: Date.now() + 30000 } });
+    return { active: true, owns: true };
+  });
+  workLockChain = run.catch(() => {});
+  return run;
+}
+
+async function scanOpenPages(payload, sender) {
+  const tabs = (await chrome.tabs.query({ url: "https://lockscreen-admin.mofeeds.com/*" }))
+    .filter((tab) => /#\/nav\/(overseasContent|overseasDeliver)\?/.test(tab.url || ""))
+    .sort((a, b) => Number(b.id === sender.tab?.id) - Number(a.id === sender.tab?.id) || a.index - b.index)
+    .slice(0, LSAWorkflow.number(payload.pageCount, 1, 20, 1));
+  const outcomes = await Promise.allSettled(tabs.map(async (tab) => {
+    const result = await chrome.tabs.sendMessage(tab.id, { action: "SCAN_PAGE_SNAPSHOT", limit: payload.limit || 30 });
+    if (!result?.ok) throw new Error(result?.message || "页面未就绪");
+    return { ...result, pageLabel: `${result.pageLabel}（标签 ${tab.index + 1}）` };
+  }));
+  return { pages: outcomes.filter((entry) => entry.status === "fulfilled").map((entry) => entry.value),
+    warnings: outcomes.flatMap((entry, i) => entry.status === "rejected" ? [`标签 ${tabs[i].index + 1}：${entry.reason?.message || "读取失败"}`] : []) };
 }
 
 async function downloadImage(url, fileName) {
@@ -1333,6 +1442,9 @@ function respondAsync(sendResponse, promise, fallbackMessage) {
 
 chrome.runtime.onMessage.addListener((message = {}, _sender, sendResponse) => {
   const action = message.action || message.type;
+  if (action === "WORK_LOCK") return respondAsync(sendResponse, workLock(message.operation, message.token, _sender.tab?.id), "批次正在使用");
+  if (action === "SCAN_OPEN_PAGES") return respondAsync(sendResponse, scanOpenPages(message, _sender), "多标签页读取失败");
+  if (action === "MARK_IMAGE_DUPLICATE") return respondAsync(sendResponse, markDuplicate(message), "重复标记失败");
 
   if (action === "OPEN_IMAGE_SEARCH") {
     openImageSearch(message.engine, message.query);
@@ -1359,7 +1471,7 @@ chrome.runtime.onMessage.addListener((message = {}, _sender, sendResponse) => {
   if (action === "SEARCH_PEXELS_BATCH" || action === "SEARCH_BATCH_IMAGES") {
     return respondAsync(
       sendResponse,
-      searchBatchImages(message.query, message.preferredRatio, message.page || 1),
+      searchBatchImages(message.query, message.preferredRatio, message.page || 1, message.source),
       "批量竖屏图片搜索失败",
     );
   }

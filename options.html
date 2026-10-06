@@ -12,13 +12,13 @@
         <div class="brand">锁</div>
         <div>
           <h1>锁屏编辑助手设置</h1>
-          <p>0.8.0 · 成品图每 30 张自动分组，编辑页仅填写文案</p>
+          <p>0.9.0 · 多页处理、结果导入、搜图翻页与去重</p>
         </div>
       </header>
 
       <section>
         <h2>独立 AI 接口</h2>
-        <p class="section-description">模型名称不设默认值、不改名、不纠正：输入什么就原样发送什么。主 AI 开启思考并使用 medium 推理档位。密钥只存于本机。</p>
+        <p class="section-description">模型名称原样发送；思考模式与强度在下方选择，实际支持取决于模型和提供商。密钥只存于本机。</p>
         <div class="api-row">
           <div class="api-row-title">AI API</div>
           <label>Chat Completions 完整地址<input id="aiEndpoint" type="url" placeholder="https://api.deepseek.com/chat/completions" /></label>
@@ -35,7 +35,10 @@
         <div class="form-grid">
           <label>请求超时（秒）<input id="aiTimeoutSeconds" type="number" min="10" max="120" /></label>
           <label>并发任务数<input id="batchConcurrency" type="number" min="1" max="2" /></label>
-          <label>单批最多条数<input id="batchLimit" type="number" min="1" max="30" /></label>
+          <label>每页最多条数<input id="batchLimit" type="number" min="1" max="30" /></label>
+          <label>每次读取 / 处理页数<input id="pageCount" type="number" min="1" max="20" /></label>
+          <label>改写方式<select id="rewriteMode"><option value="ai">AI 改写</option><option value="local">本地词语候选（需人工核对）</option></select></label>
+          <label>AI 思考强度<select id="thinkingLevel"><option value="off">关闭</option><option value="low">低</option><option value="medium">中等</option><option value="high">高</option><option value="max">最高</option><option value="provider">跟随提供商默认</option></select></label>
         </div>
       </section>
 
@@ -53,6 +56,12 @@
           </label>
         </div>
         <p class="section-description">图片只接受实际高度大于宽度的结果，并优先接近 9:16 或 9:20。系统会尽量避开清晰正脸和大面积裸露，但不确定图片仍会标记为“需人工复核”。</p>
+        <label class="toggle-row"><input id="autoSearch" type="checkbox" />进入编辑页后自动读取原标题、简介并搜索图片</label>
+        <label class="toggle-row"><input id="duplicateCheck" type="checkbox" />下载前检查重复图片（素材 ID、地址与文件内容）</label>
+        <p class="section-description">本地模式不调用 AI，也不翻译搜索词；可自行输入英文关键词。原意需人工核对。DeepSeek 的 medium 会按官方规则映射至 high。</p>
+        <label>简写提示词（支持 {titleLimit} 与 {summaryLimit}）<textarea id="rewritePrompt" rows="8" maxlength="12000"></textarea></label>
+        <p class="section-description">提示词可调整写作风格；工具会补充同语言、当前字数上限、英文搜图词及 JSON 格式要求。留空使用内置提示词。</p>
+        <button id="resetPrompt" class="secondary" type="button">恢复内置提示词</button>
       </section>
 
       <section>
@@ -101,6 +110,7 @@
         <span id="saveMessage" class="save-message" role="status"></span>
       </div>
     </main>
+    <script src="workflow.js"></script>
     <script src="options.js"></script>
   </body>
 </html>
