@@ -240,30 +240,37 @@ async function rewriteWithAi(payload) {
   const sourceLanguage = payload.sourceLanguage || "und";
   const sourceLanguageLabel = payload.sourceLanguageLabel || "the dominant language of the source";
   const systemPrompt = [
-    "You are a multilingual magazine lock-screen editor.",
-    `The source language is ${sourceLanguageLabel} (BCP-47 base code: ${sourceLanguage}).`,
-    `The rewritten title and summary MUST remain in exactly ${sourceLanguageLabel}. Never translate them into Chinese, English, or another language unless that is the source language. Preserve the source writing system and natural regional spelling.`,
-    `The title must contain no more than ${titleLimit} Unicode characters. The summary must contain no more than ${summaryLimit} Unicode characters.`,
-    "Rewrite naturally and completely. Do not mechanically truncate, add an ellipsis, or invent facts. Preserve key people, events, places, and numbers.",
-    "Separately generate image_query_en as 5 to 10 concise ENGLISH visual search keywords based on the original source. Prefer people, places, objects, scenes, and atmosphere over abstract news language.",
+    "You are a fast, accurate multilingual lock-screen copy editor.",
+    `Write title and summary only in ${sourceLanguageLabel} (${sourceLanguage}); keep its script and regional spelling.`,
+    `Limits: title <= ${titleLimit} Unicode characters; summary <= ${summaryLimit} Unicode characters.`,
+    "Preserve the central subject, action and outcome first, then essential names, places and numbers. Remove secondary detail and filler. Rewrite naturally; never truncate mid-word, add ellipses, translate, or invent facts.",
+    "Create image_query_en from the ORIGINAL source as 5 to 8 concrete English visual keywords (people, place, object, scene, atmosphere).",
     "Return strict JSON only: {\"title\":\"...\",\"summary\":\"...\",\"image_query_en\":\"...\",\"language\":\"...\"}",
   ].join("\n");
-  const userPrompt = `SOURCE_LANGUAGE: ${sourceLanguageLabel} (${sourceLanguage})\nORIGINAL_TITLE: ${payload.title || "(empty)"}\nORIGINAL_SUMMARY: ${payload.summary || "(empty)"}\nPAGE_CONTEXT: ${payload.context || "(none)"}`;
+  const userPrompt = `TITLE: ${payload.title || "(empty)"}\nSUMMARY: ${payload.summary || "(empty)"}`;
+  const requestBody = {
+    model,
+    temperature: 0.1,
+    max_tokens: 256,
+    messages: [
+      { role: "system", content: systemPrompt },
+      { role: "user", content: userPrompt },
+    ],
+  };
+
+  // GLM 5.x enables thinking by default. Short editorial rewrites are faster and
+  // more consistent when thinking is explicitly disabled.
+  if (/^glm[-_.\s]?5(?:\D|$)/i.test(model)) {
+    requestBody.thinking = { type: "disabled" };
+  }
   const data = await fetchJson(endpoint, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
       Authorization: `Bearer ${apiKey}`,
     },
-    body: JSON.stringify({
-      model,
-      temperature: 0.25,
-      messages: [
-        { role: "system", content: systemPrompt },
-        { role: "user", content: userPrompt },
-      ],
-    }),
-  }, 45000);
+    body: JSON.stringify(requestBody),
+  }, 30000);
   const content = data.choices?.[0]?.message?.content || data.output_text || "";
   const rewritten = extractJson(content);
   return {
