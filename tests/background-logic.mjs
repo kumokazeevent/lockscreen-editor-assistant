@@ -6,6 +6,11 @@ import { fileURLToPath } from "node:url";
 const here = path.dirname(fileURLToPath(import.meta.url));
 const source = fs.readFileSync(path.resolve(here, "..", "background.js"), "utf8");
 const noop = () => {};
+class FakeOffscreenCanvas {
+  constructor(width, height) { this.width = width; this.height = height; }
+  getContext() { return { fillStyle: "", fillRect: noop, drawImage: noop }; }
+  async convertToBlob(options) { return new Blob([new Uint8Array([0xff, 0xd8, 0xff, 0xd9])], { type: options.type }); }
+}
 const chrome = {
   runtime: { onInstalled: { addListener: noop }, onMessage: { addListener: noop }, openOptionsPage: noop },
   action: { onClicked: { addListener: noop } },
@@ -26,11 +31,15 @@ const context = vm.createContext({
   TextEncoder,
   Uint8Array,
   ArrayBuffer,
+  Blob,
+  Response,
   AbortController,
   setTimeout,
   clearTimeout,
   fetch: async () => { throw new Error("测试不应访问网络"); },
   btoa: (value) => Buffer.from(value, "binary").toString("base64"),
+  createImageBitmap: async () => ({ width: 900, height: 1600, close: noop }),
+  OffscreenCanvas: FakeOffscreenCanvas,
 });
 vm.runInContext(fs.readFileSync(path.resolve(here, "..", "workflow.js"), "utf8"), context);
 vm.runInContext(source, context, { filename: "background.js" });
@@ -83,6 +92,18 @@ assert(evaluate("normalizePexelsImage({id:7,src:{original:'https://img/original.
 const filename = evaluate("buildFinalImageName({index:3,title:'A/B:C',summary:'D?E'}, {aspectLabel:'9:16',mime:'image/jpeg'})");
 assert(filename.startsWith("03-A-B-C【D-E】_9x16"), "成品图命名或非法字符清理错误");
 assert(!/[\\/:*?\"<>|]/.test(filename), "成品图文件名仍含 Windows 非法字符");
+context.avifBuffer = new Uint8Array([1, 2, 3, 4]).buffer;
+const converted = await evaluate("normalizeDownloadedImage(avifBuffer, 'image/avif')");
+assert(converted.mime === "image/jpeg" && converted.converted === true, "AVIF 未实际转成 JPEG");
+assert(new Uint8Array(converted.buffer)[0] === 0xff, "JPEG 转换结果内容无效");
+const preservedPng = await evaluate("normalizeDownloadedImage(avifBuffer, 'image/png')");
+assert(preservedPng.mime === "image/png" && preservedPng.converted === false, "PNG 不应重新压缩");
+assert(evaluate("fileNameForMime('photo.avif', 'image/jpeg')") === "photo.jpg", "转换后文件扩展名未同步为 JPG");
+assert(evaluate("fileNameForMime('photo.webp', 'image/jpeg')") === "photo.jpg", "WebP 转换后扩展名未同步为 JPG");
+context.fetch = async () => new Response(new Uint8Array([1, 2, 3, 4]), { headers: { "content-type": "image/avif" } });
+const fetchedAvif = await evaluate("fetchImageFile({url:'https://image.test/photo.avif',item:{index:1,title:'Cat',summary:'Rest'}})");
+assert(fetchedAvif.mime === "image/jpeg" && fetchedAvif.sourceMime === "image/avif", "完整下载流程未将 AVIF 转换为 JPEG");
+assert(fetchedAvif.fileName.endsWith(".jpg") && fetchedAvif.dataUrl.startsWith("data:image/jpeg;base64,"), "下载文件名或数据类型仍为 AVIF");
 
 const valid = evaluate(`validateAiResult(
   {title:'Ideas clave',summary:'Resumen breve y fiel',image_query_en:'historic city street evening',language:'es'},

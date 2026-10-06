@@ -13,7 +13,7 @@ function assert(condition, message) {
 }
 
 assert(manifest.manifest_version === 3, "必须使用 Manifest V3");
-assert(manifest.version === "0.11.0", "构建版本应为 0.11.0");
+assert(manifest.version === "0.11.1", "构建版本应为 0.11.1");
 assert(manifest.permissions.includes("downloads"), "缺少下载权限");
 assert(manifest.permissions.includes("storage"), "缺少存储权限");
 assert(
@@ -48,6 +48,10 @@ for (const id of [
 }
 
 const background = read("background.js");
+assert(background.includes('Accept: "image/jpeg,image/png') && background.includes("normalizeDownloadedImage"),
+  "图片下载未优先 JPEG 或缺少 AVIF/WebP 转换");
+assert(background.includes('canvas.convertToBlob({ type: "image/jpeg", quality: 0.94 })') && background.includes("fileNameForMime"),
+  "图片未实际转码为 JPEG 或扩展名未同步");
 for (const message of [
   "AI_PROCESS_ITEM",
   "FETCH_ARTICLE",
@@ -91,4 +95,4 @@ for (const file of ["workflow.js", "page-bridge.js", "background.js", "content.j
   execFileSync(process.execPath, ["--check", path.join(root, file)], { stdio: "inherit" });
 }
 
-console.log("锁屏编辑助手 0.11.0 静态验证通过");
+console.log("锁屏编辑助手 0.11.1 静态验证通过");

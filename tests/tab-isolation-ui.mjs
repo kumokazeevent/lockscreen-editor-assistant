@@ -205,6 +205,6 @@ try {
   const before=await run('getTabContext(202)');startup();const after=await run('getTabContext(202)');
   assert.notEqual(before.keys.batchState,after.keys.batchState,'浏览器重启后不误认复用的标签ID');
   assert.ok((await run('savedBatches()')).batches.some((batch)=>batch.key===before.keys.batchState),'旧批次保留可恢复');
-  console.log('0.11.0 浏览器测试通过：实际扫描40条、语言国家读取、重复导入不堆积、71条拆3文件夹、归档恢复、JSON目录、30/40切换及原双标签并行测试');
+  console.log('0.11.1 浏览器测试通过：实际扫描40条、语言国家读取、重复导入不堆积、71条拆3文件夹、归档恢复、JSON目录、30/40切换及原双标签并行测试');
   await context.close();
 } finally { await browser.close(); }

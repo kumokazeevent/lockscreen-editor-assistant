@@ -1211,25 +1211,63 @@ function extensionForMime(mime) {
   })[String(mime || "").toLowerCase()] || "jpg";
 }
 
+function fileNameForMime(value, mime, fallback = "lockscreen-image.jpg") {
+  const extension = extensionForMime(mime);
+  const safe = sanitizeFileName(value || fallback, fallback);
+  const stem = safe.replace(/\.[a-z0-9]{1,8}$/i, "") || "lockscreen-image";
+  return sanitizeFileName(`${stem}.${extension}`, fallback);
+}
+
+async function normalizeDownloadedImage(buffer, sourceMime) {
+  const mime = String(sourceMime || "").toLowerCase();
+  if (["image/jpeg", "image/jpg", "image/png"].includes(mime)) {
+    return { buffer, mime: mime === "image/jpg" ? "image/jpeg" : mime, converted: false };
+  }
+  if (typeof createImageBitmap !== "function" || typeof OffscreenCanvas !== "function") {
+    throw new Error(`素材返回 ${mime || "未知格式"}，当前浏览器无法转换为 JPEG；请更新 Chrome / Edge 后重试`);
+  }
+  let bitmap;
+  try {
+    bitmap = await createImageBitmap(new Blob([buffer], { type: mime }));
+    if (!bitmap.width || !bitmap.height) throw new Error("图片尺寸无效");
+    const canvas = new OffscreenCanvas(bitmap.width, bitmap.height);
+    const context = canvas.getContext("2d", { alpha: false });
+    if (!context) throw new Error("无法创建图片转换画布");
+    context.fillStyle = "#ffffff";
+    context.fillRect(0, 0, bitmap.width, bitmap.height);
+    context.drawImage(bitmap, 0, 0);
+    const jpeg = await canvas.convertToBlob({ type: "image/jpeg", quality: 0.94 });
+    if (!jpeg.size || jpeg.type !== "image/jpeg") throw new Error("JPEG 编码结果为空");
+    return { buffer: await jpeg.arrayBuffer(), mime: "image/jpeg", converted: true };
+  } catch (error) {
+    throw new Error(`素材为 ${mime || "未知格式"}，转换 JPEG 失败：${error.message}`);
+  } finally {
+    bitmap?.close?.();
+  }
+}
+
 async function fetchImageFile(payload = {}) {
   const url = payload.url || payload.imageUrl || payload.image?.uploadUrl || payload.image?.originalUrl || payload.image?.imageUrl;
   const response = await fetchResponse(url, {
-    headers: { Accept: "image/avif,image/webp,image/png,image/jpeg,image/*;q=0.8" },
+    headers: { Accept: "image/jpeg,image/png;q=0.9,image/*;q=0.5,*/*;q=0.1" },
   }, clampNumber(payload.timeoutMs, 45000, 5000, 120000), "图片");
   if (!response.ok) throw new Error(`图片读取失败（${response.status}）`);
   const declaredLength = Number(response.headers.get("content-length")) || 0;
   if (declaredLength > MAX_IMAGE_BYTES) throw new Error("图片超过 24MB，无法写入上传控件");
-  const buffer = await response.arrayBuffer();
-  if (!buffer.byteLength) throw new Error("下载到的图片为空");
-  if (buffer.byteLength > MAX_IMAGE_BYTES) throw new Error("图片超过 24MB，无法写入上传控件");
-  const mime = inferImageMime(url, response.headers.get("content-type"));
-  if (!/^image\//.test(mime)) throw new Error("下载地址返回的不是图片");
+  const sourceBuffer = await response.arrayBuffer();
+  if (!sourceBuffer.byteLength) throw new Error("下载到的图片为空");
+  if (sourceBuffer.byteLength > MAX_IMAGE_BYTES) throw new Error("图片超过 24MB，无法写入上传控件");
+  const sourceMime = inferImageMime(url, response.headers.get("content-type"));
+  if (!/^image\//.test(sourceMime)) throw new Error("下载地址返回的不是图片");
+  const normalized = await normalizeDownloadedImage(sourceBuffer, sourceMime);
+  const { buffer, mime } = normalized;
+  if (buffer.byteLength > MAX_IMAGE_BYTES) throw new Error("转换后的图片超过 24MB，无法下载");
   const fallbackName = `lockscreen-image.${extensionForMime(mime)}`;
   const generatedImageMeta = { ...(payload.item?.image || {}), ...(payload.image || {}), mime };
   const generatedName = payload.item
     ? buildFinalImageName(payload.item, generatedImageMeta)
     : fallbackName;
-  const fileName = sanitizeFileName(payload.fileName || generatedName, fallbackName);
+  const fileName = fileNameForMime(payload.fileName || generatedName, mime, fallbackName);
   return {
     dataUrl: `data:${mime};base64,${arrayBufferToBase64(buffer)}`,
     mime,
@@ -1237,6 +1275,8 @@ async function fetchImageFile(payload = {}) {
     size: buffer.byteLength,
     fileName,
     sourceUrl: String(url),
+    sourceMime,
+    converted: normalized.converted,
     lastModified: Date.now(),
   };
 }
