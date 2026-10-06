@@ -1259,13 +1259,42 @@ function buildFinalImageName(item = {}, image = {}) {
   return sanitizeFileName(`${index}-${title}【${summary}】_${aspectLabel}.${extension}`, `${index}-lockscreen_${aspectLabel}.${extension}`);
 }
 
+let finalImageFolderReservation = Promise.resolve();
+
+function reserveFinalImageFolder(baseFolder) {
+  const reservation = finalImageFolderReservation.then(async () => {
+    const storageKey = "finalImageFolderCounters";
+    const stored = await chrome.storage.local.get(storageKey);
+    const counters = stored?.[storageKey] && typeof stored[storageKey] === "object"
+      ? { ...stored[storageKey] }
+      : {};
+    const nextNumber = Math.max(0, Number(counters[baseFolder]) || 0) + 1;
+    counters[baseFolder] = nextNumber;
+    await chrome.storage.local.set({ [storageKey]: counters });
+
+    const group = Math.ceil(nextNumber / 30);
+    const first = (group - 1) * 30 + 1;
+    const last = group * 30;
+    const groupFolder = `第${String(group).padStart(3, "0")}组_${String(first).padStart(3, "0")}-${String(last).padStart(3, "0")}`;
+    return {
+      folder: joinDownloadPath(baseFolder, groupFolder),
+      groupFolder,
+      sequenceNumber: nextNumber,
+    };
+  });
+  finalImageFolderReservation = reservation.catch(() => {});
+  return reservation;
+}
+
 async function downloadFinalImage(payload = {}) {
   const settings = await getBatchSettings();
   const item = payload.item || {};
   const image = payload.image || {};
   const url = chooseDownloadUrl(image, item);
   if (!/^(https?:\/\/|data:image\/)/i.test(url)) throw new Error("成品图片下载地址无效");
-  const folder = sanitizeRelativeFolder(payload.folder, settings.imageFolder);
+  const baseFolder = sanitizeRelativeFolder(payload.folder, settings.imageFolder);
+  const allocation = await reserveFinalImageFolder(baseFolder);
+  const folder = allocation.folder;
   const fileName = sanitizeFileName(payload.fileName || buildFinalImageName(item, image), "lockscreen-image.jpg");
   const path = joinDownloadPath(folder, fileName);
   const downloadId = await chrome.downloads.download({
@@ -1274,7 +1303,7 @@ async function downloadFinalImage(payload = {}) {
     conflictAction: "uniquify",
     saveAs: false,
   });
-  return { downloadId, path, fileName, url };
+  return { downloadId, path, fileName, url, ...allocation };
 }
 
 async function downloadImage(url, fileName) {

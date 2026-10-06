@@ -429,7 +429,6 @@
   const BIND_STEPS = [
     { key: "titleSelector", kind: "text", label: "第 1 步：点击后台的标题输入框" },
     { key: "summarySelector", kind: "text", label: "第 2 步：点击后台的简介输入框" },
-    { key: "imageUploadSelector", kind: "file", label: "第 3 步：点击后台的图片上传区域" },
   ];
 
   function isEditableField(element) {
@@ -540,7 +539,7 @@
     };
     await chrome.storage.sync.set({ settings: nextSettings });
     stopBindingMode();
-    const doneBar = showBar(`已绑定 ${location.hostname}，现在可以一键填写标题、简介并上传图片`, [
+    const doneBar = showBar(`已绑定 ${location.hostname}，现在可以一键填写标题和简介`, [
       { label: "知道了", onClick: removeBar },
     ]);
     setTimeout(() => doneBar.isConnected && removeBar(), 3500);
@@ -1068,16 +1067,16 @@
     return { ok, expected: value, actual, characterCount: count, message: ok ? `${label}已填写` : `${label}写入后读回不一致` };
   }
 
-  async function applyBatchRecord(record = {}, imagePayload = {}) {
+  async function applyBatchRecord(record = {}) {
     const route = getSiteRoute();
     if (!route.isEdit) {
       return {
         ok: false,
-        message: "当前不是海外内容编辑页，未执行填写或上传",
+        message: "当前不是海外内容编辑页，未执行填写",
         diagnostics: { route },
       };
     }
-    const [{ titleField, summaryField, imageUploadField, bindingStatus }, { settings = {} }] = await Promise.all([
+    const [{ titleField, summaryField, bindingStatus }, { settings = {} }] = await Promise.all([
       resolveSiteFields(),
       chrome.storage.sync.get("settings"),
     ]);
@@ -1089,16 +1088,12 @@
       fieldApplyStatus(titleField, title, "标题", Number(settings.titleLimit) || 12),
       fieldApplyStatus(summaryField, summary, "简介", Number(settings.summaryLimit) || 50),
     ]);
-    const upload = await injectUploadFile(imageUploadField, normalizeUploadPayload(record, imagePayload));
-    const ok = titleStatus.ok && summaryStatus.ok && upload.ok;
+    const ok = titleStatus.ok && summaryStatus.ok;
     return {
       ok,
-      message: ok
-        ? upload.requested ? "标题、简介和图片已写入后台，请人工核对后保存" : "标题和简介已写入后台，请人工核对后保存"
-        : "部分内容未能写入，请查看分项结果或重新绑定字段",
+      message: ok ? "标题和简介已写入后台，请人工核对后保存" : "部分文案未能写入，请查看分项结果或重新绑定字段",
       title: titleStatus,
       summary: summaryStatus,
-      upload,
       diagnostics: { route, bindingStatus, finalSaveClicked: false },
     };
   }

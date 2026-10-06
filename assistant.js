@@ -616,6 +616,8 @@
       });
       item.downloadStatus = "completed";
       item.downloadFileName = response.fileName || response.filename || "";
+      item.downloadPath = response.path || item.downloadFileName;
+      item.downloadGroupFolder = response.groupFolder || "";
       item.downloadError = "";
       if (state.batch?.items?.includes(item)) await persistBatch();
       return response;
@@ -640,7 +642,7 @@
     if (button) button.disabled = true;
     let cursor = 0;
     let failed = 0;
-    setPanelStatus(".lsa-batch-status", `正在下载 ${candidates.length} 张成品图到 ${state.settings.imageFolder}…`);
+    setPanelStatus(".lsa-batch-status", `正在下载 ${candidates.length} 张成品图；每累计 30 张自动新建一个分组目录…`);
     const worker = async () => {
       while (cursor < candidates.length) {
         const item = candidates[cursor++];
@@ -651,7 +653,7 @@
     if (button) button.disabled = false;
     setPanelStatus(".lsa-batch-status", failed
       ? `下载结束：${candidates.length - failed} 张成功，${failed} 张失败。`
-      : `已加入下载列表：${candidates.length} 张。`, Boolean(failed));
+      : `已加入下载列表：${candidates.length} 张；成品图已按每 30 张自动分组。`, Boolean(failed));
   }
 
   function stageStatusText(status) {
@@ -749,7 +751,7 @@
       if (item.error) card.append(create("p", "lsa-item-error", item.error));
       if (item.reviewWarning) card.append(create("p", "lsa-item-review-warning", item.reviewWarning));
       if (item.downloadStatus === "completed") {
-        card.append(create("p", "lsa-item-download", `已下载：${item.downloadFileName || "浏览器下载目录"}`));
+        card.append(create("p", "lsa-item-download", `已下载：${item.downloadPath || item.downloadFileName || "浏览器下载目录"}`));
       } else if (item.downloadError) {
         card.append(create("p", "lsa-item-error", `下载失败：${item.downloadError}`));
       }
@@ -896,29 +898,25 @@
       wrap.append(image, create("small", item.image.safetyStatus === "passed" ? "" : "is-warning", imageMeta(item.image)));
     }
     if (item.error) wrap.append(create("p", "lsa-item-error", item.error));
-    if (button) button.disabled = !item.title || !item.summary || !item.image?.imageUrl;
+    if (button) button.disabled = !item.title || !item.summary;
   }
 
   async function applySelectedRecord() {
     const item = selectedRecord();
     if (!item) return setPanelStatus(".lsa-edit-status", "请先选择批次记录", true);
-    if (!item.title || !item.summary || !item.image?.imageUrl) {
-      return setPanelStatus(".lsa-edit-status", "该记录的文案或图片尚未准备好", true);
+    if (!item.title || !item.summary) {
+      return setPanelStatus(".lsa-edit-status", "该记录的标题或简介尚未准备好", true);
     }
     const button = q(".lsa-apply-record");
     if (button) button.disabled = true;
-    setPanelStatus(".lsa-edit-status", "正在读取原图并写入后台上传控件…");
+    setPanelStatus(".lsa-edit-status", "正在填写标题和简介…");
     try {
-      const imagePayload = await sendRuntime("FETCH_IMAGE_FILE", {
-        url: item.image.imageUrl, imageUrl: item.image.imageUrl,
-        item, image: item.image, preferredRatio: state.settings.preferredRatio,
-      });
-      const result = await pageTool("APPLY_BATCH_RECORD", item, imagePayload);
-      if (!result?.ok) throw new Error(result?.message || "页面字段或上传控件写入失败");
-      const details = [result.title?.message, result.summary?.message, result.upload?.message]
+      const result = await pageTool("APPLY_BATCH_RECORD", item);
+      if (!result?.ok) throw new Error(result?.message || "页面标题或简介写入失败");
+      const details = [result.title?.message, result.summary?.message]
         .filter(Boolean).join("；");
       setPanelStatus(".lsa-edit-status",
-        `${result.message || "标题、简介和图片已写入后台"}${details ? `：${details}` : ""}。请核对预览后手动点击后台保存。`);
+        `${result.message || "标题和简介已写入后台"}${details ? `：${details}` : ""}。图片请手动上传，核对后再点击后台保存。`);
     } catch (error) {
       setPanelStatus(".lsa-edit-status", `填入失败：${error.message}`, true);
     } finally {
@@ -1124,11 +1122,11 @@
         <section class="lsa-tab-panel" data-panel="record">
           <div class="lsa-section-card">
             <div class="lsa-section-row"><h2 class="lsa-section-title">从批次填入当前编辑页</h2><button class="lsa-text-action lsa-refresh-record" type="button">重新匹配 ID</button></div>
-            <p class="lsa-section-hint">优先按当前 URL 的 id 自动匹配；点击下面任一记录会立即跳转到对应编辑页。只填入标题、简介和上传图片，绝不点击后台最终保存。</p>
+            <p class="lsa-section-hint">优先按当前 URL 的 id 自动匹配；点击下面任一记录会立即跳转到对应编辑页。工具只填入标题和简介，图片由你手动上传，也不会点击后台最终保存。</p>
             <div class="lsa-record-list" role="listbox" aria-label="选择并跳转到批次记录"></div>
             <div class="lsa-selected-record"></div>
-            <button class="lsa-primary-button lsa-apply-record" type="button" disabled>填入文案并上传图片</button>
-            <p class="lsa-status-text lsa-edit-status">请先核对匹配记录；图片使用原图数据写入后台上传控件。</p>
+            <button class="lsa-primary-button lsa-apply-record" type="button" disabled>填入标题和简介</button>
+            <p class="lsa-status-text lsa-edit-status">请先核对匹配记录；图片请在后台手动上传。</p>
           </div>
         </section>
         <section class="lsa-tab-panel" data-panel="manual" hidden>
